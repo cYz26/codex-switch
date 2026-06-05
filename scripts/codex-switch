@@ -455,11 +455,7 @@ env_setup_command() {
     printf '%s\n' "$bundled"
     return
   fi
-  if command -v codex-env-setup >/dev/null 2>&1; then
-    command -v codex-env-setup
-    return
-  fi
-  echo "codex-switch environment helper not found; reinstall codex-switch." >&2
+  echo "codex-switch environment helper not found in this installation; reinstall codex-switch." >&2
   return 1
 }
 
@@ -478,7 +474,7 @@ print_version() {
     sed -n '1p' "$VERSION_FILE"
     return
   fi
-  printf '%s\n' "0.1.0-dev"
+  printf '%s\n' "0.1.1-dev"
 }
 
 INTERNAL_PROFILE_CODEX_BIN=""

@@ -19,7 +19,7 @@ Useful installer overrides:
 ```bash
 CODEX_SWITCH_INSTALL_DIR="$HOME/.local/bin"
 CODEX_SWITCH_LIB_DIR="$HOME/.local/share/codex-switch"
-CODEX_SWITCH_VERSION="v0.1.0"
+CODEX_SWITCH_VERSION="v0.1.1"
 CODEX_SWITCH_TARBALL_URL="https://example.com/codex-switch.tar.gz"
 CODEX_SWITCH_SOURCE_DIR="/path/to/local/codex-switch"
 CODEX_SWITCH_DRY_RUN=1
