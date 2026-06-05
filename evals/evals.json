@@ -1,0 +1,64 @@
+{
+  "skill_name": "codex-switch",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我初始化 Codex profile 切换，并把当前内网配置保存成 internal。",
+      "should_trigger": true,
+      "expected_output": "应触发 codex-switch，运行或建议运行 init --capture-current internal，并说明会保存当前 ~/.codex 的配置快照。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "切到 OpenAI official 的 Codex 登录和 CLI。",
+      "should_trigger": true,
+      "expected_output": "应触发 codex-switch，先 dry-run switch openai-official，再检查目标 profile 更新；official 仅报告更新由 Codex.app 管理，然后执行真实切换并检查 status。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "把 openai-official 绑定到 /opt/homebrew/bin/codex 这个版本。",
+      "should_trigger": true,
+      "expected_output": "应触发 codex-switch，使用 set-bin openai-official /opt/homebrew/bin/codex 并运行 doctor。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "看看我现在 Codex App/CLI 到底用的是哪个 profile 和 codex 版本。",
+      "should_trigger": true,
+      "expected_output": "应触发 codex-switch，运行 status/list 并摘要 active profile、PATH codex、shim 和版本。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "升级一下仓库里的 internal Codex CLI 安装脚本，顺便核对 Lark 安装文档。",
+      "should_trigger": true,
+      "expected_output": "应触发 codex-switch；使用 codex-switch update-internal --dry-run 或 codex-switch env check-internal，并核对 Lark 安装文档。",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "切到 internal，如果 internal Codex CLI 有新版就自动更新。",
+      "should_trigger": true,
+      "expected_output": "应触发 codex-switch；internal 切换应先检测 internal CLI 版本，发现新版时自动委托 codex-switch update-internal，再完成切换。",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "新增一个 Settings 灰度配置，Android 和 iOS 都要读取。",
+      "should_trigger": false,
+      "expected_output": "不应触发 codex-switch；这更接近 create-settings 或 bytedcli-settings-operator。",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "切到 internal，但不要把 internal 的 model_provider 合进我的 ~/.codex/config.toml。",
+      "should_trigger": true,
+      "expected_output": "应触发 codex-switch；切换应写 internal.config.toml profile layer、auth 和 CLI/App 绑定，live config.toml 只保留共享基础配置，不做 profile/provider 合并。",
+      "files": [
+        "scripts/codex_switch_switching.py",
+        "scripts/codex_switch_config.py"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Switch"
+  short_description: "Manage Codex profile switching and CLI updates"
+  default_prompt: "Use codex-switch to inspect, update, or switch my Codex profile safely."

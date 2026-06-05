@@ -1,0 +1,454 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_INTERNAL_BIN="$HOME/.local/bin/codex"
+DEFAULT_OFFICIAL_BIN="/Applications/Codex.app/Contents/Resources/codex"
+DEFAULT_INSTALLER_URL="https://github.com/SDGLBL/codex/releases/latest/download/install.sh"
+DEFAULT_LATEST_URL="https://github.com/SDGLBL/codex/releases/latest"
+DEFAULT_MODEL="gpt-5.5-2026-04-24"
+DEFAULT_AZURE_BASE_URL="https://aidp.bytedance.net/api/modelhub/online"
+DEFAULT_PROXY_URL="http://sys-proxy-rd-relay.byted.org:8118"
+TEAM_DOC_URL="https://bytedance.larkoffice.com/docx/OOYBdDO2MoSU7nxb8iLcQAWMnPf"
+
+INTERNAL_BIN="${CODEX_INTERNAL_BIN:-$DEFAULT_INTERNAL_BIN}"
+OFFICIAL_BIN="${CODEX_OFFICIAL_BIN:-$DEFAULT_OFFICIAL_BIN}"
+INSTALLER_URL="${CODEX_INSTALLER_URL:-$DEFAULT_INSTALLER_URL}"
+LATEST_URL="${CODEX_INTERNAL_LATEST_URL:-$DEFAULT_LATEST_URL}"
+INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_VERSION="${CODEX_INSTALL_VERSION:-}"
+INSTALL_MODEL="${CODEX_INSTALL_MODEL:-$DEFAULT_MODEL}"
+INSTALL_AZURE_BASE_URL="${CODEX_INSTALL_AZURE_BASE_URL:-$DEFAULT_AZURE_BASE_URL}"
+INSTALL_PROXY_URL="${CODEX_INSTALL_PROXY_URL:-$DEFAULT_PROXY_URL}"
+SKIP_SOURCE_CHECK=0
+SKIP_PROXY=0
+DRY_RUN=0
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  codex-switch env [global options] <command> [command options]
+  codex-switch <check-internal|check-official|update-internal|desktop-guidance> [options]
+
+Commands:
+  check-internal           Read-only check for the internal Codex CLI version.
+  update-internal          Install or update the internal Codex CLI.
+  check-official           Read-only check for Codex.app bundled CLI.
+  desktop-guidance         Print Codex Desktop setup guidance.
+
+Global options:
+  --internal-bin <path>        Internal codex binary. Default: ~/.local/bin/codex.
+  --official-bin <path>        Official Codex.app binary.
+  --install-dir <path>         Internal install directory. Default: ~/.local/bin.
+  --installer-url <url>        Internal install.sh URL.
+  --latest-url <url>           Internal latest release URL.
+  --version <version>          Pin internal install version.
+  --model <model>              CODEX_INSTALL_MODEL.
+  --azure-base-url <url>       CODEX_INSTALL_AZURE_BASE_URL.
+  --skip-source-check          Skip Lark install-source verification.
+  --skip-proxy                 Do not set the default company proxy.
+  --dry-run                    Print planned actions only.
+
+Examples:
+  codex-switch env check-internal
+  codex-switch update-internal --dry-run
+  codex-switch update-internal
+  codex-switch check-official
+USAGE
+}
+
+expand_shell_path() {
+  local raw="$1"
+  case "$raw" in
+    "~") printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${raw#~/}" ;;
+    *) printf '%s\n' "$raw" ;;
+  esac
+}
+
+extract_version() {
+  sed -nE 's/.*([0-9]+[.][0-9]+[.][0-9]+([-+][A-Za-z0-9.]+)?).*/\1/p' | head -n 1
+}
+
+latest_internal_tag() {
+  local headers location
+  headers="$(curl -fsSLI --max-time 20 "$LATEST_URL" 2>/dev/null)" || return 1
+  location="$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" { print $2 }' | tail -n 1 | tr -d '\r')"
+  printf '%s\n' "${location##*/}"
+}
+
+codex_install_target_exists() {
+  local target_path="$1"
+  [[ -e "$target_path" || -L "$target_path" ]]
+}
+
+codex_install_target_ready() {
+  local target_path="$1"
+  [[ -f "$target_path" && -x "$target_path" ]]
+}
+
+restore_codex_cli_backup() {
+  local target_path="$1"
+  local backup_path="$2"
+  local failed_target_path=""
+
+  if [[ -z "$backup_path" || ! ( -e "$backup_path" || -L "$backup_path" ) ]]; then
+    return 1
+  fi
+
+  if codex_install_target_exists "$target_path"; then
+    failed_target_path="${target_path}.failed-install.$(date +%Y%m%d%H%M%S).$$"
+    if mv "$target_path" "$failed_target_path"; then
+      echo "Failed install artifact kept: $failed_target_path" >&2
+    else
+      rm -f "$target_path" || return 1
+    fi
+  fi
+
+  mv "$backup_path" "$target_path"
+}
+
+check_internal() {
+  if [[ "$DRY_RUN" == 1 ]]; then
+    echo "[DRY-RUN] would inspect internal Codex binary: $INTERNAL_BIN"
+    echo "[DRY-RUN] would query latest release: $LATEST_URL"
+    return
+  fi
+
+  echo "Internal Codex binary: $INTERNAL_BIN"
+  if [[ ! -x "$INTERNAL_BIN" ]]; then
+    echo "Current: <missing or not executable>"
+  else
+    local current
+    current="$("$INTERNAL_BIN" --version 2>/dev/null || true)"
+    echo "Current: ${current:-<unavailable>}"
+  fi
+
+  local tag latest_version current_version current
+  if ! tag="$(latest_internal_tag)"; then
+    echo "Latest release: <unavailable from $LATEST_URL>"
+    return 1
+  fi
+  latest_version="$(printf '%s\n' "$tag" | extract_version)"
+  current="$("$INTERNAL_BIN" --version 2>/dev/null || true)"
+  current_version="$(printf '%s\n' "$current" | extract_version)"
+  echo "Latest release tag: ${tag:-<unknown>}"
+  if [[ -z "$current_version" || -z "$latest_version" || "$current_version" != "$latest_version" ]]; then
+    echo "Update: available or unable to compare versions"
+  else
+    echo "Update: not needed"
+  fi
+}
+
+verify_lark_install_source() {
+  if [[ "$SKIP_SOURCE_CHECK" == 1 ]]; then
+    echo "Skipping Lark install-source check."
+    return
+  fi
+  if ! command -v lark-cli >/dev/null 2>&1; then
+    echo "lark-cli not found; cannot verify the team Codex install source." >&2
+    exit 1
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  if ! lark-cli docs +fetch --api-version v2 \
+    --doc "$TEAM_DOC_URL" \
+    --scope keyword \
+    --keyword "CLI 安装|CODEX_INSTALL|install.sh|codesign|CODEX_INSTALL_AZURE_BASE_URL" \
+    --doc-format markdown \
+    --format json >"$tmp"; then
+    rm -f "$tmp"
+    echo "Failed to fetch the team Codex CLI install source." >&2
+    exit 1
+  fi
+
+  local missing=0
+  for expected in \
+    "$DEFAULT_INSTALLER_URL" \
+    "CODEX_INSTALL_DIR" \
+    "CODEX_INSTALL_MODEL" \
+    "$DEFAULT_MODEL" \
+    "CODEX_INSTALL_AK" \
+    "CODEX_INSTALL_AZURE_BASE_URL" \
+    "$DEFAULT_AZURE_BASE_URL" \
+    "codesign --force --sign"; do
+    if ! grep -Fq "$expected" "$tmp"; then
+      echo "Team install source is missing expected token: $expected" >&2
+      missing=1
+    fi
+  done
+  rm -f "$tmp"
+  if [[ "$missing" == 1 ]]; then
+    echo "Codex install guidance appears to have drifted; aborting update." >&2
+    exit 1
+  fi
+}
+
+update_internal() {
+  local install_bin="$INSTALL_DIR/codex"
+  local install_ak="${CODEX_INSTALL_AK:-${K_CODEX:-}}"
+  local backup_codex_path=""
+
+  if [[ "$DRY_RUN" == 1 ]]; then
+    echo "[DRY-RUN] would verify Lark install source: $TEAM_DOC_URL"
+    echo "[DRY-RUN] would install internal Codex CLI into: $INSTALL_DIR"
+    echo "[DRY-RUN] installer: $INSTALLER_URL"
+    echo "[DRY-RUN] model: $INSTALL_MODEL"
+    echo "[DRY-RUN] azure base URL: $INSTALL_AZURE_BASE_URL"
+    echo "[DRY-RUN] CODEX_INSTALL_AK: <hidden>"
+    echo "[DRY-RUN] would move existing $install_bin to a temporary preinstall backup before running install.sh"
+    if [[ -n "$INSTALL_VERSION" ]]; then
+      echo "[DRY-RUN] pinned version: $INSTALL_VERSION"
+    fi
+    return
+  fi
+
+  if [[ -z "$install_ak" ]]; then
+    echo "CODEX_INSTALL_AK or K_CODEX is required for internal Codex updates." >&2
+    exit 1
+  fi
+
+  mkdir -p "$INSTALL_DIR"
+
+  verify_lark_install_source
+
+  local old_https_proxy="${https_proxy-}" old_http_proxy="${http_proxy-}"
+  local had_https_proxy=0 had_http_proxy=0
+  if [[ -n "${https_proxy+x}" ]]; then
+    had_https_proxy=1
+  fi
+  if [[ -n "${http_proxy+x}" ]]; then
+    had_http_proxy=1
+  fi
+  if [[ "$SKIP_PROXY" != 1 ]]; then
+    export https_proxy="${https_proxy:-$INSTALL_PROXY_URL}"
+    export http_proxy="${http_proxy:-$INSTALL_PROXY_URL}"
+  fi
+
+  echo "Updating internal Codex CLI via $INSTALLER_URL"
+  if codex_install_target_exists "$install_bin"; then
+    backup_codex_path="${install_bin}.preinstall.$(date +%Y%m%d%H%M%S).$$"
+    echo "Moving existing Codex CLI to temporary backup: $backup_codex_path"
+    if ! mv "$install_bin" "$backup_codex_path"; then
+      echo "Failed to move existing Codex CLI: $install_bin. Quit Codex App and running codex processes, then retry." >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -n "$INSTALL_VERSION" ]]; then
+    if ! curl -fsSL "$INSTALLER_URL" |
+      CODEX_INSTALL_DIR="$INSTALL_DIR" \
+      CODEX_INSTALL_MODEL="$INSTALL_MODEL" \
+      CODEX_INSTALL_AK="$install_ak" \
+      CODEX_INSTALL_AZURE_BASE_URL="$INSTALL_AZURE_BASE_URL" \
+      bash -s -- "$INSTALL_VERSION"; then
+      restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
+      echo "Codex install.sh failed; restored previous binary when possible." >&2
+      exit 1
+    fi
+  else
+    if ! curl -fsSL "$INSTALLER_URL" |
+      CODEX_INSTALL_DIR="$INSTALL_DIR" \
+      CODEX_INSTALL_MODEL="$INSTALL_MODEL" \
+      CODEX_INSTALL_AK="$install_ak" \
+      CODEX_INSTALL_AZURE_BASE_URL="$INSTALL_AZURE_BASE_URL" \
+      bash -s; then
+      restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
+      echo "Codex install.sh failed; restored previous binary when possible." >&2
+      exit 1
+    fi
+  fi
+
+  if [[ $had_https_proxy -eq 1 ]]; then
+    export https_proxy="$old_https_proxy"
+  else
+    unset https_proxy
+  fi
+  if [[ $had_http_proxy -eq 1 ]]; then
+    export http_proxy="$old_http_proxy"
+  else
+    unset http_proxy
+  fi
+
+  if ! codex_install_target_ready "$install_bin"; then
+    restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
+    echo "Codex install.sh succeeded but did not produce an executable: $install_bin" >&2
+    exit 1
+  fi
+  if ! "$install_bin" --version >/dev/null 2>&1; then
+    restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
+    echo "Installed Codex CLI cannot execute --version: $install_bin" >&2
+    exit 1
+  fi
+  if [[ -n "$backup_codex_path" && ( -e "$backup_codex_path" || -L "$backup_codex_path" ) ]]; then
+    rm -f "$backup_codex_path" || echo "Failed to remove old Codex CLI backup: $backup_codex_path" >&2
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1 && [[ -x "$install_bin" ]]; then
+    codesign --force --sign - "$install_bin" >/dev/null
+  fi
+  echo "Internal Codex after update: $("$install_bin" --version 2>/dev/null || true)"
+  echo "If this binary should back the internal profile, run:"
+  echo "  codex-switch set-bin internal \"$install_bin\""
+}
+
+check_official() {
+  echo "Official Codex.app binary: $OFFICIAL_BIN"
+  if [[ ! -x "$OFFICIAL_BIN" ]]; then
+    echo "Current: <missing or not executable>"
+    return 1
+  fi
+  echo "Current: $("$OFFICIAL_BIN" --version 2>/dev/null || echo "<unavailable>")"
+  echo "Update: managed by Codex Desktop / Codex.app."
+}
+
+desktop_guidance() {
+  if [[ "$DRY_RUN" == 1 ]]; then
+    echo "[DRY-RUN] would fetch Desktop install guidance from: $TEAM_DOC_URL"
+    return
+  fi
+
+  if command -v lark-cli >/dev/null 2>&1; then
+    lark-cli docs +fetch --api-version v2 \
+      --doc "$TEAM_DOC_URL" \
+      --scope keyword \
+      --keyword "Desktop 安装|Codex Mac APP|LaunchAgent|remote-connections|Desktop" \
+      --doc-format markdown \
+      --format json || true
+  else
+    echo "lark-cli not found; printing local guidance only."
+  fi
+  cat <<'GUIDANCE'
+
+Codex Desktop guidance:
+- Install or update the Codex CLI first.
+- Codex Desktop App still requires OpenAI account login.
+- Do not modify /Applications/Codex.app manually.
+- Use codex-switch set-app-bin <profile> <path> to persist CODEX_CLI_PATH.
+- Restart Codex Desktop after changing CODEX_CLI_PATH.
+- Remote connection setup is out of scope unless explicitly requested.
+GUIDANCE
+}
+
+install_wrapper() {
+  echo "codex-env-setup is private to codex-switch. Install the public CLI with: codex-switch install" >&2
+  exit 2
+}
+
+parse_common_option() {
+  case "$1" in
+    --internal-bin)
+      [[ $# -ge 2 ]] || { echo "--internal-bin requires a value" >&2; exit 2; }
+      INTERNAL_BIN="$(expand_shell_path "$2")"
+      return 2
+      ;;
+    --official-bin)
+      [[ $# -ge 2 ]] || { echo "--official-bin requires a value" >&2; exit 2; }
+      OFFICIAL_BIN="$(expand_shell_path "$2")"
+      return 2
+      ;;
+    --install-dir)
+      [[ $# -ge 2 ]] || { echo "--install-dir requires a value" >&2; exit 2; }
+      INSTALL_DIR="$(expand_shell_path "$2")"
+      return 2
+      ;;
+    --installer-url)
+      [[ $# -ge 2 ]] || { echo "--installer-url requires a value" >&2; exit 2; }
+      INSTALLER_URL="$2"
+      return 2
+      ;;
+    --latest-url)
+      [[ $# -ge 2 ]] || { echo "--latest-url requires a value" >&2; exit 2; }
+      LATEST_URL="$2"
+      return 2
+      ;;
+    --version|--codex-install-version)
+      [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+      INSTALL_VERSION="$2"
+      return 2
+      ;;
+    --model)
+      [[ $# -ge 2 ]] || { echo "--model requires a value" >&2; exit 2; }
+      INSTALL_MODEL="$2"
+      return 2
+      ;;
+    --azure-base-url|--codex-install-base-url)
+      [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+      INSTALL_AZURE_BASE_URL="$2"
+      return 2
+      ;;
+    --skip-source-check)
+      SKIP_SOURCE_CHECK=1
+      return 1
+      ;;
+    --skip-proxy|--skip-codex-install-proxy)
+      SKIP_PROXY=1
+      return 1
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      return 1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+while (($#)); do
+  parse_common_option "$@" || consumed=$?
+  consumed="${consumed:-0}"
+  if [[ "$consumed" == 0 ]]; then
+    break
+  fi
+  shift "$consumed"
+  unset consumed
+done
+
+cmd="${1:-}"
+if [[ -z "$cmd" ]]; then
+  usage
+  exit 2
+fi
+shift
+
+while (($#)); do
+  parse_common_option "$@" || consumed=$?
+  consumed="${consumed:-0}"
+  if [[ "$consumed" == 0 ]]; then
+    echo "Unknown option for $cmd: $1" >&2
+    exit 2
+  fi
+  shift "$consumed"
+  unset consumed
+done
+
+case "$cmd" in
+  check-internal)
+    check_internal
+    ;;
+  update-internal)
+    update_internal
+    ;;
+  check-official)
+    check_official
+    ;;
+  desktop-guidance)
+    desktop_guidance
+    ;;
+  install)
+    install_wrapper
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
