@@ -2,10 +2,12 @@
 set -euo pipefail
 
 REPO_TARBALL_BASE="https://github.com/cYz26/codex-switch/releases"
+REPO_SOURCE_BASE="https://github.com/cYz26/codex-switch/archive"
 LIB_DIR="${CODEX_SWITCH_LIB_DIR:-$HOME/.local/share/codex-switch}"
 INSTALL_VERSION="${CODEX_SWITCH_VERSION:-}"
 SOURCE_DIR="${CODEX_SWITCH_SOURCE_DIR:-}"
 TARBALL_URL="${CODEX_SWITCH_TARBALL_URL:-}"
+SOURCE_TARBALL_URL="${CODEX_SWITCH_SOURCE_TARBALL_URL:-}"
 DRY_RUN="${CODEX_SWITCH_DRY_RUN:-0}"
 PROXY_URL="${CODEX_SWITCH_GITHUB_PROXY:-}"
 
@@ -54,9 +56,41 @@ copy_source() {
   mv "$staged" "$dest"
 }
 
-download_source() {
-  local dest="$1"
-  local tmp
+source_tarball_url() {
+  if [[ -n "$SOURCE_TARBALL_URL" ]]; then
+    printf '%s\n' "$SOURCE_TARBALL_URL"
+  elif [[ -n "$INSTALL_VERSION" ]]; then
+    printf '%s/refs/tags/%s.tar.gz\n' "$REPO_SOURCE_BASE" "$INSTALL_VERSION"
+  else
+    printf '%s/refs/heads/main.tar.gz\n' "$REPO_SOURCE_BASE"
+  fi
+}
+
+copy_packaged_source() {
+  local src="$1"
+  local dest="$2"
+  local dist
+
+  if [[ -x "$src/scripts/package-release.sh" ]]; then
+    dist="$(mktemp -d)"
+    if CODEX_SWITCH_DIST_DIR="$dist" "$src/scripts/package-release.sh" >/dev/null; then
+      if [[ -x "$dist/codex-switch/scripts/codex-switch" ]]; then
+        copy_source "$dist/codex-switch" "$dest"
+        rm -rf "$dist"
+        return
+      fi
+    fi
+    rm -rf "$dist"
+  fi
+
+  copy_source "$src" "$dest"
+}
+
+install_archive() {
+  local url="$1"
+  local dest="$2"
+  local mode="$3"
+  local tmp src
   tmp="$(mktemp -d)"
 
   if [[ -n "$PROXY_URL" ]]; then
@@ -65,15 +99,21 @@ download_source() {
   fi
 
   if is_dry_run; then
-    print_cmd curl -fsSL "$TARBALL_URL" -o "$tmp/codex-switch.tar.gz"
+    print_cmd curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"
     print_cmd tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"
     print_cmd install extracted codex-switch to "$dest"
+    rm -rf "$tmp"
     return
   fi
 
-  curl -fsSL "$TARBALL_URL" -o "$tmp/codex-switch.tar.gz"
-  tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"
-  local src
+  if ! curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  if ! tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"; then
+    rm -rf "$tmp"
+    return 1
+  fi
   if [[ -d "$tmp/codex-switch" ]]; then
     src="$tmp/codex-switch"
   else
@@ -81,10 +121,35 @@ download_source() {
   fi
   if [[ -z "$src" || ! -x "$src/scripts/codex-switch" ]]; then
     echo "Downloaded archive does not contain scripts/codex-switch" >&2
-    exit 1
+    rm -rf "$tmp"
+    return 1
   fi
-  copy_source "$src" "$dest"
+  if [[ "$mode" == "source" ]]; then
+    copy_packaged_source "$src" "$dest"
+  else
+    copy_source "$src" "$dest"
+  fi
   rm -rf "$tmp"
+}
+
+download_source() {
+  local dest="$1"
+  local fallback_url
+
+  if install_archive "$TARBALL_URL" "$dest" "bundle"; then
+    return
+  fi
+
+  fallback_url="$(source_tarball_url)"
+  if [[ -n "$fallback_url" ]]; then
+    echo "codex-switch run: release bundle unavailable; trying source archive fallback" >&2
+    if install_archive "$fallback_url" "$dest" "source"; then
+      return
+    fi
+  fi
+
+  echo "codex-switch run: failed to download release bundle or source archive" >&2
+  exit 1
 }
 
 main() {

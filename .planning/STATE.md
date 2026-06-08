@@ -1,15 +1,15 @@
 ---
 workflow_version: 0.3.0
 project_mode: brownfield
-current_stage: archived
+current_stage: verification
 
 current_phase:
   id: 01-foundation
   status: complete
 
 current_change:
-  id: none
-  status: archived
+  id: remote-release-packaging
+  status: local_verified
 
 gates:
   workflow_initialized: true
@@ -17,7 +17,7 @@ gates:
   plan_written: true
   tests_baseline_known: true
   implementation_done: true
-  verification_passed: true
+  verification_passed: false
   state_updated: true
   archive_allowed: false
 
@@ -53,20 +53,20 @@ context_management:
     - validation_recorded_if_applicable
 
 context_health:
-  last_report: .planning/verification/20260608125735-local-command-self-update-verification.md
+  last_report: .planning/verification/20260608144055-remote-release-packaging-verification.md
   last_risk: low
   last_confidence: high
-  last_decision: archived_local_command_self_update
-  last_goal_status: local_command_self_update_archived
-  goal_summary: Local command self-update is implemented, packaged, verified, and archived. No active OpenSpec changes remain.
+  last_decision: local_verified_remote_release_packaging
+  last_goal_status: remote_release_packaging_publish_pending
+  goal_summary: Remote release packaging and source archive fallback are implemented and locally verified. Commit, push, tag v0.1.3, and verify the published remote runner asset next.
 ---
 
 # Workflow State
 
 ## Current Status
 
-`local-command-self-update` has been implemented, verified, and archived. Release-installed local `codex-switch` commands now perform a bounded, skippable, non-blocking self-update from the remote release bundle before ordinary command execution. Source checkout commands do not self-modify.
+`remote-release-packaging` is the active change. Release workflow publication and source archive fallback are implemented and locally verified. The remaining verification item is the published `v0.1.3` remote runner asset after pushing the commit and tag.
 
 ## Next Action
 
-Review the dirty worktree scope, then commit, tag, or publish according to the desired release process.
+Commit and push the implementation, tag `v0.1.3`, then verify `https://github.com/cYz26/codex-switch/releases/download/v0.1.3/run.sh` executes `version` successfully.

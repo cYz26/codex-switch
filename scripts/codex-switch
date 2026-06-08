@@ -27,9 +27,11 @@ fi
 
 STORE_DIR="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
 REPO_TARBALL_BASE="https://github.com/cYz26/codex-switch/releases"
+REPO_SOURCE_BASE="https://github.com/cYz26/codex-switch/archive"
 LIB_DIR="${CODEX_SWITCH_LIB_DIR:-$HOME/.local/share/codex-switch}"
 SELF_UPDATE_SOURCE_DIR="${CODEX_SWITCH_SOURCE_DIR:-}"
 SELF_UPDATE_TARBALL_URL="${CODEX_SWITCH_SELF_UPDATE_TARBALL_URL:-${CODEX_SWITCH_TARBALL_URL:-}}"
+SELF_UPDATE_SOURCE_TARBALL_URL="${CODEX_SWITCH_SELF_UPDATE_SOURCE_TARBALL_URL:-${CODEX_SWITCH_SOURCE_TARBALL_URL:-}}"
 SELF_UPDATE_VERSION="${CODEX_SWITCH_SELF_UPDATE_VERSION:-${CODEX_SWITCH_VERSION:-}}"
 SELF_UPDATE_INTERVAL_SECONDS="${CODEX_SWITCH_SELF_UPDATE_INTERVAL_SECONDS:-86400}"
 SELF_UPDATE_PROXY_URL="${CODEX_SWITCH_GITHUB_PROXY:-}"
@@ -157,6 +159,14 @@ self_update_tarball_url() {
   fi
 }
 
+self_update_source_tarball_url() {
+  if [[ -n "$SELF_UPDATE_SOURCE_TARBALL_URL" ]]; then
+    printf '%s\n' "$SELF_UPDATE_SOURCE_TARBALL_URL"
+  elif [[ -n "$SELF_UPDATE_VERSION" ]]; then
+    printf '%s/refs/tags/%s.tar.gz\n' "$REPO_SOURCE_BASE" "$SELF_UPDATE_VERSION"
+  fi
+}
+
 bundle_version() {
   local root="$1"
   if [[ -f "$root/VERSION" ]]; then
@@ -177,19 +187,46 @@ stage_self_update_from_source() {
   rm -rf "$staged/scripts/__pycache__"
 }
 
-stage_self_update_from_tarball() {
-  local staged="$1"
-  local tmp tarball_url src
+stage_self_update_from_packaged_source() {
+  local source_dir="$1"
+  local staged="$2"
+  local dist
+
+  if [[ -x "$source_dir/scripts/package-release.sh" ]]; then
+    dist="$(mktemp -d)"
+    if CODEX_SWITCH_DIST_DIR="$dist" "$source_dir/scripts/package-release.sh" >/dev/null; then
+      if [[ -x "$dist/codex-switch/scripts/codex-switch" ]]; then
+        stage_self_update_from_source "$dist/codex-switch" "$staged"
+        rm -rf "$dist"
+        return
+      fi
+    fi
+    rm -rf "$dist"
+  fi
+
+  stage_self_update_from_source "$source_dir" "$staged"
+}
+
+stage_self_update_archive_url() {
+  local url="$1"
+  local staged="$2"
+  local mode="$3"
+  local tmp src
   tmp="$(mktemp -d)"
-  tarball_url="$(self_update_tarball_url)"
 
   if [[ -n "$SELF_UPDATE_PROXY_URL" ]]; then
     export https_proxy="${https_proxy:-$SELF_UPDATE_PROXY_URL}"
     export http_proxy="${http_proxy:-$SELF_UPDATE_PROXY_URL}"
   fi
 
-  curl -fsSL "$tarball_url" -o "$tmp/codex-switch.tar.gz"
-  tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"
+  if ! curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  if ! tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"; then
+    rm -rf "$tmp"
+    return 1
+  fi
   if [[ -d "$tmp/codex-switch" ]]; then
     src="$tmp/codex-switch"
   else
@@ -200,8 +237,31 @@ stage_self_update_from_tarball() {
     rm -rf "$tmp"
     return 1
   fi
-  stage_self_update_from_source "$src" "$staged"
+  if [[ "$mode" == "source" ]]; then
+    stage_self_update_from_packaged_source "$src" "$staged"
+  else
+    stage_self_update_from_source "$src" "$staged"
+  fi
   rm -rf "$tmp"
+}
+
+stage_self_update_from_tarball() {
+  local staged="$1"
+  local tarball_url source_url
+  tarball_url="$(self_update_tarball_url)"
+
+  if stage_self_update_archive_url "$tarball_url" "$staged" "bundle"; then
+    return
+  fi
+
+  source_url="$(self_update_source_tarball_url)"
+  if [[ -n "$source_url" ]]; then
+    echo "codex-switch self-update: release bundle unavailable; trying source archive fallback" >&2
+    stage_self_update_archive_url "$source_url" "$staged" "source"
+    return
+  fi
+
+  return 1
 }
 
 sync_self_update() {

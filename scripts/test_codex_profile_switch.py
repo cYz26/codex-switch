@@ -25,7 +25,9 @@ from codex_switch_store import Store
 
 SCRIPT = Path(__file__).with_name("codex_profile_switch.py")
 WRAPPER = Path(__file__).with_name("codex-switch")
+INSTALLER = Path(__file__).parents[1] / "install.sh"
 REMOTE_RUNNER = Path(__file__).parents[1] / "run.sh"
+RELEASE_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
 
 
 def write_fake_codex(path: Path, label: str) -> None:
@@ -167,6 +169,42 @@ class CodexProfileSwitchTests(unittest.TestCase):
             archive.add(release_root, arcname="codex-switch")
         return tarball
 
+    def make_source_archive(self, root: Path, version: str = "9.9.9") -> Path:
+        source_root = root / "source-release" / f"codex-switch-{version}"
+        scripts_dir = source_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (source_root / "README.md").write_text("source archive\n")
+        (source_root / "SKILL.md").write_text("source archive\n")
+        (source_root / "VERSION").write_text(f"{version}\n")
+        raw_wrapper = scripts_dir / "codex-switch"
+        raw_wrapper.write_text(
+            "#!/usr/bin/env sh\n"
+            "printf 'raw-source:%s\\n' \"$*\"\n"
+        )
+        raw_wrapper.chmod(0o755)
+        package_script = scripts_dir / "package-release.sh"
+        package_script.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'out="${CODEX_SWITCH_DIST_DIR:-$PWD/dist}"\n'
+            'pkg="$out/codex-switch"\n'
+            'rm -rf "$pkg"\n'
+            'mkdir -p "$pkg/scripts"\n'
+            f"printf '{version}\\n' > \"$pkg/VERSION\"\n"
+            "cat > \"$pkg/scripts/codex-switch\" <<'SH'\n"
+            "#!/usr/bin/env sh\n"
+            "printf 'packaged-source:%s\\n' \"$*\"\n"
+            "printf 'skip-self-update:%s\\n' \"${CODEX_SWITCH_SKIP_SELF_UPDATE:-}\"\n"
+            "SH\n"
+            'chmod +x "$pkg/scripts/codex-switch"\n'
+            'echo "$out/codex-switch.tar.gz"\n'
+        )
+        package_script.chmod(0o755)
+        tarball = root / "source-codex-switch.tar.gz"
+        with tarfile.open(tarball, "w:gz") as archive:
+            archive.add(source_root, arcname=f"codex-switch-{version}")
+        return tarball
+
     def self_update_env(self, root: Path, tarball: Path) -> dict[str, str]:
         env = os.environ.copy()
         env["CODEX_SWITCH_LIB_DIR"] = str(root / "lib")
@@ -212,6 +250,68 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn("skip-self-update:1", result.stdout)
             self.assertIn(f"script-dir:{lib_dir / 'current' / 'scripts'}", result.stdout)
             self.assertTrue((lib_dir / "current" / "scripts" / "codex-switch").exists())
+            self.assertFalse((install_dir / "codex-switch").exists())
+
+    def test_installer_falls_back_to_source_archive_and_installs_path_command(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            source_archive = self.make_source_archive(root)
+            install_dir = root / "bin"
+            lib_dir = root / "lib"
+            missing_tarball = root / "missing-codex-switch.tar.gz"
+            env = os.environ.copy()
+            env["CODEX_SWITCH_TARBALL_URL"] = missing_tarball.as_uri()
+            env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
+            env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
+            env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+
+            subprocess.run(
+                [str(INSTALLER)],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            result = subprocess.run(
+                [str(install_dir / "codex-switch"), "status", "--verbose"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("packaged-source:status --verbose", result.stdout)
+            self.assertEqual("9.9.9\n", (lib_dir / "current" / "VERSION").read_text())
+            self.assertTrue((install_dir / "codex-switch").exists())
+
+    def test_remote_runner_falls_back_to_source_archive_and_execs_command(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            source_archive = self.make_source_archive(root)
+            install_dir = root / "bin"
+            lib_dir = root / "lib"
+            missing_tarball = root / "missing-codex-switch.tar.gz"
+            env = os.environ.copy()
+            env["CODEX_SWITCH_TARBALL_URL"] = missing_tarball.as_uri()
+            env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
+            env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
+            env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+
+            result = subprocess.run(
+                [str(REMOTE_RUNNER), "status", "--verbose"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("packaged-source:status --verbose", result.stdout)
+            self.assertIn("skip-self-update:1", result.stdout)
+            self.assertEqual("9.9.9\n", (lib_dir / "current" / "VERSION").read_text())
             self.assertFalse((install_dir / "codex-switch").exists())
 
     def test_local_wrapper_self_updates_release_install_before_command(self) -> None:
@@ -296,6 +396,38 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn("old-switcher:status", result.stdout)
             self.assertIn("sync failed; continuing", result.stderr)
             self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_local_wrapper_self_update_falls_back_to_source_archive(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root)
+            source_archive = self.make_source_archive(root)
+            env = self.self_update_env(root, root / "missing-release.tar.gz")
+            env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
+
+            result = subprocess.run(
+                [str(local_wrapper), "status", "--verbose"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("packaged-source:status --verbose", result.stdout)
+            self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_release_workflow_uploads_required_assets(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text()
+
+        self.assertIn("contents: write", workflow)
+        self.assertIn("@fission-ai/openspec@1.3.1", workflow)
+        self.assertIn("scripts/package-release.sh", workflow)
+        self.assertIn("gh release upload", workflow)
+        self.assertIn("--clobber", workflow)
+        self.assertIn("install.sh", workflow)
+        self.assertIn("dist/run.sh", workflow)
+        self.assertIn("dist/codex-switch.tar.gz", workflow)
 
     def test_init_defaults_official_codex_bin_to_app_cli_not_path_codex(self) -> None:
         temp_dir, root = self.make_workspace()
