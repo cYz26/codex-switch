@@ -1,0 +1,14 @@
+# Local workflow installs and runtime state
+.codex/
+.dev-flow/
+log/
+
+# Build output
+dist/
+
+# Python/cache noise
+__pycache__/
+*.py[cod]
+
+# macOS metadata
+.DS_Store
