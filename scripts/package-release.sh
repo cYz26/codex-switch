@@ -13,10 +13,13 @@ mkdir -p "$PACKAGE_DIR" "$OUT_DIR"
 cp "$REPO_ROOT/README.md" "$PACKAGE_DIR/"
 cp "$REPO_ROOT/SKILL.md" "$PACKAGE_DIR/"
 cp "$REPO_ROOT/VERSION" "$PACKAGE_DIR/"
+cp "$REPO_ROOT/run.sh" "$PACKAGE_DIR/"
+cp "$REPO_ROOT/run.sh" "$OUT_DIR/run.sh"
 cp -R "$REPO_ROOT/agents" "$PACKAGE_DIR/"
 cp -R "$REPO_ROOT/evals" "$PACKAGE_DIR/"
 cp -R "$REPO_ROOT/scripts" "$PACKAGE_DIR/"
 rm -rf "$PACKAGE_DIR/scripts/__pycache__"
+chmod +x "$PACKAGE_DIR/run.sh" "$OUT_DIR/run.sh"
 
 tar -C "$OUT_DIR" -czf "$TARBALL" codex-switch
 echo "$TARBALL"

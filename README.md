@@ -19,7 +19,7 @@ Useful installer overrides:
 ```bash
 CODEX_SWITCH_INSTALL_DIR="$HOME/.local/bin"
 CODEX_SWITCH_LIB_DIR="$HOME/.local/share/codex-switch"
-CODEX_SWITCH_VERSION="v0.1.1"
+CODEX_SWITCH_VERSION="v0.1.2"
 CODEX_SWITCH_TARBALL_URL="https://example.com/codex-switch.tar.gz"
 CODEX_SWITCH_SOURCE_DIR="/path/to/local/codex-switch"
 CODEX_SWITCH_DRY_RUN=1
@@ -39,6 +39,57 @@ codex-switch env check-internal
 `codex-switch internal` checks the internal profile's bound Codex CLI and
 automatically delegates to `codex-switch update-internal` when a newer internal
 release is detected.
+
+Persistent local commands installed by `install.sh` also perform a bounded
+codex-switch implementation self-update before ordinary command execution. By
+default, a release-installed wrapper checks at most once per day, syncs
+`~/.local/share/codex-switch/current` from the configured release tarball when a
+newer bundle is available, and re-runs the original command against the synced
+wrapper. Source checkout usage such as `scripts/codex-switch status` does not
+self-modify.
+
+Self-update controls:
+
+```bash
+codex-switch --skip-self-update status
+CODEX_SWITCH_SKIP_SELF_UPDATE=1 codex-switch status
+CODEX_SWITCH_SELF_UPDATE_INTERVAL_SECONDS=0 codex-switch status
+CODEX_SWITCH_TARBALL_URL="https://example.com/codex-switch.tar.gz" codex-switch status
+```
+
+Self-update failures are warnings for ordinary commands; the current local
+implementation continues to run.
+
+Run without installing a PATH command:
+
+```bash
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/latest/download/run.sh" | bash -s -- status
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/latest/download/run.sh" | bash -s -- internal
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/latest/download/run.sh" | bash -s -- official --dry-run
+```
+
+The remote runner downloads the release bundle to
+`~/.local/share/codex-switch/current` and executes the bundled
+`scripts/codex-switch`. It does not create `~/.local/bin/codex-switch`; use the
+installer when you want a persistent PATH command.
+
+## Config Model
+
+Profile switching keeps `config.toml` as the shared workstation configuration.
+Plugin marketplace entries, enabled plugin state, skill config, hook trust
+state, projects, UI preferences, MCP servers, and other non-auth settings stay
+shared across `internal` and `official`. Profile-specific auth/model settings
+are written to `<profile>.config.toml` and layered onto the shared base during
+switching.
+
+When the internal Desktop profile uses `~/.codex-switch/bin/codex-internal-app`,
+`codex-switch internal` refreshes that wrapper so the app-specific
+`CODEX_HOME` is rebuilt from the shared live config plus `internal.config.toml`.
+Before each Desktop launch, the wrapper also folds non-auth shared settings that
+Codex Desktop wrote into the app home back into the live shared config. This
+keeps plugins, hook trust, feature flags, MCP servers, project trust, and UI
+preferences visible after restarting Codex Desktop while still keeping official
+`auth.json` out of the internal app home.
 
 ## Development
 

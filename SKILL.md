@@ -62,6 +62,36 @@ codex-switch official
 codex-switch update-internal
 ```
 
+Release-installed local commands self-sync the `codex-switch` implementation
+before ordinary command execution. The wrapper checks at most once per day by
+default, only when it is running from the release implementation directory
+under `~/.local/share/codex-switch/current`, and re-execs the original command
+after a successful sync. Source checkout commands do not rewrite the repository.
+
+Use these controls when scripting or debugging:
+
+```bash
+codex-switch --skip-self-update status
+CODEX_SWITCH_SKIP_SELF_UPDATE=1 codex-switch status
+CODEX_SWITCH_SELF_UPDATE_INTERVAL_SECONDS=0 codex-switch status
+CODEX_SWITCH_TARBALL_URL="https://example.com/codex-switch.tar.gz" codex-switch status
+```
+
+Self-update failures are non-blocking warnings for ordinary commands.
+
+For direct remote use from any project without creating a PATH command:
+
+```bash
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/latest/download/run.sh" | bash -s -- status
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/latest/download/run.sh" | bash -s -- internal
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/latest/download/run.sh" | bash -s -- official --dry-run
+```
+
+The remote runner bootstraps the release into
+`~/.local/share/codex-switch/current` so generated Desktop wrappers reference a
+stable implementation path. It does not create the `~/.local/bin/codex-switch`
+symlink.
+
 Advanced commands can call the Python switcher directly:
 
 ```bash
@@ -104,6 +134,17 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
 - Do not embed profile-specific model/provider/auth keys into live
   `~/.codex/config.toml`. Switching writes the selected profile layer to
   `<profile>.config.toml` and keeps live `config.toml` as a shared base.
+- Preserve non-auth workstation config across profile switches, including
+  plugin marketplaces, enabled plugins, skill config, hook trust state,
+  projects, MCP servers, UI preferences, and feature flags.
+- For the internal Desktop wrapper at
+  `~/.codex-switch/bin/codex-internal-app`, switching should refresh the
+  wrapper from the current codex-switch scripts so its app-home config is
+  rebuilt from shared `config.toml` plus `internal.config.toml`, not copied from
+  a stale profile snapshot. Before each Desktop launch, the wrapper should
+  write app-home non-auth shared config changes back to shared `config.toml` so
+  plugin installs, hook trust, feature flags, MCP servers, and UI preferences
+  survive restarts.
 - Do not reintroduce `[profiles.<name>]` or top-level `profile = "<name>"`.
 - Already-running Codex Desktop processes may need a restart after App CLI
   binding changes.

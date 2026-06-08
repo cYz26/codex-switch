@@ -1,0 +1,27 @@
+schema: spec-driven
+
+context: |
+  Project: codex-switch
+  Stack: Bash wrapper plus Python 3 scripts, with unittest-based regression tests.
+  Domain: local Codex workstation profile switching, config/auth isolation, Codex Desktop app CLI binding, internal CLI update helpers, and release packaging.
+  Core commands: python3 scripts/test_codex_profile_switch.py; bash -n scripts/codex-switch; bash -n scripts/codex_env_setup; bash -n install.sh; git diff --check.
+  Compatibility: preserve existing profile store behavior, protect auth.json boundaries, keep config.toml as shared workstation config, and use atomic writes for live config/store mutations.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours

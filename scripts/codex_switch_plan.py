@@ -62,7 +62,7 @@ def switch_plan_actions(
             )
     else:
         actions.append(f"rewrite live config.toml from snapshot base without profile-specific keys")
-    actions.append("preserve live plugin, marketplace, skills, and hook-state config blocks")
+    actions.append("preserve live non-auth shared config")
     actions.append(f"write {name}.config.toml profile layer")
     if writes_auth:
         actions.append(f"write auth.json from {auth_path}")

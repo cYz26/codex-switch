@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from codex_switch_config import (
     build_base_config_text,
@@ -22,6 +23,7 @@ from codex_switch_core import (
     validate_toml,
     write_json,
 )
+from codex_switch_app_wrapper import maybe_refresh_profile_app_wrapper
 from codex_switch_launch import write_app_cli_launch_agent
 from codex_switch_plan import resolve_base_config_path, switch_plan_actions
 from codex_switch_record import active_record
@@ -112,6 +114,13 @@ def switch_profile(
 
     launch_agent_path = None
     if not skip_app_cli:
+        app_cli_path = maybe_refresh_profile_app_wrapper(
+            store=store,
+            name=name,
+            manifest=manifest,
+            app_cli_path=app_cli_path,
+            switch_scripts=Path(__file__).resolve().parent,
+        )
         launch_agent_path = write_app_cli_launch_agent(
             store,
             app_cli_path,

@@ -8,9 +8,17 @@ from codex_switch_toml_edit import (
     top_level_assignment,
     upsert_top_level_assignment,
 )
-from codex_switch_toml_scan import extract_toml_table_block, toml_table_name
+from codex_switch_toml_scan import (
+    extract_toml_table_block,
+    first_table_index,
+    toml_table_name,
+)
 from codex_switch_toml_validate import validate_toml_text
 
+PROFILE_TABLE_PREFIXES = (
+    "model_providers.",
+    "profiles.",
+)
 PRESERVED_SHARED_TABLES = (
     "skills.config",
 )
@@ -19,6 +27,12 @@ PRESERVED_SHARED_TABLE_PREFIXES = (
     "plugins.",
     "hooks.state.",
 )
+
+
+def is_profile_specific_table(table_name: str) -> bool:
+    return table_name == "model_providers" or table_name == "profiles" or any(
+        table_name.startswith(prefix) for prefix in PROFILE_TABLE_PREFIXES
+    )
 
 
 def remove_top_level_assignment(text: str, key: str) -> str:
@@ -107,6 +121,77 @@ def merge_preserved_shared_config_blocks(updated: str, preserve_source_text: str
     return merged
 
 
+def top_level_assignments(text: str) -> list[tuple[str, str]]:
+    lines = text.splitlines()
+    assignments: list[tuple[str, str]] = []
+    for line in lines[: first_table_index(lines)]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key:
+            assignments.append((key, stripped))
+    return assignments
+
+
+def merge_toml_table_overlay(updated: str, overlay_text: str, predicate, label: str) -> str:
+    overlay_blocks = matching_toml_table_blocks(overlay_text, predicate)
+    if not overlay_blocks:
+        return updated
+
+    merged_blocks: list[str] = matching_toml_table_blocks(updated, predicate)
+    table_indexes: dict[str, int] = {}
+    for index, block in enumerate(merged_blocks):
+        table = toml_table_name(block.splitlines()[0])
+        if table:
+            table_indexes[table] = index
+
+    for block in overlay_blocks:
+        table = toml_table_name(block.splitlines()[0])
+        if not table:
+            continue
+        if block.lstrip().startswith("[["):
+            if block not in merged_blocks:
+                merged_blocks.append(block)
+            continue
+        existing_index = table_indexes.get(table)
+        if existing_index is None:
+            table_indexes[table] = len(merged_blocks)
+            merged_blocks.append(block)
+        else:
+            merged_blocks[existing_index] = block
+
+    merged = remove_matching_toml_table_blocks(updated, predicate)
+    for block in merged_blocks:
+        merged = append_toml_block(merged, block)
+    validate_toml_text(merged, label)
+    return merged
+
+
+def merge_preserved_shared_config_overlay(updated: str, overlay_text: str) -> str:
+    return merge_toml_table_overlay(
+        updated,
+        overlay_text,
+        is_preserved_shared_table,
+        "preserved shared config overlay",
+    )
+
+
+def merge_shared_config_overlay(updated: str, overlay_text: str) -> str:
+    overlay_shared = build_base_config_text_from_text(overlay_text, "shared config overlay")
+    merged = updated
+    for key, assignment in top_level_assignments(overlay_shared):
+        merged = upsert_top_level_assignment(merged, key, assignment)
+    merged = merge_toml_table_overlay(
+        merged,
+        overlay_shared,
+        lambda table: not is_profile_specific_table(table),
+        "shared config overlay",
+    )
+    validate_toml_text(merged, "shared config overlay")
+    return merged
+
+
 def profile_table_assignments(profile_block: str) -> list[tuple[str, str]]:
     assignments: list[tuple[str, str]] = []
     for line in profile_block.splitlines()[1:]:
@@ -178,18 +263,25 @@ def build_profile_v2_config_text(profile_name: str, profile_config_path: Path) -
     return updated
 
 
-def build_base_config_text(base_config_path: Path) -> str:
-    updated = base_config_path.read_text()
+def build_base_config_text_from_text(text: str, label: str) -> str:
+    updated = text
     updated = remove_top_level_assignment(updated, "profile")
     updated = remove_legacy_profile_tables(updated)
     for key in PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE:
         updated = remove_top_level_assignment(updated, key)
     updated = remove_matching_toml_table_blocks(
         updated,
-        lambda table: table == "model_providers" or table.startswith("model_providers."),
+        is_profile_specific_table,
     )
-    validate_toml_text(updated, str(base_config_path))
+    validate_toml_text(updated, label)
     return updated
+
+
+def build_base_config_text(base_config_path: Path) -> str:
+    return build_base_config_text_from_text(
+        base_config_path.read_text(),
+        str(base_config_path),
+    )
 
 
 def config_uses_file_auth(config_text: str) -> bool:

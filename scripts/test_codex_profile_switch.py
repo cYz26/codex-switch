@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import shutil
+import tarfile
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,7 @@ from codex_switch_store import Store
 
 SCRIPT = Path(__file__).with_name("codex_profile_switch.py")
 WRAPPER = Path(__file__).with_name("codex-switch")
+REMOTE_RUNNER = Path(__file__).parents[1] / "run.sh"
 
 
 def write_fake_codex(path: Path, label: str) -> None:
@@ -130,6 +133,169 @@ class CodexProfileSwitchTests(unittest.TestCase):
     def read_manifest(self, root: Path, name: str) -> dict[str, str]:
         path = root / "store" / "profiles" / name / "manifest.json"
         return json.loads(path.read_text())
+
+    def make_installed_wrapper(self, root: Path, version: str = "0.1.1") -> Path:
+        current = root / "lib" / "current"
+        scripts_dir = current / "scripts"
+        scripts_dir.mkdir(parents=True)
+        shutil.copy2(WRAPPER, scripts_dir / "codex-switch")
+        (scripts_dir / "codex-switch").chmod(0o755)
+        (current / "VERSION").write_text(f"{version}\n")
+        fake_switcher = scripts_dir / "codex_profile_switch.py"
+        fake_switcher.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "print('old-switcher:' + ' '.join(sys.argv[1:]))\n"
+        )
+        fake_switcher.chmod(0o755)
+        return scripts_dir / "codex-switch"
+
+    def make_remote_wrapper_tarball(self, root: Path, version: str = "9.9.9") -> Path:
+        release_root = root / "remote-release" / "codex-switch"
+        scripts_dir = release_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        fake_wrapper = scripts_dir / "codex-switch"
+        fake_wrapper.write_text(
+            "#!/usr/bin/env sh\n"
+            "printf 'synced-wrapper:%s\\n' \"$*\"\n"
+            "printf 'skip-self-update:%s\\n' \"${CODEX_SWITCH_SKIP_SELF_UPDATE:-}\"\n"
+        )
+        fake_wrapper.chmod(0o755)
+        (release_root / "VERSION").write_text(f"{version}\n")
+        tarball = root / "remote-codex-switch.tar.gz"
+        with tarfile.open(tarball, "w:gz") as archive:
+            archive.add(release_root, arcname="codex-switch")
+        return tarball
+
+    def self_update_env(self, root: Path, tarball: Path) -> dict[str, str]:
+        env = os.environ.copy()
+        env["CODEX_SWITCH_LIB_DIR"] = str(root / "lib")
+        env["CODEX_SWITCH_TARBALL_URL"] = tarball.as_uri()
+        env["CODEX_SWITCH_SELF_UPDATE_INTERVAL_SECONDS"] = "0"
+        return env
+
+    def test_remote_runner_downloads_release_and_execs_command(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            release_root = root / "release" / "codex-switch"
+            scripts_dir = release_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            fake_wrapper = scripts_dir / "codex-switch"
+            fake_wrapper.write_text(
+                "#!/usr/bin/env sh\n"
+                "printf 'fake-codex-switch:%s\\n' \"$*\"\n"
+                "printf 'skip-self-update:%s\\n' \"${CODEX_SWITCH_SKIP_SELF_UPDATE:-}\"\n"
+                "printf 'script-dir:%s\\n' \"$(cd -- \"$(dirname -- \"$0\")\" && pwd)\"\n"
+            )
+            fake_wrapper.chmod(0o755)
+            tarball = root / "codex-switch.tar.gz"
+            with tarfile.open(tarball, "w:gz") as archive:
+                archive.add(release_root, arcname="codex-switch")
+
+            install_dir = root / "bin"
+            lib_dir = root / "lib"
+            env = os.environ.copy()
+            env["CODEX_SWITCH_TARBALL_URL"] = tarball.as_uri()
+            env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
+            env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+
+            result = subprocess.run(
+                [str(REMOTE_RUNNER), "status", "--verbose"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("fake-codex-switch:status --verbose", result.stdout)
+            self.assertIn("skip-self-update:1", result.stdout)
+            self.assertIn(f"script-dir:{lib_dir / 'current' / 'scripts'}", result.stdout)
+            self.assertTrue((lib_dir / "current" / "scripts" / "codex-switch").exists())
+            self.assertFalse((install_dir / "codex-switch").exists())
+
+    def test_local_wrapper_self_updates_release_install_before_command(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root)
+            tarball = self.make_remote_wrapper_tarball(root)
+            env = self.self_update_env(root, tarball)
+
+            result = subprocess.run(
+                [str(local_wrapper), "status", "--verbose"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("synced-wrapper:status --verbose", result.stdout)
+            self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_local_wrapper_skip_self_update_keeps_existing_install(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root)
+            tarball = self.make_remote_wrapper_tarball(root)
+            env = self.self_update_env(root, tarball)
+
+            result = subprocess.run(
+                [str(local_wrapper), "--skip-self-update", "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("old-switcher:status", result.stdout)
+            self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_source_checkout_wrapper_does_not_self_update(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            fake_switcher = root / "fake_switcher.py"
+            fake_switcher.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('source-switcher:' + ' '.join(sys.argv[1:]))\n"
+            )
+            fake_switcher.chmod(0o755)
+            tarball = self.make_remote_wrapper_tarball(root)
+            env = self.self_update_env(root, tarball)
+            env["CODEX_SWITCH_SCRIPT"] = str(fake_switcher)
+
+            result = subprocess.run(
+                [str(WRAPPER), "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("source-switcher:status", result.stdout)
+            self.assertFalse((root / "lib" / "current" / "VERSION").exists())
+
+    def test_self_update_failure_does_not_block_local_command(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root)
+            env = self.self_update_env(root, root / "missing-release.tar.gz")
+
+            result = subprocess.run(
+                [str(local_wrapper), "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("old-switcher:status", result.stdout)
+            self.assertIn("sync failed; continuing", result.stderr)
+            self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
 
     def test_init_defaults_official_codex_bin_to_app_cli_not_path_codex(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -410,6 +576,245 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn('model = "gpt-5.5-2026-04-24"', live_config)
             profile_config = (root / "live" / "openai-official.config.toml").read_text()
             self.assertIn('cli_auth_credentials_store = "file"', profile_config)
+
+    def test_internal_switch_refreshes_desktop_wrapper_with_shared_config(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            (root / "live" / "config.toml").write_text(
+                'model = "gpt-5.5-2026-04-24"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."agent-kb@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]\n'
+                'trusted_hash = "sha256:test"\n'
+            )
+            (root / "live" / "auth.json").write_text('{"official":"auth"}\n')
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["app_cli_path"] = str(root / "store" / "bin" / "codex-internal-app")
+            manifest_path.write_text(json.dumps(manifest))
+            (root / "store" / "bin").mkdir(parents=True, exist_ok=True)
+            (root / "store" / "bin" / "codex-internal-app").write_text(
+                "#!/usr/bin/env sh\n"
+                "SWITCH_SCRIPTS=/old/missing/path\n"
+                "exit 99\n"
+            )
+            (root / "store" / "bin" / "codex-internal-app").chmod(0o755)
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            wrapper_text = app_wrapper.read_text()
+            self.assertIn(str(Path(__file__).parent), wrapper_text)
+            self.assertNotIn("/old/missing/path", wrapper_text)
+
+            result = subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            self.assertIn("internal-codex", result.stdout)
+            app_home_config = (
+                root / "store" / "app-homes" / "internal" / "config.toml"
+            ).read_text()
+            self.assertIn("[marketplaces.cy-codex-skills]", app_home_config)
+            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', app_home_config)
+            self.assertIn(
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]',
+                app_home_config,
+            )
+            self.assertIn('model = "gpt-5.5-2026-04-24"', app_home_config)
+            self.assertFalse(
+                (root / "store" / "app-homes" / "internal" / "auth.json").exists()
+            )
+
+    def test_internal_desktop_wrapper_persists_app_home_plugin_state(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            (root / "live" / "config.toml").write_text(
+                "[marketplaces.openai-bundled]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "openai-bundled"}"\n'
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["app_cli_path"] = str(root / "store" / "bin" / "codex-internal-app")
+            manifest_path.write_text(json.dumps(manifest))
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            app_home_config_path = root / "store" / "app-homes" / "internal" / "config.toml"
+            app_home_config_path.write_text(
+                'notify = ["turn-ended"]\n'
+                + "\n"
+                + app_home_config_path.read_text()
+                + "\n"
+                + "[features]\n"
+                + "codex_hooks = true\n"
+                + "\n"
+                + "[mcp_servers.local-test]\n"
+                + 'command = "local-mcp"\n'
+                + "\n"
+                + '[plugins."computer-use@openai-bundled"]\n'
+                + "enabled = true\n"
+                + "\n"
+                + '[hooks.state."computer-use@openai-bundled:hooks.json:stop:0:0"]\n'
+                + 'trusted_hash = "sha256:computer-use"\n'
+            )
+
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            live_config = (root / "live" / "config.toml").read_text()
+            app_home_config = app_home_config_path.read_text()
+            for config_text in (live_config, app_home_config):
+                self.assertIn('notify = ["turn-ended"]', config_text)
+                self.assertIn("[features]", config_text)
+                self.assertIn("codex_hooks = true", config_text)
+                self.assertIn("[mcp_servers.local-test]", config_text)
+                self.assertIn('[plugins."computer-use@openai-bundled"]', config_text)
+                self.assertIn(
+                    '[hooks.state."computer-use@openai-bundled:hooks.json:stop:0:0"]',
+                    config_text,
+                )
+            self.assertNotIn('model = "gpt-5.5-2026-04-24"', live_config)
+
+    def test_internal_desktop_wrapper_isolates_response_runtime_state(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'profile = "internal"\n'
+                "\n"
+                "[profiles.internal]\n"
+                "\n"
+                "[plugins.local]\n"
+                "enabled = true\n"
+            )
+            for dirname in (
+                "sessions",
+                "archived_sessions",
+                "browser",
+                "log",
+                "tmp",
+                ".tmp",
+                "process_manager",
+                "node_repl",
+                "shell_snapshots",
+                "ambient-suggestions",
+            ):
+                (live_home / dirname).mkdir()
+            for filename in (
+                "history.jsonl",
+                "session_index.jsonl",
+                "state_5.sqlite",
+                "state_5.sqlite-shm",
+                "state_5.sqlite-wal",
+                "state_5.sqlite.corrupt.20260522-173044",
+            ):
+                (live_home / filename).write_text(f"{filename}\n")
+
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["app_cli_path"] = str(root / "store" / "bin" / "codex-internal-app")
+            manifest_path.write_text(json.dumps(manifest))
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            app_home = root / "store" / "app-homes" / "internal"
+            app_home.mkdir(parents=True, exist_ok=True)
+            for stale_name in ("sessions", "state_5.sqlite"):
+                (app_home / stale_name).symlink_to(
+                    live_home / stale_name,
+                    target_is_directory=(live_home / stale_name).is_dir(),
+                )
+
+            result = subprocess.run(
+                [str(root / "store" / "bin" / "codex-internal-app"), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("internal-codex", result.stdout)
+            excluded_names = (
+                "sessions",
+                "archived_sessions",
+                "browser",
+                "log",
+                "tmp",
+                ".tmp",
+                "process_manager",
+                "node_repl",
+                "shell_snapshots",
+                "ambient-suggestions",
+                "history.jsonl",
+                "session_index.jsonl",
+                "state_5.sqlite",
+                "state_5.sqlite-shm",
+                "state_5.sqlite-wal",
+                "state_5.sqlite.corrupt.20260522-173044",
+            )
+            for name in excluded_names:
+                self.assertFalse(
+                    (app_home / name).is_symlink(),
+                    f"{name} must not be shared from live CODEX_HOME",
+                )
+            self.assertFalse((app_home / "auth.json").exists())
 
     def test_wrapper_one_key_official_checks_update_before_switch(self) -> None:
         temp_dir, root = self.make_workspace()

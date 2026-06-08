@@ -1,0 +1,99 @@
+# Design: Current System Baseline
+
+## Target State
+
+Describe the complete behavior, internal structure, boundaries, and validation surface expected after `current-system` is done.
+
+## Scope / Non-Goals
+
+- In scope: behavior required by `current-system`.
+- Non-goals: unrelated refactors, dependency changes, or compatibility breaks not approved in the proposal.
+
+## Architecture Decisions
+
+| Decision | Rationale | Alternatives Considered |
+|---|---|---|
+| Preserve project conventions | Keeps the change compatible with brownfield code. | Broad rewrite |
+
+## Completion Contract
+
+- [x] Target State is implemented.
+- [x] Required behavior is covered by tests or documented manual checks.
+- [x] No required capability remains outside the active change.
+- [x] Verification evidence is recorded before archive.
+
+## Capability Slices
+
+### Slice 1: Verified behavior change
+
+**Goal**
+- Implement the requested behavior as a complete, verifiable slice.
+
+**Files / Modules**
+- Identify concrete files before implementation.
+
+**Implementation**
+- [x] Make the smallest compatible code change that satisfies the Target State.
+
+**Tests**
+- [x] Add or update regression tests before implementation when behavior changes.
+
+**Validation Commands**
+```bash
+<focused test command>
+```
+
+**Done When**
+- [x] Tests pass and evidence is recorded.
+
+**Risks / Rollback**
+- Revert this slice if validation fails and the failure cannot be fixed within the approved scope.
+
+## Execution Ledger
+
+Track slice status in `tasks.md`, `.planning/STATE.md`, or a repo-specific ledger file. Mark a slice done only after its validation command passes or a blocker is recorded.
+
+## Capability Evidence
+
+Complete this section when the design depends on current, external, platform, plugin, API, hook, CLI, installed-cache, or local-vs-platform capability.
+
+- authoritative/current: source or command used, observed capability, version or date when available.
+- local scan: files, config, cache paths, scripts, tests, or generated artifacts inspected.
+- comparison: native option, local state, fallback option, recommendation, and tradeoffs.
+- assumptions: what remains unverified and why it is acceptable or blocking.
+- contract: scenarios and validation commands that prove the selected behavior.
+
+## Approach
+
+Use the smallest compatible implementation that satisfies the requirements and preserves existing project conventions.
+
+## Data Flow
+
+Document concrete data flow before implementation when this change touches persistence, APIs, integrations, or cross-module behavior.
+
+## Compatibility
+
+Do not introduce breaking behavior without explicit approval.
+
+## Testing
+
+Add or update tests before implementation for behavior changes. Record verification evidence before archive.
+
+## Acceptance Criteria
+
+- [x] The Target State is satisfied.
+- [x] The Completion Contract is fully checked.
+- [x] Required validation commands pass or have recorded blockers.
+
+## Validation Commands
+
+```bash
+<focused test command>
+<broader verification command>
+```
+
+## Final Verification
+
+- [x] Focused tests pass.
+- [x] Broader tests, lint, typecheck, or build pass where applicable.
+- [x] Verification evidence is recorded.

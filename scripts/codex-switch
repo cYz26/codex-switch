@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 SWITCH_PY="${CODEX_SWITCH_SCRIPT:-$SCRIPT_DIR/codex_profile_switch.py}"
 VERSION_FILE="$SCRIPT_DIR/../VERSION"
 CODEX_SWITCH_VERSION="${CODEX_SWITCH_VERSION:-}"
+ORIGINAL_ARGS=("$@")
 
 PYTHON_BIN="${CODEX_SWITCH_PYTHON:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
@@ -25,6 +26,14 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 STORE_DIR="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
+REPO_TARBALL_BASE="https://github.com/cYz26/codex-switch/releases"
+LIB_DIR="${CODEX_SWITCH_LIB_DIR:-$HOME/.local/share/codex-switch}"
+SELF_UPDATE_SOURCE_DIR="${CODEX_SWITCH_SOURCE_DIR:-}"
+SELF_UPDATE_TARBALL_URL="${CODEX_SWITCH_SELF_UPDATE_TARBALL_URL:-${CODEX_SWITCH_TARBALL_URL:-}}"
+SELF_UPDATE_VERSION="${CODEX_SWITCH_SELF_UPDATE_VERSION:-${CODEX_SWITCH_VERSION:-}}"
+SELF_UPDATE_INTERVAL_SECONDS="${CODEX_SWITCH_SELF_UPDATE_INTERVAL_SECONDS:-86400}"
+SELF_UPDATE_PROXY_URL="${CODEX_SWITCH_GITHUB_PROXY:-}"
+SKIP_SELF_UPDATE=0
 GLOBAL_ARGS=()
 
 usage() {
@@ -52,6 +61,7 @@ Global options:
   --live-codex-home <path>     Live CODEX_HOME to switch. Default: CODEX_HOME or ~/.codex.
   --launch-agent-path <path>   LaunchAgent plist path.
   --launch-agent-label <name>  LaunchAgent label.
+  --skip-self-update           Do not sync installed codex-switch scripts.
 
 Switch options for internal/official:
   --dry-run                    Only print the switch plan.
@@ -82,6 +92,200 @@ expand_shell_path() {
     "~/"*) printf '%s/%s\n' "$HOME" "${raw#~/}" ;;
     *) printf '%s\n' "$raw" ;;
   esac
+}
+
+truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+self_update_lib_dir() {
+  expand_shell_path "$LIB_DIR"
+}
+
+self_update_stamp_path() {
+  printf '%s\n' "$(self_update_lib_dir)/.last-self-update-check"
+}
+
+self_update_release_script_dir() {
+  printf '%s\n' "$(self_update_lib_dir)/current/scripts"
+}
+
+is_release_installed_wrapper() {
+  local expected
+  expected="$(self_update_release_script_dir)"
+  [[ -d "$expected" ]] || return 1
+  expected="$(cd -P "$expected" && pwd)"
+  [[ "$SCRIPT_DIR" == "$expected" ]]
+}
+
+self_update_interval_due() {
+  local stamp interval now last
+  stamp="$(self_update_stamp_path)"
+  interval="$SELF_UPDATE_INTERVAL_SECONDS"
+  case "$interval" in
+    ''|*[!0-9]*) interval=86400 ;;
+  esac
+  if [[ "$interval" == 0 ]]; then
+    return 0
+  fi
+  [[ -f "$stamp" ]] || return 0
+  now="$(date +%s)"
+  last="$(sed -n '1p' "$stamp" 2>/dev/null || true)"
+  case "$last" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  (( now - last >= interval ))
+}
+
+record_self_update_check() {
+  local stamp
+  stamp="$(self_update_stamp_path)"
+  mkdir -p "$(dirname "$stamp")"
+  date +%s > "$stamp"
+}
+
+self_update_tarball_url() {
+  if [[ -n "$SELF_UPDATE_TARBALL_URL" ]]; then
+    printf '%s\n' "$SELF_UPDATE_TARBALL_URL"
+  elif [[ -n "$SELF_UPDATE_VERSION" ]]; then
+    printf '%s/download/%s/codex-switch.tar.gz\n' "$REPO_TARBALL_BASE" "$SELF_UPDATE_VERSION"
+  else
+    printf '%s/latest/download/codex-switch.tar.gz\n' "$REPO_TARBALL_BASE"
+  fi
+}
+
+bundle_version() {
+  local root="$1"
+  if [[ -f "$root/VERSION" ]]; then
+    sed -n '1p' "$root/VERSION"
+  fi
+}
+
+stage_self_update_from_source() {
+  local source_dir="$1"
+  local staged="$2"
+  if [[ ! -x "$source_dir/scripts/codex-switch" ]]; then
+    echo "codex-switch self-update: invalid source directory: $source_dir" >&2
+    return 1
+  fi
+  rm -rf "$staged"
+  mkdir -p "$(dirname "$staged")"
+  cp -R "$source_dir" "$staged"
+  rm -rf "$staged/scripts/__pycache__"
+}
+
+stage_self_update_from_tarball() {
+  local staged="$1"
+  local tmp tarball_url src
+  tmp="$(mktemp -d)"
+  tarball_url="$(self_update_tarball_url)"
+
+  if [[ -n "$SELF_UPDATE_PROXY_URL" ]]; then
+    export https_proxy="${https_proxy:-$SELF_UPDATE_PROXY_URL}"
+    export http_proxy="${http_proxy:-$SELF_UPDATE_PROXY_URL}"
+  fi
+
+  curl -fsSL "$tarball_url" -o "$tmp/codex-switch.tar.gz"
+  tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"
+  if [[ -d "$tmp/codex-switch" ]]; then
+    src="$tmp/codex-switch"
+  else
+    src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  fi
+  if [[ -z "$src" || ! -x "$src/scripts/codex-switch" ]]; then
+    echo "codex-switch self-update: downloaded archive does not contain scripts/codex-switch" >&2
+    rm -rf "$tmp"
+    return 1
+  fi
+  stage_self_update_from_source "$src" "$staged"
+  rm -rf "$tmp"
+}
+
+sync_self_update() {
+  local lib_dir target staged backup current_version next_version
+  lib_dir="$(self_update_lib_dir)"
+  target="$lib_dir/current"
+  staged="$lib_dir/current.self-update.$$"
+  backup="$lib_dir/current.previous.$$"
+
+  if [[ -n "$SELF_UPDATE_SOURCE_DIR" ]]; then
+    stage_self_update_from_source "$(expand_shell_path "$SELF_UPDATE_SOURCE_DIR")" "$staged"
+  else
+    stage_self_update_from_tarball "$staged"
+  fi
+
+  if [[ ! -x "$staged/scripts/codex-switch" ]]; then
+    echo "codex-switch self-update: staged bundle is missing scripts/codex-switch" >&2
+    rm -rf "$staged"
+    return 1
+  fi
+
+  current_version="$(bundle_version "$target")"
+  next_version="$(bundle_version "$staged")"
+  if [[ -n "$current_version" && -n "$next_version" && "$current_version" == "$next_version" ]]; then
+    rm -rf "$staged"
+    return 3
+  fi
+
+  rm -rf "$backup"
+  if [[ -e "$target" || -L "$target" ]]; then
+    mv "$target" "$backup"
+  fi
+  if mv "$staged" "$target"; then
+    rm -rf "$backup"
+    echo "codex-switch self-update: synced implementation ${current_version:-<unknown>} -> ${next_version:-<unknown>}" >&2
+    return 0
+  fi
+
+  rm -rf "$target"
+  if [[ -e "$backup" || -L "$backup" ]]; then
+    mv "$backup" "$target"
+  fi
+  rm -rf "$staged"
+  echo "codex-switch self-update: failed to replace implementation; restored previous copy" >&2
+  return 1
+}
+
+command_skips_self_update() {
+  case "$1" in
+    -h|--help|help|version|--version|-v|install|shim-env) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+maybe_self_update() {
+  local cmd="$1"
+  local sync_status
+
+  if [[ "$SKIP_SELF_UPDATE" == 1 ]] || truthy "${CODEX_SWITCH_SKIP_SELF_UPDATE:-}"; then
+    return 0
+  fi
+  if truthy "${CODEX_SWITCH_SELF_UPDATE_REEXECED:-}"; then
+    return 0
+  fi
+  if command_skips_self_update "$cmd"; then
+    return 0
+  fi
+  if ! is_release_installed_wrapper; then
+    return 0
+  fi
+  if ! self_update_interval_due; then
+    return 0
+  fi
+
+  record_self_update_check
+  if sync_self_update; then
+    export CODEX_SWITCH_SELF_UPDATE_REEXECED=1
+    exec "$SCRIPT_DIR/codex-switch" "${ORIGINAL_ARGS[@]}"
+  else
+    sync_status=$?
+    if [[ "$sync_status" != 3 ]]; then
+      echo "codex-switch self-update: warning: sync failed; continuing with current implementation" >&2
+    fi
+  fi
 }
 
 run_switcher() {
@@ -636,6 +840,10 @@ while (($#)); do
       GLOBAL_ARGS+=("$1" "$2")
       shift 2
       ;;
+    --skip-self-update)
+      SKIP_SELF_UPDATE=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -652,6 +860,8 @@ if [[ -z "$cmd" ]]; then
   exit 2
 fi
 shift
+
+maybe_self_update "$cmd"
 
 case "$cmd" in
   internal|i)
