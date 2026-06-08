@@ -1,7 +1,7 @@
 ---
 workflow_version: 0.3.0
 project_mode: brownfield
-current_stage: verification
+current_stage: verified
 
 current_phase:
   id: 01-foundation
@@ -9,7 +9,7 @@ current_phase:
 
 current_change:
   id: remote-release-packaging
-  status: local_verified
+  status: verified
 
 gates:
   workflow_initialized: true
@@ -17,7 +17,7 @@ gates:
   plan_written: true
   tests_baseline_known: true
   implementation_done: true
-  verification_passed: false
+  verification_passed: true
   state_updated: true
   archive_allowed: false
 
@@ -56,17 +56,17 @@ context_health:
   last_report: .planning/verification/20260608144055-remote-release-packaging-verification.md
   last_risk: low
   last_confidence: high
-  last_decision: local_verified_remote_release_packaging
-  last_goal_status: remote_release_packaging_publish_pending
-  goal_summary: Remote release packaging and source archive fallback are implemented and locally verified. Commit, push, tag v0.1.3, and verify the published remote runner asset next.
+  last_decision: verified_remote_release_packaging
+  last_goal_status: remote_release_packaging_verified
+  goal_summary: Remote release packaging and source archive fallback are implemented, locally verified, pushed, tagged v0.1.3, and remote runner execution is verified. Archive remains closed by gate.
 ---
 
 # Workflow State
 
 ## Current Status
 
-`remote-release-packaging` is the active change. Release workflow publication and source archive fallback are implemented and locally verified. The remaining verification item is the published `v0.1.3` remote runner asset after pushing the commit and tag.
+`remote-release-packaging` is the active change. Release workflow publication and source archive fallback are implemented, locally verified, pushed, tagged as `v0.1.3`, and the published remote runner asset executed successfully.
 
 ## Next Action
 
-Commit and push the implementation, tag `v0.1.3`, then verify `https://github.com/cYz26/codex-switch/releases/download/v0.1.3/run.sh` executes `version` successfully.
+Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.

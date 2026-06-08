@@ -105,7 +105,7 @@ python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_releas
 
 ### Slice 4: Docs, version, and final verification
 
-**Status:** in progress
+**Status:** done
 
 **Goal**
 - Document the cross-project release path, record evidence, and publish a
@@ -125,7 +125,7 @@ python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_releas
 - [x] Update stable spec after validation.
 - [x] Bump version for the release containing this behavior.
 - [x] Run full validation and record evidence.
-- [ ] Commit, push, tag, and verify the direct remote release URL when GitHub
+- [x] Commit, push, tag, and verify the direct remote release URL when GitHub
       publishes assets, or record the external blocker.
 
 **Validation Commands**
@@ -152,7 +152,7 @@ openspec validate --all --strict --json
 | Regression tests | done | `.planning/verification/20260608144055-remote-release-packaging-verification.md` |
 | Fallback implementation | done | `.planning/verification/20260608144055-remote-release-packaging-verification.md` |
 | Remote release workflow | done | `.planning/verification/20260608144055-remote-release-packaging-verification.md` |
-| Docs, version, and final verification | in progress | `.planning/verification/20260608144055-remote-release-packaging-verification.md` |
+| Docs, version, and final verification | done | `.planning/verification/20260608144055-remote-release-packaging-verification.md` |
 
 ## Acceptance Criteria
 
@@ -171,5 +171,5 @@ openspec validate --all --strict --json
 - [x] Focused fallback regressions pass.
 - [x] Full Python regression passes.
 - [x] Shell syntax, package, diff, and OpenSpec checks pass.
-- [ ] Remote release asset invocation is verified or blocked externally with
+- [x] Remote release asset invocation is verified or blocked externally with
       evidence.

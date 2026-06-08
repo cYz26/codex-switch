@@ -100,13 +100,50 @@ CODEX_SWITCH_SOURCE_TARBALL_URL="https://github.com/cYz26/codex-switch/archive/r
 Result: release bundle 404, source archive fallback succeeded, output 0.1.2.
 ```
 
-## Pending Remote Publication Check
+## Remote Publication Check
 
-The release workflow has not run until the implementation commit and `v0.1.3`
-tag are pushed. After pushing, verify:
+The implementation was committed as `4ef99e6` and pushed to `main`. Tag
+`v0.1.3` was pushed to trigger the GitHub Actions release workflow.
 
-```bash
-curl -fsSL "https://github.com/cYz26/codex-switch/releases/download/v0.1.3/run.sh" | bash -s -- version
+Release asset polling:
+
+```text
+https://github.com/cYz26/codex-switch/releases/download/v0.1.3/run.sh
+Result: 404 until attempt 8, then 200.
+
+https://github.com/cYz26/codex-switch/releases/download/v0.1.3/install.sh
+Result: 200.
+
+https://github.com/cYz26/codex-switch/releases/download/v0.1.3/codex-switch.tar.gz
+Result: 200.
 ```
 
-Expected output: `0.1.3`.
+Direct tag release runner with explicit tag tarball:
+
+```text
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/download/v0.1.3/run.sh" | \
+  CODEX_SWITCH_TARBALL_URL="https://github.com/cYz26/codex-switch/releases/download/v0.1.3/codex-switch.tar.gz" \
+  CODEX_SWITCH_LIB_DIR="$tmp/lib" \
+  CODEX_SWITCH_INSTALL_DIR="$tmp/bin" \
+  bash -s -- version
+
+Result: 0.1.3.
+```
+
+Latest runner path:
+
+```text
+curl -fsSL "https://github.com/cYz26/codex-switch/releases/download/v0.1.3/run.sh" | \
+  CODEX_SWITCH_LIB_DIR="$tmp/lib" \
+  CODEX_SWITCH_INSTALL_DIR="$tmp/bin" \
+  bash -s -- version
+
+Result: GitHub returned 504 for releases/latest/download/codex-switch.tar.gz,
+then source archive fallback succeeded and printed 0.1.3.
+```
+
+Residual risk:
+
+- `releases/latest/download/codex-switch.tar.gz` returned 504 during this check,
+  while the tag-specific tarball asset returned 200. The new fallback handled
+  that transient latest-asset failure and preserved direct remote execution.
