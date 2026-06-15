@@ -10,7 +10,7 @@ tag release publishing remains available.
 
 - [x] Target State is implemented.
 - [x] Every Capability Slice is done or blocked with a recorded reason.
-- [ ] Acceptance Criteria are checked.
+- [x] Acceptance Criteria are checked.
 - [x] Validation Commands have been run or documented as unavailable.
 - [x] Verification evidence is recorded.
 - [x] Workflow state is updated.

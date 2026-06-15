@@ -93,8 +93,59 @@ Result: release planning reports `release_required: true`, `latest_tag:
 v0.1.3`, `next_tag: v0.1.4`, and `next_version: 0.1.4` for current `main`
 content after the latest release tag.
 
+## Post-Merge Remote Verification
+
+After the verified change was fast-forward merged to `main` and pushed to
+`origin/main`, the automatic release workflow produced:
+
+- Source commit: `b6e1d89 ci: automate release tags`.
+- Release commit: `9f4cea8 chore: release v0.1.4`, authored by
+  `github-actions[bot]`.
+- Remote `main`: `9f4cea8e621b2e3c9834fb9ca385fb7c69390ef9`.
+- Remote tag `v0.1.4`:
+  `9f4cea8e621b2e3c9834fb9ca385fb7c69390ef9`.
+- Local `VERSION` after fast-forward pull: `0.1.4`.
+
+```bash
+curl -L -s -o /dev/null -w 'latest %{http_code} %{url_effective}\n' \
+  https://github.com/cYz26/codex-switch/releases/latest
+```
+
+Result: HTTP `200`, final URL
+`https://github.com/cYz26/codex-switch/releases/tag/v0.1.4`.
+
+```bash
+curl -L -s -o /dev/null -w 'latest install.sh %{http_code}\n' \
+  https://github.com/cYz26/codex-switch/releases/latest/download/install.sh
+curl -L -s -o /dev/null -w 'latest run.sh %{http_code}\n' \
+  https://github.com/cYz26/codex-switch/releases/latest/download/run.sh
+curl -L -s -o /dev/null -w 'latest tar %{http_code}\n' \
+  https://github.com/cYz26/codex-switch/releases/latest/download/codex-switch.tar.gz
+```
+
+Result: all three release assets returned HTTP `200`.
+
+```bash
+curl -fsSL \
+  https://github.com/cYz26/codex-switch/releases/download/v0.1.4/codex-switch.tar.gz \
+  -o /tmp/codex-switch.tar.gz
+tar -xzf /tmp/codex-switch.tar.gz -C /tmp/codex-switch-release-check
+cat /tmp/codex-switch-release-check/codex-switch/VERSION
+```
+
+Result: extracted package `VERSION` is `0.1.4`; package includes executable
+`codex-switch/run.sh` and `codex-switch/scripts/codex-switch`.
+
+Fresh local verification on the pulled `main` also passed:
+
+- `python3 scripts/test_codex_profile_switch.py`: `Ran 60 tests`, `OK`.
+- `python3 -m py_compile scripts/*.py`: exit 0.
+- Shell syntax checks for `scripts/codex-switch`, `scripts/codex_env_setup`,
+  `install.sh`, and `run.sh`: exit 0.
+- `python3 -m json.tool evals/evals.json`: exit 0.
+- `openspec validate --all --strict --no-interactive`: `5 passed, 0 failed`.
+
 ## Remaining Risk
 
-The workflow contract is validated statically and with local planner tests. The
-actual GitHub workflow run can only be proven after this branch lands on
-`main`. Archive remains closed by gate.
+The release-relevant path has been proven by the `v0.1.4` remote release.
+Archive remains closed by gate.

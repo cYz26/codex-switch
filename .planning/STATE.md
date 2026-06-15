@@ -9,7 +9,7 @@ current_phase:
 
 current_change:
   id: auto-release-tags
-  status: verified
+  status: shipped
 
 gates:
   workflow_initialized: true
@@ -58,15 +58,15 @@ context_health:
   last_confidence: medium
   last_decision: reconcile
   last_goal_status: aligned
-  goal_summary: Automatic release tags and packaging are implemented and verified. Main pushes with release-relevant changes now plan the next patch tag, bump VERSION, create and push the tag, and publish release assets in the same workflow run; planning/spec/docs-only changes are skipped. Full tests, py_compile, shell syntax, eval JSON, OpenSpec strict validation, package generation, and diff whitespace checks passed. Archive remains closed by gate.
+  goal_summary: Automatic release tags and packaging are implemented, pushed to main, and remotely verified. Release-relevant main push b6e1d89 produced bot release commit 9f4cea8, tag v0.1.4, latest release v0.1.4, and install.sh, run.sh, and codex-switch.tar.gz assets. Fresh local tests, py_compile, shell syntax, eval JSON, and OpenSpec strict validation passed. Archive remains closed by gate.
 ---
 
 # Workflow State
 
 ## Current Status
 
-Change `auto-release-tags` is implemented and locally verified. It automatically creates the next patch tag and publishes release assets when release-relevant changes land on `main`, while skipping planning/spec/docs-only changes.
+Change `auto-release-tags` is implemented, pushed to `main`, and remotely verified. The release-relevant push produced `v0.1.4`, updated `VERSION` to `0.1.4`, and published `install.sh`, `run.sh`, and `codex-switch.tar.gz`.
 
 ## Next Action
 
-Review and submit the verified `auto-release-tags` change. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.
+No implementation follow-up is pending. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.
