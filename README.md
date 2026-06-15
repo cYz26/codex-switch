@@ -83,10 +83,13 @@ The remote runner downloads the release bundle to
 installer when you want a persistent PATH command. Like the installer, it can
 fall back to a source archive when the release bundle asset is unavailable.
 
-Release assets are published by GitHub Actions when a `v*` tag is pushed. The
-workflow verifies the repository, runs `scripts/package-release.sh`, and uploads
-`install.sh`, `run.sh`, and `codex-switch.tar.gz` to the matching GitHub
-release.
+Release assets are published by GitHub Actions. When release-relevant changes
+land on `main`, the automatic release workflow verifies the repository, bumps
+`VERSION` to the next patch version, creates the matching `v*` tag, runs
+`scripts/package-release.sh`, and uploads `install.sh`, `run.sh`, and
+`codex-switch.tar.gz` to the matching GitHub release. Planning, OpenSpec,
+verification, and docs-only changes do not create a release. A manually pushed
+`v*` tag still runs the tag release workflow for explicit reruns.
 
 ## Config Model
 

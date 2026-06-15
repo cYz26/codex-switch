@@ -5,10 +5,10 @@ current_stage: verified
 
 current_phase:
   id: 01-foundation
-  status: complete
+  status: planning
 
 current_change:
-  id: independent-profile-homes
+  id: auto-release-tags
   status: verified
 
 gates:
@@ -53,20 +53,20 @@ context_management:
     - validation_recorded_if_applicable
 
 context_health:
-  last_report: .planning/verification/20260615112411-independent-profile-homes-pre-submit.md
+  last_report: .planning/context-health/reports/20260615174938-context-health.json
   last_risk: medium
-  last_confidence: high
-  last_decision: verified_independent_profile_homes_pre_submit
-  last_goal_status: independent_profile_homes_ready_for_remote_submission
-  goal_summary: Pre-submit verification passed for the independent-profile-homes change: DevFlow project migration is current, full profile-switch tests, py_compile, shell syntax checks, OpenSpec strict validation, diff whitespace checks, and release packaging all passed. Archive remains closed by gate.
+  last_confidence: medium
+  last_decision: reconcile
+  last_goal_status: aligned
+  goal_summary: Automatic release tags and packaging are implemented and verified. Main pushes with release-relevant changes now plan the next patch tag, bump VERSION, create and push the tag, and publish release assets in the same workflow run; planning/spec/docs-only changes are skipped. Full tests, py_compile, shell syntax, eval JSON, OpenSpec strict validation, package generation, and diff whitespace checks passed. Archive remains closed by gate.
 ---
 
 # Workflow State
 
 ## Current Status
 
-Change `independent-profile-homes` is implemented and pre-submit verified. DevFlow project migration is current, full profile-switch tests, Python compile checks, shell syntax checks, OpenSpec strict validation, diff whitespace checks, and release packaging passed.
+Change `auto-release-tags` is implemented and locally verified. It automatically creates the next patch tag and publishes release assets when release-relevant changes land on `main`, while skipping planning/spec/docs-only changes.
 
 ## Next Action
 
-Submit the verified branch to the remote. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.
+Review and submit the verified `auto-release-tags` change. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.

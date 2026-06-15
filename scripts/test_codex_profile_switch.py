@@ -33,6 +33,10 @@ WRAPPER = Path(__file__).with_name("codex-switch")
 INSTALLER = Path(__file__).parents[1] / "install.sh"
 REMOTE_RUNNER = Path(__file__).parents[1] / "run.sh"
 RELEASE_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
+AUTO_RELEASE_WORKFLOW = (
+    Path(__file__).parents[1] / ".github" / "workflows" / "auto-release.yml"
+)
+RELEASE_AUTO = Path(__file__).with_name("release_auto.py")
 
 
 def write_fake_codex(path: Path, label: str) -> None:
@@ -210,6 +214,39 @@ class CodexProfileSwitchTests(unittest.TestCase):
         with tarfile.open(tarball, "w:gz") as archive:
             archive.add(source_root, arcname=f"codex-switch-{version}")
         return tarball
+
+    def init_release_repo(self, root: Path, version: str = "0.1.3") -> Path:
+        repo = root / "release-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+        (repo / "scripts").mkdir()
+        (repo / "scripts" / "codex-switch").write_text("#!/usr/bin/env sh\necho old\n")
+        (repo / "scripts" / "codex-switch").chmod(0o755)
+        (repo / "VERSION").write_text(f"{version}\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial release"], cwd=repo, check=True)
+        subprocess.run(["git", "tag", f"v{version}"], cwd=repo, check=True)
+        return repo
+
+    def run_release_auto(
+        self,
+        repo: Path,
+        *args: str,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(RELEASE_AUTO), "--repo", str(repo), *args],
+            check=check,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def release_plan(self, repo: Path) -> dict[str, object]:
+        result = self.run_release_auto(repo, "plan", "--json")
+        return json.loads(result.stdout)
 
     def self_update_env(self, root: Path, tarball: Path) -> dict[str, str]:
         env = os.environ.copy()
@@ -432,6 +469,77 @@ class CodexProfileSwitchTests(unittest.TestCase):
         self.assertIn("gh release upload", workflow)
         self.assertIn("--clobber", workflow)
         self.assertIn("install.sh", workflow)
+        self.assertIn("dist/run.sh", workflow)
+        self.assertIn("dist/codex-switch.tar.gz", workflow)
+
+    def test_auto_release_plan_detects_runtime_change_and_next_patch_tag(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            repo = self.init_release_repo(root)
+            (repo / "scripts" / "codex-switch").write_text(
+                "#!/usr/bin/env sh\necho changed\n"
+            )
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "feat: change runtime"],
+                cwd=repo,
+                check=True,
+            )
+
+            plan = self.release_plan(repo)
+
+        self.assertTrue(plan["release_required"])
+        self.assertEqual(plan["latest_tag"], "v0.1.3")
+        self.assertEqual(plan["next_tag"], "v0.1.4")
+        self.assertEqual(plan["next_version"], "0.1.4")
+        self.assertIn("scripts/codex-switch", plan["release_relevant_files"])
+
+    def test_auto_release_plan_skips_planning_only_changes(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            repo = self.init_release_repo(root)
+            planning = repo / ".planning" / "verification"
+            planning.mkdir(parents=True)
+            (planning / "note.md").write_text("verified\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "docs: record verification"],
+                cwd=repo,
+                check=True,
+            )
+
+            plan = self.release_plan(repo)
+
+        self.assertFalse(plan["release_required"])
+        self.assertEqual(plan["latest_tag"], "v0.1.3")
+        self.assertEqual(plan["next_tag"], "")
+        self.assertEqual(plan["release_relevant_files"], [])
+
+    def test_auto_release_bump_updates_version_for_tag(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            repo = self.init_release_repo(root)
+
+            self.run_release_auto(repo, "bump", "--tag", "v0.1.4")
+
+            self.assertEqual((repo / "VERSION").read_text(), "0.1.4\n")
+
+    def test_auto_release_workflow_creates_tag_and_release_assets(self) -> None:
+        workflow = AUTO_RELEASE_WORKFLOW.read_text()
+
+        self.assertIn("branches:", workflow)
+        self.assertIn("- main", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn("scripts/release_auto.py plan", workflow)
+        self.assertIn("release_required", workflow)
+        self.assertIn("scripts/release_auto.py bump --tag", workflow)
+        self.assertIn('git tag "$NEXT_TAG"', workflow)
+        self.assertIn('git push origin "HEAD:main" "refs/tags/$NEXT_TAG"', workflow)
+        self.assertIn("scripts/package-release.sh", workflow)
+        self.assertIn("gh release", workflow)
         self.assertIn("dist/run.sh", workflow)
         self.assertIn("dist/codex-switch.tar.gz", workflow)
 
