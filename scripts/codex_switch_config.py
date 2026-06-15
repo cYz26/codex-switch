@@ -263,6 +263,54 @@ def build_profile_v2_config_text(profile_name: str, profile_config_path: Path) -
     return updated
 
 
+def append_model_provider_from_sources(
+    updated: str,
+    assignments: dict[str, str],
+    sources: list[str],
+) -> str:
+    provider_assignment = assignments.get("model_provider")
+    if not provider_assignment:
+        return updated
+    provider = string_assignment_value(provider_assignment)
+    if not provider:
+        return updated
+    table_name = f"model_providers.{provider}"
+    for source in sources:
+        provider_block = extract_toml_table_block(source, table_name)
+        if provider_block:
+            updated = remove_toml_table_block(updated, table_name)
+            return append_toml_block(updated, provider_block)
+    return updated
+
+
+def build_profile_seed_config_text(
+    profile_name: str,
+    profile_text: str,
+    label: str,
+    fallback_text: str | None = None,
+    fallback_keys: set[str] | None = None,
+) -> str:
+    sources = [profile_text]
+    if fallback_text is not None:
+        sources.append(fallback_text)
+
+    assignments = target_profile_assignments(profile_text, profile_name)
+    if fallback_text is not None:
+        fallback_assignments = target_profile_assignments(fallback_text, profile_name)
+        for key, assignment in fallback_assignments.items():
+            if fallback_keys is None or key in fallback_keys:
+                assignments.setdefault(key, assignment)
+
+    updated = ""
+    for key in PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE:
+        assignment = assignments.get(key)
+        if assignment:
+            updated = upsert_top_level_assignment(updated, key, assignment)
+    updated = append_model_provider_from_sources(updated, assignments, sources)
+    validate_toml_text(updated, label)
+    return updated
+
+
 def build_base_config_text_from_text(text: str, label: str) -> str:
     updated = text
     updated = remove_top_level_assignment(updated, "profile")

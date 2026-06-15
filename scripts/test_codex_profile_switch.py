@@ -19,7 +19,12 @@ from codex_switch_running_app import (
     parse_ps_processes,
     running_desktop_problems,
 )
+from codex_switch_app_proxy import (
+    mask_backend_message_for_desktop,
+    translate_desktop_message_for_backend,
+)
 from codex_switch_config import build_base_config_text, build_profile_v2_config_text
+from codex_switch_home_sync import refresh_profile_canonical_config, sync_shared_support
 from codex_switch_store import Store
 
 
@@ -68,6 +73,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
         root: Path,
         *args: str,
         env: dict[str, str] | None = None,
+        check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
@@ -82,7 +88,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
         ]
         return subprocess.run(
             command,
-            check=True,
+            check=check,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -479,9 +485,1157 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.run_switcher(root, "switch", "internal", "--skip-launchctl")
             self.assertIn(f'exec "{internal_codex}" "$@"', shim.read_text())
             active = json.loads((root / "store" / "active.json").read_text())
-            self.assertEqual(active["app_cli_path"], str(internal_codex))
+            internal_app = root / "store" / "bin" / "codex-internal-app"
+            self.assertEqual(active["app_cli_path"], str(internal_app))
             agent = plistlib.loads((root / "agent.plist").read_bytes())
-            self.assertEqual(agent["ProgramArguments"][-1], str(internal_codex))
+            self.assertEqual(agent["ProgramArguments"][-1], str(internal_app))
+
+    def test_internal_switch_uses_managed_home_and_backup_plan(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[features]\n"
+                "memory = true\n"
+                "\n"
+                "[mcp_servers.shared]\n"
+                'command = "shared-mcp"\n'
+            )
+            (live_home / "auth.json").write_text('{"official":"auth"}\n')
+            (live_home / "sessions").mkdir()
+            (live_home / "history.jsonl").write_text("official history\n")
+            (live_home / "stable-support").mkdir()
+            (live_home / "stable-support" / "tool.json").write_text("{}\n")
+
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            internal_profile_config = root / "store" / "profiles" / "internal" / "config.toml"
+            internal_profile_config.write_text(
+                'model = "internal-model"\n'
+                'model_provider = "internal-provider"\n'
+                "\n"
+                "[model_providers.internal-provider]\n"
+                'name = "Internal"\n'
+            )
+
+            dry_run = self.run_switcher(root, "switch", "internal", "--dry-run")
+            dry_output = dry_run.stdout + dry_run.stderr
+            self.assertIn("Backup plan:", dry_output)
+            self.assertIn("Mutation plan:", dry_output)
+            self.assertIn(str(root / "store" / "homes" / "internal"), dry_output)
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_home = root / "store" / "homes" / "internal"
+            internal_config = (internal_home / "config.toml").read_text()
+            self.assertIn("[features]", internal_config)
+            self.assertIn("[mcp_servers.shared]", internal_config)
+            self.assertIn('model = "internal-model"', internal_config)
+            self.assertFalse((internal_home / "auth.json").exists())
+            self.assertFalse((internal_home / "sessions").exists())
+            self.assertFalse((internal_home / "history.jsonl").exists())
+            self.assertTrue((live_home / "auth.json").exists())
+
+            shim = root / "store" / "bin" / "codex"
+            shim_text = shim.read_text()
+            self.assertIn(f'export CODEX_HOME="{internal_home}"', shim_text)
+            self.assertIn(f'exec "{internal_codex}" "$@"', shim_text)
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual(active["profile"], "internal")
+            self.assertEqual(active["home_mode"], "managed")
+            self.assertEqual(active["codex_home"], str(internal_home))
+            self.assertTrue(active.get("backup_id"))
+            backup_manifest = (
+                root / "store" / "backups" / active["backup_id"] / "backup.json"
+            )
+            self.assertTrue(backup_manifest.exists())
+            backup = json.loads(backup_manifest.read_text())
+            self.assertEqual(backup["operation"], "switch")
+            self.assertEqual(backup["to_profile"], "internal")
+
+    def test_official_switch_syncs_shared_state_back_without_internal_runtime(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            (live_home / "auth.json").write_text('{"official":"auth"}\n')
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_home = root / "store" / "homes" / "internal"
+            (internal_home / "config.toml").write_text(
+                'notify = ["turn-ended"]\n'
+                'model = "internal-runtime-model"\n'
+                "\n"
+                "[features]\n"
+                "codex_hooks = true\n"
+                "\n"
+                "[mcp_servers.internal_shared]\n"
+                'command = "internal-mcp"\n'
+            )
+            (internal_home / "auth.json").write_text('{"internal":"auth"}\n')
+            (internal_home / "history.jsonl").write_text("internal history\n")
+
+            self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--skip-launchctl",
+                "--skip-app-cli",
+                "--skip-shim",
+            )
+
+            official_config = (live_home / "config.toml").read_text()
+            self.assertIn('notify = ["turn-ended"]', official_config)
+            self.assertIn("[features]", official_config)
+            self.assertIn("codex_hooks = true", official_config)
+            self.assertIn("[mcp_servers.internal_shared]", official_config)
+            self.assertNotIn("internal-runtime-model", official_config)
+            self.assertEqual('{"official":"auth"}\n', (live_home / "auth.json").read_text())
+            self.assertFalse((live_home / "history.jsonl").exists())
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual(active["profile"], "openai-official")
+            self.assertEqual(active["home_mode"], "official")
+            self.assertEqual(active["codex_home"], str(live_home))
+
+    def test_official_switch_does_not_create_self_referential_rules_symlink(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            rules = live_home / "rules"
+            rules.mkdir()
+            (rules / "workflow.md").write_text("keep rules\n")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_rules = root / "store" / "homes" / "internal" / "rules"
+            self.assertTrue(internal_rules.is_symlink())
+            self.assertEqual(os.readlink(internal_rules), str(rules))
+
+            self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--skip-launchctl",
+                "--skip-app-cli",
+                "--skip-shim",
+            )
+
+            self.assertFalse(rules.is_symlink())
+            self.assertEqual("keep rules\n", (rules / "workflow.md").read_text())
+
+    def test_shared_support_sync_removes_target_home_symlink_instead_of_copying_loop(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            source_home = root / "source"
+            target_home = root / "target"
+            source_home.mkdir()
+            target_home.mkdir()
+            (target_home / "shared-tool").mkdir()
+            (target_home / "shared-tool" / "state.json").write_text("{}\n")
+            (source_home / "shared-tool").symlink_to(target_home / "shared-tool")
+            (source_home / "shared-cache").symlink_to(target_home / "shared-cache")
+            (target_home / "shared-cache").symlink_to(target_home / "shared-cache")
+
+            mutated = sync_shared_support(source_home, target_home, prefer_link=False)
+
+            self.assertIn(target_home / "shared-tool", mutated)
+            self.assertFalse((target_home / "shared-tool").is_symlink())
+            self.assertEqual("{}\n", (target_home / "shared-tool" / "state.json").read_text())
+            self.assertIn(target_home / "shared-cache", mutated)
+            self.assertFalse((target_home / "shared-cache").exists())
+            self.assertFalse((target_home / "shared-cache").is_symlink())
+
+    def test_shared_support_sync_does_not_propagate_source_self_symlink(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            source_home = root / "source"
+            target_home = root / "target"
+            source_home.mkdir()
+            target_home.mkdir()
+            (source_home / "prompts").symlink_to(source_home / "prompts")
+            (source_home / "skills").symlink_to(source_home / "skills")
+            (target_home / "skills").symlink_to(target_home / "skills")
+
+            mutated = sync_shared_support(source_home, target_home, prefer_link=False)
+
+            self.assertNotIn(target_home / "prompts", mutated)
+            self.assertFalse((target_home / "prompts").exists())
+            self.assertFalse((target_home / "prompts").is_symlink())
+            self.assertIn(target_home / "skills", mutated)
+            self.assertFalse((target_home / "skills").exists())
+            self.assertFalse((target_home / "skills").is_symlink())
+
+    def test_shared_support_directory_copy_skips_nested_target_home_symlinks(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            source_home = root / "source"
+            target_home = root / "target"
+            source_home.mkdir()
+            target_home.mkdir()
+            source_tool = source_home / "tool"
+            source_tool.mkdir()
+            (source_tool / "settings.json").write_text("{}\n")
+            (source_tool / "nested-loop").symlink_to(
+                target_home / "tool" / "nested-loop"
+            )
+
+            sync_shared_support(source_home, target_home, prefer_link=False)
+
+            target_tool = target_home / "tool"
+            self.assertTrue(target_tool.is_dir())
+            self.assertEqual("{}\n", (target_tool / "settings.json").read_text())
+            self.assertFalse((target_tool / "nested-loop").exists())
+            self.assertFalse((target_tool / "nested-loop").is_symlink())
+
+    def test_official_switch_excludes_bulky_support_state_from_sync_plan(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            for name in (
+                "agent-kb",
+                "plugins",
+                "computer-use",
+                "cache",
+                "model-catalogs",
+                "sqlite",
+            ):
+                directory = live_home / name
+                directory.mkdir()
+                (directory / "payload.txt").write_text(f"{name}\n")
+            for name in (
+                ".credentials.json",
+                ".codex-global-state.json",
+                "models_cache.json",
+                "version.json",
+            ):
+                (live_home / name).write_text(f"{name}\n")
+            (live_home / "stable-support").mkdir()
+            (live_home / "stable-support" / "tool.json").write_text("{}\n")
+
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            dry_run = self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--internal-codex-home",
+                str(live_home),
+                "--dry-run",
+            )
+            dry_output = dry_run.stdout + dry_run.stderr
+            self.assertIn(
+                str(root / "store" / "homes" / "openai-official" / "stable-support"),
+                dry_output,
+            )
+            for name in (
+                "agent-kb",
+                "plugins",
+                "computer-use",
+                "cache",
+                "model-catalogs",
+                "sqlite",
+                ".credentials.json",
+                ".codex-global-state.json",
+                "models_cache.json",
+                "version.json",
+            ):
+                self.assertNotIn(
+                    str(root / "store" / "homes" / "openai-official" / name),
+                    dry_output,
+                )
+
+            self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--internal-codex-home",
+                str(live_home),
+                "--skip-launchctl",
+                "--skip-app-cli",
+                "--skip-shim",
+            )
+
+            official_home = root / "store" / "homes" / "openai-official"
+            self.assertTrue((official_home / "stable-support" / "tool.json").exists())
+            for name in (
+                "agent-kb",
+                "plugins",
+                "computer-use",
+                "cache",
+                "model-catalogs",
+                "sqlite",
+                ".credentials.json",
+                ".codex-global-state.json",
+                "models_cache.json",
+                "version.json",
+            ):
+                self.assertFalse((official_home / name).exists(), name)
+            active = json.loads((root / "store" / "active.json").read_text())
+            backup = json.loads(
+                (
+                    root / "store" / "backups" / active["backup_id"] / "backup.json"
+                ).read_text()
+            )
+            backup_paths = {entry["path"] for entry in backup["entries"]}
+            for name in (
+                "agent-kb",
+                "plugins",
+                "computer-use",
+                "cache",
+                "model-catalogs",
+                "sqlite",
+                ".credentials.json",
+                ".codex-global-state.json",
+                "models_cache.json",
+                "version.json",
+            ):
+                self.assertNotIn(str(official_home / name), backup_paths)
+
+    def test_internal_switch_prefers_last_runtime_config_and_refreshes_canonical(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            canonical = root / "store" / "profiles" / "internal" / "config.toml"
+            canonical.write_text('model = "canonical-internal"\n')
+            internal_home = root / "store" / "homes" / "internal"
+            internal_home.mkdir(parents=True)
+            (internal_home / "config.toml").write_text(
+                'model = "runtime-internal"\n'
+                'model_provider = "runtime-provider"\n'
+                "\n"
+                "[model_providers.runtime-provider]\n"
+                'name = "Runtime Provider"\n'
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            runtime_config = (internal_home / "config.toml").read_text()
+            self.assertIn("# codex-switch: managed runtime config for profile internal", runtime_config)
+            self.assertIn("# codex-switch: shared settings are merged from", runtime_config)
+            self.assertIn("\n# codex-switch: profile-specific settings\n", runtime_config)
+            self.assertIn("\n# codex-switch: shared settings\n", runtime_config)
+            self.assertIn('model = "runtime-internal"', runtime_config)
+            self.assertIn('model_provider = "runtime-provider"', runtime_config)
+            self.assertIn("[model_providers.runtime-provider]", runtime_config)
+            self.assertIn("[features]", runtime_config)
+            canonical_config = canonical.read_text()
+            self.assertIn("# codex-switch: canonical fallback config for profile internal", canonical_config)
+            self.assertIn('model = "runtime-internal"', canonical_config)
+            self.assertIn('model_provider = "runtime-provider"', canonical_config)
+            self.assertNotIn("[features]", canonical_config)
+
+    def test_internal_switch_falls_back_to_canonical_when_last_runtime_config_is_invalid(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            canonical = root / "store" / "profiles" / "internal" / "config.toml"
+            canonical.write_text('model = "canonical-internal"\n')
+            internal_home = root / "store" / "homes" / "internal"
+            internal_home.mkdir(parents=True)
+            (internal_home / "config.toml").write_text("model = [\n")
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            runtime_config = (internal_home / "config.toml").read_text()
+            self.assertIn('model = "canonical-internal"', runtime_config)
+            self.assertIn("[features]", runtime_config)
+            self.assertIn("# codex-switch: profile-specific settings are preserved from fallback", runtime_config)
+
+    def test_internal_switch_falls_back_when_runtime_reasoning_effort_is_unsupported(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            catalog = root / "azure-models.json"
+            catalog.write_text(
+                json.dumps(
+                    {
+                        "models": [
+                            {
+                                "slug": "gpt-5.5-2026-04-24",
+                                "default_reasoning_level": "xhigh",
+                                "supported_reasoning_levels": [
+                                    {"effort": "low"},
+                                    {"effort": "medium"},
+                                    {"effort": "high"},
+                                    {"effort": "xhigh"},
+                                ],
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            canonical = root / "store" / "profiles" / "internal" / "config.toml"
+            canonical.write_text(
+                'model = "gpt-5.5-2026-04-24"\n'
+                f'model_catalog_json = "{catalog}"\n'
+                'model_reasoning_effort = "xhigh"\n'
+            )
+            internal_home = root / "store" / "homes" / "internal"
+            internal_home.mkdir(parents=True)
+            (internal_home / "config.toml").write_text(
+                'model = "gpt-5.5-2026-04-24"\n'
+                f'model_catalog_json = "{catalog}"\n'
+                'model_reasoning_effort = "max"\n'
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            runtime_config = (internal_home / "config.toml").read_text()
+            canonical_config = canonical.read_text()
+            self.assertIn('model_reasoning_effort = "xhigh"', runtime_config)
+            self.assertIn('model_reasoning_effort = "xhigh"', canonical_config)
+            self.assertNotIn('model_reasoning_effort = "max"', runtime_config)
+            self.assertNotIn('model_reasoning_effort = "max"', canonical_config)
+            self.assertIn("# codex-switch: profile-specific settings are preserved from fallback", runtime_config)
+
+    def test_desktop_app_proxy_masks_versioned_model_alias_without_max_effort(self) -> None:
+        actual_model = "gpt-5.5-2026-04-24"
+        desktop_model = "gpt-5.5"
+        message = {
+            "id": 2,
+            "result": {
+                "data": [
+                    {
+                        "id": actual_model,
+                        "model": actual_model,
+                        "displayName": "Azure / GPT-5.5 2026-04-24",
+                        "hidden": False,
+                        "isDefault": True,
+                        "defaultReasoningEffort": "xhigh",
+                        "supportedReasoningEfforts": [
+                            {"reasoningEffort": "low", "description": "low effort"},
+                            {"reasoningEffort": "medium", "description": "medium effort"},
+                            {"reasoningEffort": "high", "description": "high effort"},
+                            {"reasoningEffort": "xhigh", "description": "xhigh effort"},
+                        ],
+                    }
+                ]
+            },
+        }
+
+        masked = mask_backend_message_for_desktop(
+            message,
+            method="model/list",
+            actual_model=actual_model,
+            desktop_model=desktop_model,
+        )
+
+        [model] = masked["result"]["data"]
+        self.assertEqual(model["id"], desktop_model)
+        self.assertEqual(model["model"], desktop_model)
+        self.assertEqual(model["defaultReasoningEffort"], "xhigh")
+        self.assertEqual(
+            [effort["reasoningEffort"] for effort in model["supportedReasoningEfforts"]],
+            ["low", "medium", "high", "xhigh"],
+        )
+
+    def test_desktop_app_proxy_masks_thread_model_fields_for_reasoning_lookup(self) -> None:
+        actual_model = "gpt-5.5-2026-04-24"
+        desktop_model = "gpt-5.5"
+        message = {
+            "id": 4,
+            "result": {
+                "conversation": {
+                    "model": actual_model,
+                    "latestModel": actual_model,
+                    "previousTurnModel": actual_model,
+                    "settings": {
+                        "model": actual_model,
+                        "reasoning_effort": "xhigh",
+                    },
+                },
+                "writes": [
+                    {"key": "model", "value": actual_model},
+                ],
+            },
+        }
+
+        masked = mask_backend_message_for_desktop(
+            message,
+            method="thread/load",
+            actual_model=actual_model,
+            desktop_model=desktop_model,
+        )
+
+        conversation = masked["result"]["conversation"]
+        self.assertEqual(conversation["model"], desktop_model)
+        self.assertEqual(conversation["latestModel"], desktop_model)
+        self.assertEqual(conversation["previousTurnModel"], desktop_model)
+        self.assertEqual(conversation["settings"]["model"], desktop_model)
+        self.assertEqual(masked["result"]["writes"][0]["value"], desktop_model)
+        self.assertEqual(message["result"]["conversation"]["latestModel"], actual_model)
+
+    def test_desktop_app_proxy_translates_desktop_model_alias_for_backend(self) -> None:
+        actual_model = "gpt-5.5-2026-04-24"
+        desktop_model = "gpt-5.5"
+        message = {
+            "id": 9,
+            "method": "thread/start",
+            "params": {
+                "model": desktop_model,
+                "threadSettings": {
+                    "model": desktop_model,
+                    "reasoning_effort": "xhigh",
+                },
+                "writes": [
+                    {"key": "model", "value": desktop_model},
+                    {"key": "model_reasoning_effort", "value": "xhigh"},
+                ],
+            },
+        }
+
+        translated = translate_desktop_message_for_backend(
+            message,
+            actual_model=actual_model,
+            desktop_model=desktop_model,
+        )
+
+        self.assertEqual(translated["params"]["model"], actual_model)
+        self.assertEqual(translated["params"]["threadSettings"]["model"], actual_model)
+        self.assertEqual(translated["params"]["writes"][0]["value"], actual_model)
+        self.assertEqual(message["params"]["model"], desktop_model)
+
+    def test_canonical_refresh_does_not_resurrect_removed_profile_settings(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            runtime_config = root / "runtime.toml"
+            canonical_config = root / "canonical.toml"
+            runtime_config.write_text('model = "runtime-model"\n')
+            canonical_config.write_text(
+                'cli_auth_credentials_store = "file"\n'
+                'model = "old-model"\n'
+                'model_provider = "old-provider"\n'
+                'personality = "pragmatic"\n'
+                "\n"
+                "[model_providers.old-provider]\n"
+                'name = "Old Provider"\n'
+            )
+
+            refresh_profile_canonical_config(
+                "openai-official",
+                runtime_config,
+                canonical_config,
+            )
+
+            canonical_text = canonical_config.read_text()
+            self.assertIn('cli_auth_credentials_store = "file"', canonical_text)
+            self.assertIn('model = "runtime-model"', canonical_text)
+            self.assertNotIn("old-provider", canonical_text)
+            self.assertNotIn('personality = "pragmatic"', canonical_text)
+
+    def test_official_switch_preserves_last_official_runtime_profile_settings(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'model = "official-runtime"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_home = root / "store" / "homes" / "internal"
+            (internal_home / "config.toml").write_text(
+                (internal_home / "config.toml").read_text()
+                + "\n[mcp_servers.from-internal]\n"
+                + 'command = "internal-mcp"\n'
+            )
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            official_config = (live_home / "config.toml").read_text()
+            self.assertIn('model = "official-runtime"', official_config)
+            self.assertIn("[mcp_servers.from-internal]", official_config)
+            self.assertIn("# codex-switch: managed runtime config for profile openai-official", official_config)
+            self.assertIn("\n# codex-switch: profile-specific settings\n", official_config)
+            self.assertIn("\n# codex-switch: shared settings\n", official_config)
+            canonical_config = (
+                root / "store" / "profiles" / "openai-official" / "config.toml"
+            ).read_text()
+            self.assertIn("# codex-switch: canonical fallback config for profile openai-official", canonical_config)
+            self.assertIn('model = "official-runtime"', canonical_config)
+            self.assertNotIn("[mcp_servers.from-internal]", canonical_config)
+
+    def test_internal_switch_can_adopt_live_home_and_move_official_home(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'model = "legacy-internal-runtime"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            (live_home / "sessions").mkdir()
+            (live_home / "history.jsonl").write_text("legacy internal history\n")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            self.run_switcher(
+                root,
+                "switch",
+                "internal",
+                "--internal-codex-home",
+                str(live_home),
+                "--skip-launchctl",
+            )
+
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual(active["profile"], "internal")
+            self.assertEqual(active["codex_home"], str(live_home))
+            self.assertEqual(active["home_mode"], "adopted")
+            self.assertEqual("legacy internal history\n", (live_home / "history.jsonl").read_text())
+            internal_manifest = self.read_manifest(root, "internal")
+            official_manifest = self.read_manifest(root, "openai-official")
+            official_home = root / "store" / "homes" / "openai-official"
+            self.assertEqual(internal_manifest["codex_home"], str(live_home))
+            self.assertEqual(internal_manifest["home_mode"], "adopted")
+            self.assertEqual(official_manifest["codex_home"], str(official_home))
+            self.assertEqual(official_manifest["home_mode"], "managed")
+
+            shim = root / "store" / "bin" / "codex"
+            self.assertIn(f'export CODEX_HOME="{live_home}"', shim.read_text())
+            self.assertIn(f'exec "{internal_codex}" "$@"', shim.read_text())
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual(active["profile"], "openai-official")
+            self.assertEqual(active["codex_home"], str(official_home))
+            self.assertEqual(active["home_mode"], "managed")
+            self.assertTrue((official_home / "config.toml").exists())
+            self.assertEqual("legacy internal history\n", (live_home / "history.jsonl").read_text())
+            self.assertFalse((official_home / "history.jsonl").exists())
+
+    def test_switch_rejects_explicit_identical_independent_homes(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--official-codex-home",
+                    str(live_home),
+                    "--internal-codex-home",
+                    str(live_home),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "switch",
+                    "internal",
+                    "--skip-launchctl",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Refusing to use the same Codex home", result.stderr)
+            self.assertFalse((root / "store" / "active.json").exists())
+
+    def test_wrapper_forwards_internal_codex_home_option(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            fake_switcher = root / "fake_switcher.py"
+            fake_switcher.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('ARGS:' + ' '.join(sys.argv[1:]))\n"
+            )
+            fake_switcher.chmod(0o755)
+            adopted_home = root / "live"
+            env = os.environ.copy()
+            env["CODEX_SWITCH_SCRIPT"] = str(fake_switcher)
+            env["CODEX_SWITCH_SKIP_SELF_UPDATE"] = "1"
+
+            result = subprocess.run(
+                [
+                    str(WRAPPER),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--live-codex-home",
+                    str(root / "live"),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "internal",
+                    "--internal-codex-home",
+                    str(adopted_home),
+                    "--dry-run",
+                    "--skip-update-check",
+                    "--skip-login",
+                ],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn(f"--internal-codex-home {adopted_home}", result.stdout)
+
+    def test_interactive_home_prompt_prioritizes_target_profile_and_recommended_option(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            prompt_env = dict(env)
+            prompt_env["CODEX_SWITCH_FORCE_HOME_PROMPT"] = "1"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--live-codex-home",
+                    str(root / "live"),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "switch",
+                    "openai-official",
+                    "--skip-launchctl",
+                    "--skip-app-cli",
+                    "--skip-shim",
+                ],
+                input="\n\n\n",
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=prompt_env,
+            )
+
+            output = result.stdout
+            official_prompt = output.index("Select Codex home for openai-official:")
+            internal_prompt = output.index("Select Codex home for internal:")
+            self.assertLess(official_prompt, internal_prompt)
+            self.assertIn(f"  1. {root / 'live'} (Recommended)", output)
+            self.assertIn(
+                f"  1. {root / 'store' / 'homes' / 'internal'} (Recommended)",
+                output,
+            )
+
+    def test_interactive_prompt_prefers_semantic_default_for_unconfirmed_internal_home(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            managed_internal_home = root / "store" / "homes" / "internal"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            internal_manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            internal_manifest = json.loads(internal_manifest_path.read_text())
+            internal_manifest["codex_home"] = str(live_home)
+            internal_manifest["home_mode"] = "adopted"
+            internal_manifest.pop("home_selection_confirmed", None)
+            internal_manifest_path.write_text(json.dumps(internal_manifest))
+
+            prompt_env = dict(env)
+            prompt_env["CODEX_SWITCH_FORCE_HOME_PROMPT"] = "1"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--live-codex-home",
+                    str(live_home),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "switch",
+                    "internal",
+                    "--skip-launchctl",
+                    "--skip-app-cli",
+                    "--skip-shim",
+                ],
+                input="\n\n\n",
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=prompt_env,
+            )
+
+            output = result.stdout
+            self.assertIn("Select Codex home for internal:", output)
+            self.assertIn(f"  1. {managed_internal_home} (Recommended)", output)
+            self.assertIn(str(live_home), output)
+            confirmed_manifest = self.read_manifest(root, "internal")
+            self.assertEqual(confirmed_manifest["codex_home"], str(managed_internal_home))
+            self.assertTrue(confirmed_manifest["home_selection_confirmed"])
+
+    def test_interactive_prompt_prefers_official_home_for_unconfirmed_official_home(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            managed_official_home = root / "store" / "homes" / "openai-official"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            official_manifest_path = (
+                root / "store" / "profiles" / "openai-official" / "manifest.json"
+            )
+            official_manifest = json.loads(official_manifest_path.read_text())
+            official_manifest["codex_home"] = str(managed_official_home)
+            official_manifest["home_mode"] = "managed"
+            official_manifest.pop("home_selection_confirmed", None)
+            official_manifest_path.write_text(json.dumps(official_manifest))
+
+            prompt_env = dict(env)
+            prompt_env["CODEX_SWITCH_FORCE_HOME_PROMPT"] = "1"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--live-codex-home",
+                    str(live_home),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "switch",
+                    "openai-official",
+                    "--skip-launchctl",
+                    "--skip-app-cli",
+                    "--skip-shim",
+                ],
+                input="\n\n",
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=prompt_env,
+            )
+
+            output = result.stdout
+            self.assertIn("Select Codex home for openai-official:", output)
+            self.assertIn(f"  1. {live_home} (Recommended)", output)
+            self.assertIn(str(managed_official_home), output)
+            confirmed_manifest = self.read_manifest(root, "openai-official")
+            self.assertEqual(confirmed_manifest["codex_home"], str(live_home))
+            self.assertTrue(confirmed_manifest["home_selection_confirmed"])
+
+    def test_interactive_profile_change_prompts_target_away_from_active_home(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "active.json").write_text(
+                json.dumps(
+                    {
+                        "profile": "openai-official",
+                        "codex_home": str(live_home),
+                    }
+                )
+            )
+            internal_manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            internal_manifest = json.loads(internal_manifest_path.read_text())
+            internal_manifest["codex_home"] = str(live_home)
+            internal_manifest["home_mode"] = "adopted"
+            internal_manifest["home_selection_confirmed"] = True
+            internal_manifest_path.write_text(json.dumps(internal_manifest))
+
+            prompt_env = dict(env)
+            prompt_env["CODEX_SWITCH_FORCE_HOME_PROMPT"] = "1"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--official-codex-home",
+                    str(live_home),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "switch",
+                    "internal",
+                    "--skip-launchctl",
+                    "--skip-app-cli",
+                    "--skip-shim",
+                ],
+                input="\n",
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=prompt_env,
+            )
+
+            output = result.stdout
+            internal_home = root / "store" / "homes" / "internal"
+            self.assertIn(
+                f"openai-official currently uses {live_home}; "
+                "choose a different Codex home for internal.",
+                output,
+            )
+            self.assertIn("Select Codex home for internal:", output)
+            self.assertIn(f"  1. {internal_home} (Recommended)", output)
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual(active["profile"], "internal")
+            self.assertEqual(active["codex_home"], str(internal_home))
+            confirmed_manifest = self.read_manifest(root, "internal")
+            self.assertEqual(confirmed_manifest["codex_home"], str(internal_home))
+            self.assertTrue(confirmed_manifest["home_selection_confirmed"])
+
+    def test_interactive_same_home_collision_prompts_for_other_profile_home(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            prompt_env = dict(env)
+            prompt_env["CODEX_SWITCH_FORCE_HOME_PROMPT"] = "1"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--official-codex-home",
+                    str(live_home),
+                    "--internal-codex-home",
+                    str(live_home),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "switch",
+                    "internal",
+                    "--skip-launchctl",
+                    "--skip-app-cli",
+                    "--skip-shim",
+                ],
+                input="\n",
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=prompt_env,
+            )
+
+            output = result.stdout
+            official_home = root / "store" / "homes" / "openai-official"
+            self.assertIn("already uses", output)
+            self.assertIn("Select Codex home for openai-official:", output)
+            self.assertIn(f"  1. {official_home} (Recommended)", output)
+            official_manifest = self.read_manifest(root, "openai-official")
+            self.assertEqual(official_manifest["codex_home"], str(official_home))
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual(active["profile"], "internal")
+            self.assertEqual(active["codex_home"], str(live_home))
+
+    def test_restore_backup_dry_run_and_apply(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            active = json.loads((root / "store" / "active.json").read_text())
+            backup_id = active["backup_id"]
+            shim = root / "store" / "bin" / "codex"
+            self.assertTrue(shim.exists())
+
+            dry_run = self.run_switcher(root, "restore", backup_id, "--dry-run")
+            self.assertIn("Dry run: restore backup", dry_run.stdout)
+            self.assertTrue(shim.exists())
+
+            self.run_switcher(root, "restore", backup_id, "--apply")
+
+            self.assertFalse(shim.exists())
+            self.assertFalse((root / "store" / "active.json").exists())
+
+    def test_backup_failure_aborts_before_mutation(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            original_config = "[features]\nmemory = true\n"
+            (live_home / "config.toml").write_text(original_config)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            shutil.rmtree(root / "store" / "backups")
+            (root / "store" / "backups").write_text("not a directory\n")
+
+            result = self.run_switcher(
+                root,
+                "switch",
+                "internal",
+                "--skip-launchctl",
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(original_config, (live_home / "config.toml").read_text())
+            self.assertFalse((root / "store" / "homes" / "internal").exists())
+            self.assertFalse((root / "store" / "bin" / "codex").exists())
+            self.assertFalse((root / "agent.plist").exists())
 
     def test_switch_writes_profile_v2_config_and_removes_non_file_auth(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -502,16 +1656,16 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.run_switcher(root, "switch", "internal", "--skip-launchctl")
 
             live_config = (root / "live" / "config.toml").read_text()
-            self.assertNotIn('profile = "internal"', live_config)
-            self.assertNotIn("[profiles.internal]", live_config)
+            self.assertIn('profile = "internal"', live_config)
+            internal_config = (root / "store" / "homes" / "internal" / "config.toml").read_text()
+            self.assertNotIn('profile = "internal"', internal_config)
+            self.assertNotIn("[profiles.internal]", internal_config)
             self.assertTrue((root / "live" / "internal.config.toml").exists())
-            self.assertFalse((root / "live" / "auth.json").exists())
+            self.assertTrue((root / "live" / "auth.json").exists())
             active = json.loads((root / "store" / "active.json").read_text())
             backup_dir = Path(active["backup_dir"])
-            self.assertEqual(
-                (backup_dir / "internal.config.toml").read_text(),
-                'model = "old-internal"\n',
-            )
+            backup = json.loads((backup_dir / "backup.json").read_text())
+            self.assertEqual(backup["to_profile"], "internal")
 
     def test_switch_preserves_live_shared_preferences(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -540,14 +1694,16 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
 
             live_config = (root / "live" / "config.toml").read_text()
-            self.assertNotIn('model = "gpt-5.5-2026-04-24"', live_config)
-            self.assertNotIn('model_provider = "azure"', live_config)
+            self.assertIn('model = "gpt-5.5-2026-04-24"', live_config)
+            self.assertIn('model_provider = "azure"', live_config)
             self.assertNotIn('cli_auth_credentials_store = "file"', live_config)
             self.assertIn("[features]", live_config)
             self.assertIn("memory = true", live_config)
             self.assertIn("[tui]", live_config)
             self.assertIn('theme = "catppuccin-latte"', live_config)
-            profile_config = (root / "live" / "openai-official.config.toml").read_text()
+            profile_config = (
+                root / "store" / "profiles" / "openai-official" / "config.toml"
+            ).read_text()
             self.assertIn('cli_auth_credentials_store = "file"', profile_config)
 
     def test_profile_v2_config_flattens_legacy_profile_table(self) -> None:
@@ -755,6 +1911,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
             wrapper_text = app_wrapper.read_text()
             self.assertIn(str(Path(__file__).parent), wrapper_text)
             self.assertNotIn("/old/missing/path", wrapper_text)
+            self.assertIn("codex_switch_app_proxy.py", wrapper_text)
+            self.assertIn('app-server" ] && [ "${2:-}" = "--stdio"', wrapper_text)
 
             result = subprocess.run(
                 [str(app_wrapper), "--version"],
@@ -766,7 +1924,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             self.assertIn("internal-codex", result.stdout)
             app_home_config = (
-                root / "store" / "app-homes" / "internal" / "config.toml"
+                root / "store" / "homes" / "internal" / "config.toml"
             ).read_text()
             self.assertIn("[marketplaces.cy-codex-skills]", app_home_config)
             self.assertIn('[plugins."agent-kb@cy-codex-skills"]', app_home_config)
@@ -775,8 +1933,11 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 app_home_config,
             )
             self.assertIn('model = "gpt-5.5-2026-04-24"', app_home_config)
+            self.assertIn("# codex-switch: managed runtime config for profile internal", app_home_config)
+            self.assertIn("\n# codex-switch: profile-specific settings\n", app_home_config)
+            self.assertIn("\n# codex-switch: shared settings\n", app_home_config)
             self.assertFalse(
-                (root / "store" / "app-homes" / "internal" / "auth.json").exists()
+                (root / "store" / "homes" / "internal" / "auth.json").exists()
             )
 
     def test_internal_desktop_wrapper_persists_app_home_plugin_state(self) -> None:
@@ -812,7 +1973,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 env=env,
             )
-            app_home_config_path = root / "store" / "app-homes" / "internal" / "config.toml"
+            app_home_config_path = root / "store" / "homes" / "internal" / "config.toml"
             app_home_config_path.write_text(
                 'notify = ["turn-ended"]\n'
                 + "\n"
@@ -854,6 +2015,57 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 )
             self.assertNotIn('model = "gpt-5.5-2026-04-24"', live_config)
 
+    def test_internal_desktop_wrapper_preserves_official_personality(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_home_config = live_home / "config.toml"
+            live_home_config.write_text(
+                'model = "official-runtime"\n'
+                'personality = "friendly"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["app_cli_path"] = str(root / "store" / "bin" / "codex-internal-app")
+            manifest_path.write_text(json.dumps(manifest))
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            app_home_config_path = root / "store" / "homes" / "internal" / "config.toml"
+            app_home_config_path.write_text(
+                app_home_config_path.read_text()
+                + "\n"
+                + "[mcp_servers.local-test]\n"
+                + 'command = "local-mcp"\n'
+            )
+
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            live_config = live_home_config.read_text()
+            self.assertIn('model = "official-runtime"', live_config)
+            self.assertIn('personality = "friendly"', live_config)
+            self.assertIn("[mcp_servers.local-test]", live_config)
+
     def test_internal_desktop_wrapper_isolates_response_runtime_state(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -878,6 +2090,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "node_repl",
                 "shell_snapshots",
                 "ambient-suggestions",
+                "agent-kb",
+                "cache",
+                "computer-use",
+                "model-catalogs",
+                "plugins",
+                "sqlite",
             ):
                 (live_home / dirname).mkdir()
             for filename in (
@@ -887,6 +2105,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "state_5.sqlite-shm",
                 "state_5.sqlite-wal",
                 "state_5.sqlite.corrupt.20260522-173044",
+                "state_5.sqlite-shm.corrupt.20260522-173044",
+                "state_5.sqlite-wal.corrupt.20260522-173044",
+                ".credentials.json",
+                ".codex-global-state.json",
+                "models_cache.json",
+                "version.json",
             ):
                 (live_home / filename).write_text(f"{filename}\n")
 
@@ -905,7 +2129,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest))
 
             self.run_switcher(root, "switch", "internal", "--skip-launchctl")
-            app_home = root / "store" / "app-homes" / "internal"
+            app_home = root / "store" / "homes" / "internal"
             app_home.mkdir(parents=True, exist_ok=True)
             for stale_name in ("sessions", "state_5.sqlite"):
                 (app_home / stale_name).symlink_to(
@@ -934,12 +2158,24 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "node_repl",
                 "shell_snapshots",
                 "ambient-suggestions",
+                "agent-kb",
+                "cache",
+                "computer-use",
+                "model-catalogs",
+                "plugins",
+                "sqlite",
                 "history.jsonl",
                 "session_index.jsonl",
                 "state_5.sqlite",
                 "state_5.sqlite-shm",
                 "state_5.sqlite-wal",
                 "state_5.sqlite.corrupt.20260522-173044",
+                "state_5.sqlite-shm.corrupt.20260522-173044",
+                "state_5.sqlite-wal.corrupt.20260522-173044",
+                ".credentials.json",
+                ".codex-global-state.json",
+                "models_cache.json",
+                "version.json",
             )
             for name in excluded_names:
                 self.assertFalse(

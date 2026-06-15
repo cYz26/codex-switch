@@ -8,7 +8,7 @@ current_phase:
   status: complete
 
 current_change:
-  id: remote-release-packaging
+  id: independent-profile-homes
   status: verified
 
 gates:
@@ -53,20 +53,20 @@ context_management:
     - validation_recorded_if_applicable
 
 context_health:
-  last_report: .planning/verification/20260608144055-remote-release-packaging-verification.md
-  last_risk: low
+  last_report: .planning/verification/20260615112411-independent-profile-homes-pre-submit.md
+  last_risk: medium
   last_confidence: high
-  last_decision: verified_remote_release_packaging
-  last_goal_status: remote_release_packaging_verified
-  goal_summary: Remote release packaging and source archive fallback are implemented, locally verified, pushed, tagged v0.1.3, and remote runner execution is verified. Archive remains closed by gate.
+  last_decision: verified_independent_profile_homes_pre_submit
+  last_goal_status: independent_profile_homes_ready_for_remote_submission
+  goal_summary: Pre-submit verification passed for the independent-profile-homes change: DevFlow project migration is current, full profile-switch tests, py_compile, shell syntax checks, OpenSpec strict validation, diff whitespace checks, and release packaging all passed. Archive remains closed by gate.
 ---
 
 # Workflow State
 
 ## Current Status
 
-`remote-release-packaging` is the active change. Release workflow publication and source archive fallback are implemented, locally verified, pushed, tagged as `v0.1.3`, and the published remote runner asset executed successfully.
+Change `independent-profile-homes` is implemented and pre-submit verified. DevFlow project migration is current, full profile-switch tests, Python compile checks, shell syntax checks, OpenSpec strict validation, diff whitespace checks, and release packaging passed.
 
 ## Next Action
 
-Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.
+Submit the verified branch to the remote. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.

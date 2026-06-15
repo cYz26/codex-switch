@@ -53,14 +53,16 @@ One-key commands:
   version                  Print codex-switch version.
 
 Pass-through commands:
-  init | capture | switch | status | list | doctor | shim-env
+  init | capture | switch | restore | status | list | doctor | shim-env
   login-internal | login-official
   login | set-bin | set-app-bin
   raw <codex_profile_switch.py args...>
 
 Global options:
   --store-dir <path>           Profile store. Default: ~/.codex-switch.
-  --live-codex-home <path>     Live CODEX_HOME to switch. Default: CODEX_HOME or ~/.codex.
+  --official-codex-home <path> Official Codex home. Default: ~/.codex.
+  --live-codex-home <path>     Legacy alias for --official-codex-home.
+  --internal-codex-home <path> Internal Codex home. Default: ~/.codex-switch/homes/internal.
   --launch-agent-path <path>   LaunchAgent plist path.
   --launch-agent-label <name>  LaunchAgent label.
   --skip-self-update           Do not sync installed codex-switch scripts.
@@ -892,7 +894,7 @@ while (($#)); do
       GLOBAL_ARGS+=("$1" "$2")
       shift 2
       ;;
-    --live-codex-home|--launch-agent-path|--launch-agent-label)
+    --official-codex-home|--live-codex-home|--internal-codex-home|--launch-agent-path|--launch-agent-label)
       if [[ $# -lt 2 ]]; then
         echo "$1 requires a value" >&2
         exit 2
@@ -960,7 +962,7 @@ case "$cmd" in
   login-official)
     run_switcher login openai-official "$@"
     ;;
-  init|capture|switch|status|list|doctor|shim-env|login|set-bin|set-app-bin)
+  init|capture|switch|restore|status|list|doctor|shim-env|login|set-bin|set-app-bin)
     run_switcher "$cmd" "$@"
     ;;
   raw)

@@ -26,16 +26,75 @@ from codex_switch_doctor import cmd_doctor
 from codex_switch_lifecycle import cmd_init
 from codex_switch_list import cmd_list
 from codex_switch_status import cmd_status
+from codex_switch_restore import cmd_restore
 from codex_switch_switching import (
     cmd_switch,
 )
 
 
+class OfficialHomeAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | list[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        raw = values[0] if isinstance(values, list) else values
+        default_official = Path.home() / ".codex"
+        setattr(namespace, self.dest, expand_path(raw, default_official))
+        source = "official_arg" if option_string == "--official-codex-home" else "legacy_arg"
+        setattr(namespace, "official_codex_home_source", source)
+
+
+class InternalHomeAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | list[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        raw = values[0] if isinstance(values, list) else values
+        default_internal = Path.home() / ".codex-switch" / "homes" / "internal"
+        setattr(namespace, self.dest, expand_path(raw, default_internal))
+        setattr(namespace, "internal_codex_home_source", "explicit")
+
+
+def add_home_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--official-codex-home",
+        dest="official_codex_home",
+        action=OfficialHomeAction,
+        default=argparse.SUPPRESS,
+        help="Official Codex home. Default: ~/.codex.",
+    )
+    parser.add_argument(
+        "--live-codex-home",
+        dest="official_codex_home",
+        action=OfficialHomeAction,
+        default=argparse.SUPPRESS,
+        help="Legacy alias for --official-codex-home.",
+    )
+    parser.add_argument(
+        "--internal-codex-home",
+        dest="internal_codex_home",
+        action=InternalHomeAction,
+        default=argparse.SUPPRESS,
+        help="Internal Codex home. Default: ~/.codex-switch/homes/internal.",
+    )
+
+
 def add_global_arguments(parser: argparse.ArgumentParser) -> None:
     default_store = Path.home() / ".codex-switch"
-    default_live = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    default_official = Path.home() / ".codex"
     default_launch_agent = (
         Path.home() / "Library" / "LaunchAgents" / f"{DEFAULT_LAUNCH_AGENT_LABEL}.plist"
+    )
+    parser.set_defaults(
+        official_codex_home_source="default",
+        internal_codex_home=None,
+        internal_codex_home_source="default",
     )
     parser.add_argument(
         "--store-dir",
@@ -43,12 +102,8 @@ def add_global_arguments(parser: argparse.ArgumentParser) -> None:
         default=expand_path(os.environ.get("CODEX_SWITCH_HOME"), default_store),
         help="Profile store directory. Default: ~/.codex-switch; CODEX_SWITCH_HOME accepted.",
     )
-    parser.add_argument(
-        "--live-codex-home",
-        type=lambda value: expand_path(value, default_live),
-        default=default_live.expanduser(),
-        help="Live Codex home rewritten on switch. Default: CODEX_HOME, fallback ~/.codex.",
-    )
+    parser.set_defaults(official_codex_home=default_official.expanduser())
+    add_home_arguments(parser)
     parser.add_argument(
         "--launch-agent-path",
         type=lambda value: expand_path(value, default_launch_agent),
@@ -100,6 +155,7 @@ def add_switch_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
         help="Switch live ~/.codex, codex shim, Desktop CODEX_CLI_PATH.",
     )
     switch.add_argument("name")
+    add_home_arguments(switch)
     switch.add_argument("--dry-run", action="store_true")
     switch.add_argument("--clear-missing-auth", action="store_true")
     switch.add_argument(
@@ -145,6 +201,16 @@ def add_simple_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser])
     shim_env.set_defaults(func=cmd_shim_env)
 
 
+def add_restore_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    restore = sub.add_parser("restore", help="Restore a codex-switch backup.")
+    restore.add_argument("backup_id")
+    mode = restore.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    restore.add_argument("--force", action="store_true")
+    restore.set_defaults(func=cmd_restore)
+
+
 def add_login_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     login = sub.add_parser("login", help="Run codex login inside a stored profile.")
     login.add_argument("name")
@@ -186,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_capture_parser(sub)
     add_switch_parser(sub)
     add_simple_parsers(sub)
+    add_restore_parser(sub)
     add_login_parser(sub)
     add_set_bin_parser(sub)
     add_set_app_bin_parser(sub)

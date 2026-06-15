@@ -21,7 +21,14 @@ def should_refresh_profile_app_wrapper(store: Store, name: str, app_cli_path: st
 
 
 def profile_app_home(store: Store, name: str) -> Path:
-    return store.root / "app-homes" / name
+    try:
+        manifest = store.load_manifest(name)
+    except Exception:
+        manifest = {}
+    raw_home = manifest.get("codex_home")
+    if raw_home:
+        return Path(str(raw_home)).expanduser()
+    return store.managed_home(name)
 
 
 def write_profile_app_wrapper(
@@ -49,6 +56,7 @@ APP_CODEX_HOME={shlex.quote(str(app_home))}
 CODEX_BIN={shlex.quote(str(bin_path))}
 SWITCH_SCRIPTS={shlex.quote(str(switch_scripts))}
 PROFILE_NAME={shlex.quote(name)}
+PROFILE_CONFIG={shlex.quote(str(store.profile_dir(name) / "config.toml"))}
 
 umask 077
 mkdir -p "$APP_CODEX_HOME"
@@ -62,6 +70,27 @@ is_runtime_state_name() {{
       return 0
       ;;
     *.sqlite|*.sqlite-shm|*.sqlite-wal|*.sqlite.corrupt.*)
+      return 0
+      ;;
+    *.sqlite-shm.corrupt.*|*.sqlite-wal.corrupt.*)
+      return 0
+      ;;
+  esac
+  return 1
+}}
+
+is_non_shareable_home_entry_name() {{
+  case "$1" in
+    .codex-global-state.json|.codex-global-state.json.bak|.credentials.json)
+      return 0
+      ;;
+    agent-kb|automations|cache|computer-use|plugins|secrets|sqlite)
+      return 0
+      ;;
+    chrome-native-hosts-v2.json|chrome-native-hosts.json|installation_id)
+      return 0
+      ;;
+    model-catalogs|models_cache.json|pets|update-backups|vendor_imports|version.json)
       return 0
       ;;
   esac
@@ -85,6 +114,9 @@ find "$APP_CODEX_HOME" -mindepth 1 -maxdepth 1 | while IFS= read -r path; do
   if is_runtime_state_name "$name"; then
     remove_live_state_symlink "$name"
   fi
+  if is_non_shareable_home_entry_name "$name"; then
+    remove_live_state_symlink "$name"
+  fi
 done
 
 find "$LIVE_CODEX_HOME" -mindepth 1 -maxdepth 1 | while IFS= read -r path; do
@@ -98,6 +130,10 @@ find "$LIVE_CODEX_HOME" -mindepth 1 -maxdepth 1 | while IFS= read -r path; do
     remove_live_state_symlink "$name"
     continue
   fi
+  if is_non_shareable_home_entry_name "$name"; then
+    remove_live_state_symlink "$name"
+    continue
+  fi
   target="$APP_CODEX_HOME/$name"
   if [ ! -e "$target" ] && [ ! -L "$target" ]; then
     ln -s "$path" "$target"
@@ -106,18 +142,17 @@ done
 
 PYTHONPATH="$SWITCH_SCRIPTS" python3 - \\
   "$LIVE_CODEX_HOME/config.toml" \\
-  "$LIVE_CODEX_HOME/$PROFILE_NAME.config.toml" \\
+  "$PROFILE_CONFIG" \\
   "$APP_CODEX_HOME/config.toml" \\
   "$PROFILE_NAME" <<'PY'
 import sys
 from pathlib import Path
 
 from codex_switch_config import (
-    build_base_config_text,
-    build_shared_config_text,
     merge_shared_config_overlay,
 )
 from codex_switch_core import atomic_write
+from codex_switch_home_sync import build_internal_home_config
 
 base = Path(sys.argv[1])
 profile = Path(sys.argv[2])
@@ -125,19 +160,26 @@ target = Path(sys.argv[3])
 profile_name = sys.argv[4]
 if target.exists():
     shared_text = merge_shared_config_overlay(
-        build_base_config_text(base),
+        base.read_text(),
         target.read_text(),
     )
     atomic_write(base, shared_text.encode(), mode=0o600)
 atomic_write(
     target,
-    build_shared_config_text(base, profile_name, profile).encode(),
+    build_internal_home_config(base.parent, profile_name, target, profile).encode(),
     mode=0o600,
 )
 PY
 rm -f "$APP_CODEX_HOME/auth.json"
 
 export CODEX_HOME="$APP_CODEX_HOME"
+if [ "${{1:-}}" = "app-server" ] && [ "${{2:-}}" = "--stdio" ]; then
+  exec env PYTHONPATH="$SWITCH_SCRIPTS" python3 \\
+    "$SWITCH_SCRIPTS/codex_switch_app_proxy.py" \\
+    "$CODEX_BIN" \\
+    "$APP_CODEX_HOME/config.toml" \\
+    "$@"
+fi
 exec "$CODEX_BIN" "$@"
 """
     atomic_write(wrapper_path, script.encode(), mode=0o755)

@@ -14,6 +14,17 @@ def print_active_profile_status(store: Store) -> str | None:
         print(f"Active profile: {active_profile} ({active.get('switched_at')})")
         if active.get("config_mode"):
             print(f"Config mode: {active.get('config_mode')}")
+        if active.get("home_mode"):
+            print(f"Home mode: {active.get('home_mode')}")
+        if active.get("codex_home"):
+            print(f"Active CODEX_HOME: {active.get('codex_home')}")
+        if active.get("backup_id"):
+            print(f"Last backup: {active.get('backup_id')}")
+        if active.get("shared_sync_source") and active.get("shared_sync_target"):
+            print(
+                "Shared sync: "
+                f"{active.get('shared_sync_source')} -> {active.get('shared_sync_target')}"
+            )
         if active.get("shared_config_base"):
             print(f"Shared config base: {active.get('shared_config_base')}")
         if isinstance(active_profile, str):

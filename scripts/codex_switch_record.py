@@ -12,23 +12,35 @@ def optional_path(path: Path | None) -> str | None:
 
 def active_record(
     name: str,
-    live_codex_home: Path,
+    codex_home: Path,
     config_mode: str,
     base_config_path: Path,
     backup_dir: Path,
     shim_path: Path | None,
+    shell_cli_path: str | None,
     app_cli_path: str,
     launch_agent_path: Path | None,
+    home_mode: str | None = None,
+    shared_sync_source: Path | None = None,
+    shared_sync_target: Path | None = None,
 ) -> dict[str, str | None]:
     shared_config_base = str(base_config_path) if config_mode == CONFIG_MODE_SHARED else None
     return {
         "profile": name,
         "switched_at": now_stamp(),
-        "live_codex_home": str(live_codex_home),
+        "live_codex_home": str(codex_home),
+        "codex_home": str(codex_home),
+        "home_mode": home_mode,
         "config_mode": config_mode,
         "shared_config_base": shared_config_base,
+        "backup_id": backup_dir.name,
         "backup_dir": str(backup_dir),
         "shim": optional_path(shim_path),
+        "shim_path": optional_path(shim_path),
+        "shell_cli_path": shell_cli_path,
         "app_cli_path": app_cli_path if launch_agent_path else None,
         "launch_agent": optional_path(launch_agent_path),
+        "launch_agent_path": optional_path(launch_agent_path),
+        "shared_sync_source": str(shared_sync_source) if shared_sync_source else None,
+        "shared_sync_target": str(shared_sync_target) if shared_sync_target else None,
     }

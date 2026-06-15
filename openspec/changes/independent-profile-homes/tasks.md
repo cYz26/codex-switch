@@ -1,0 +1,390 @@
+# Tasks: Independent official and internal Codex homes with backup gate
+
+## Target State
+
+Implement the complete approved behavior for `independent-profile-homes`, not a partial delivery. Keep GSD phases as workflow governance and use the slices below as executable technical checkpoints.
+
+## Completion Contract
+
+- [x] Target State is implemented.
+- [x] Every Capability Slice is done or blocked with a recorded reason.
+- [x] Acceptance Criteria are checked.
+- [x] Validation Commands have been run or documented as unavailable.
+- [x] Verification evidence is recorded.
+- [x] Workflow state is updated.
+
+## Capability Slices
+
+### Slice 1: Capability evidence and validation surface
+
+**Status:** done
+
+**Goal**
+- Confirm the behavior boundary, capability evidence, and test strategy before editing implementation files.
+
+**Files / Modules**
+- `openspec/changes/independent-profile-homes/proposal.md`
+- `openspec/changes/independent-profile-homes/design.md`
+- `openspec/changes/independent-profile-homes/specs/`
+- relevant source and test files
+
+**Implementation**
+- [x] Review requirements and scenarios.
+- [x] Record local capability evidence; no external capability dependency is required.
+- [x] Identify affected files and compatibility constraints.
+
+**Tests**
+- [x] Added failing tests for independent homes, backup gate, dry-run output, and restore.
+
+**Validation Commands**
+```bash
+openspec validate independent-profile-homes --strict --no-interactive
+```
+
+**Done When**
+- [x] Requirements, Capability Evidence, files, tests, and validation commands are known.
+
+**Risks / Rollback**
+- Return to planning if requirements or compatibility are unclear.
+
+### Slice 2: Implementation and focused verification
+
+**Status:** done
+
+**Goal**
+- Implement the smallest compatible change that satisfies the Target State.
+
+**Files / Modules**
+- `scripts/codex_switch_home_sync.py`
+- `scripts/codex_switch_backup.py`
+- `scripts/codex_switch_restore.py`
+- `scripts/codex_switch_switching.py`
+- `scripts/codex_profile_switch.py`
+- `scripts/codex-switch`
+- `scripts/test_codex_profile_switch.py`
+
+**Implementation**
+- [x] Add failing tests for independent homes, backup gate, dry-run output, and restore.
+- [x] Implement shared-state classification and sync planning.
+- [x] Implement backup capture/finalize and restore.
+- [x] Implement official/internal independent activation.
+- [x] Keep edits scoped to the active change.
+
+**Tests**
+- [x] Run focused regression tests.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_internal_switch_uses_managed_home_and_backup_plan
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_restore_backup_dry_run_and_apply
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_backup_failure_aborts_before_mutation
+```
+
+**Done When**
+- [x] Focused verification passes.
+
+**Risks / Rollback**
+- Revert or repair this slice before starting broader verification if focused tests fail.
+
+### Slice 3: Broader verification and state update
+
+**Status:** done
+
+**Goal**
+- Prove the change is complete and durable.
+
+**Files / Modules**
+- `.planning/STATE.md`
+- `.planning/verification/`
+- `openspec/changes/independent-profile-homes/tasks.md`
+
+**Implementation**
+- [x] Run broader project verification where applicable.
+- [x] Record verification evidence.
+- [x] Update workflow state and this ledger.
+
+**Tests**
+- [x] Run the smallest relevant broader suite.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+```
+
+**Done When**
+- [x] Verification evidence exists and the Completion Contract is checked.
+
+**Risks / Rollback**
+- Keep archive blocked until verification evidence is recorded.
+
+### Slice 4: Runtime-first config merge follow-up
+
+**Status:** done
+
+**Goal**
+- Preserve target profile runtime config edits across switches while keeping a
+  refreshed canonical fallback and clear TOML section comments.
+
+**Files / Modules**
+- `scripts/codex_switch_config.py`
+- `scripts/codex_switch_home_sync.py`
+- `scripts/codex_switch_switching.py`
+- `scripts/codex_switch_toml_validate.py`
+- `scripts/test_codex_profile_switch.py`
+- `README.md`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+
+**Implementation**
+- [x] Add failing tests for target runtime config preference, invalid-runtime
+  fallback, official runtime profile preservation, and managed TOML comments.
+- [x] Prefer the target profile's last valid runtime config as the
+  profile-specific merge seed.
+- [x] Fall back to canonical profile config when the target runtime config is
+  missing or invalid.
+- [x] Refresh canonical profile config from validated runtime config without
+  copying shared settings into canonical config.
+- [x] Add managed TOML comments marking profile-specific and shared settings.
+- [x] Add Python 3.9-compatible basic TOML validation so fallback protection is
+  active when `tomllib` is unavailable.
+
+**Tests**
+- [x] Run focused regression tests for runtime-first config merge and fallback.
+- [x] Run broader project verification.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_internal_switch_prefers_last_runtime_config_and_refreshes_canonical \
+  CodexProfileSwitchTests.test_internal_switch_falls_back_to_canonical_when_last_runtime_config_is_invalid \
+  CodexProfileSwitchTests.test_official_switch_preserves_last_official_runtime_profile_settings
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+```
+
+**Done When**
+- [x] Full verification passes and evidence is recorded.
+
+**Risks / Rollback**
+- If merge validation rejects a valid Codex config shape, narrow the basic
+  validator and add a regression case before completion.
+
+### Slice 5: Profile home selection and legacy internal adoption
+
+**Status:** done
+
+**Goal**
+- Let legacy internal users keep using the existing `~/.codex` home for
+  `internal` while assigning `openai-official` a distinct managed home, with
+  persisted profile home bindings and collision protection.
+
+**Files / Modules**
+- `scripts/codex_profile_switch.py`
+- `scripts/codex-switch`
+- `scripts/codex_switch_store.py`
+- `scripts/codex_switch_switching.py`
+- `scripts/codex_switch_app_wrapper.py`
+- `scripts/test_codex_profile_switch.py`
+- `README.md`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+
+**Implementation**
+- [x] Add failing tests for internal adopting the existing Codex home, explicit
+  home collision rejection, and wrapper argument forwarding.
+- [x] Add `--internal-codex-home <path>` and persist profile home bindings in
+  manifests.
+- [x] Resolve independent profile homes from CLI override, manifest binding, and
+  default managed homes.
+- [x] Auto-assign `openai-official` to a managed home when `internal` explicitly
+  adopts the previous official home and official was not explicitly locked to
+  that same path.
+- [x] Refuse explicit identical homes before backup or mutation.
+- [x] Add interactive home selection for TTY switches with existing-home,
+  managed-home, and custom-path options.
+- [x] Ensure backup plans include any profile manifests whose home bindings will
+  be written.
+
+**Tests**
+- [x] Run focused home adoption tests.
+- [x] Run broader project verification.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_internal_switch_can_adopt_live_home_and_move_official_home \
+  CodexProfileSwitchTests.test_switch_rejects_explicit_identical_independent_homes \
+  CodexProfileSwitchTests.test_wrapper_forwards_internal_codex_home_option
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+```
+
+**Done When**
+- [x] Full verification passes and evidence is recorded.
+
+**Risks / Rollback**
+- If interactive prompting makes wrapper dry-run/apply flows inconsistent, keep
+  prompting limited to direct TTY switches and require explicit CLI paths for
+  non-interactive automation.
+
+### Slice 6: Interactive home prompt refinement
+
+**Status:** done
+
+**Goal**
+- Improve interactive home selection so the target profile is prompted first,
+  recommended directories are first and labelled, and same-home collisions can
+  be corrected without exiting.
+
+**Files / Modules**
+- `scripts/codex_switch_home_select.py`
+- `scripts/codex_switch_switching.py`
+- `scripts/test_codex_profile_switch.py`
+- `README.md`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+
+**Implementation**
+- [x] Add failing tests for target-first prompt order, recommended option
+  labelling, and interactive same-home collision recovery.
+- [x] Pass the target profile into home resolution.
+- [x] Order prompts as target profile first, then the other independent profile.
+- [x] Order prompt options with the recommended path first, the other profile's
+  current path second, and custom path available.
+- [x] Re-prompt interactively when both independent profiles resolve to the same
+  home; keep non-interactive same-home rejection.
+
+**Tests**
+- [x] Run focused prompt refinement tests.
+- [x] Run broader project verification.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_interactive_home_prompt_prioritizes_target_profile_and_recommended_option \
+  CodexProfileSwitchTests.test_interactive_same_home_collision_prompts_for_other_profile_home
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+```
+
+**Done When**
+- [x] Full verification passes and evidence is recorded.
+
+**Risks / Rollback**
+- If prompt behavior becomes awkward in automation, keep prompts disabled for
+  dry-run and non-TTY execution and preserve explicit CLI path overrides.
+
+## Execution Ledger
+
+| Slice | Status | Evidence |
+|---|---|---|
+| Capability evidence and validation surface | done | `openspec validate independent-profile-homes --strict --no-interactive` |
+| Implementation and focused verification | done | `python3 scripts/test_codex_profile_switch.py` |
+| Broader verification and state update | done | `.planning/verification/20260608230035-independent-profile-homes-verification.md` |
+| Runtime-first config merge follow-up | done | `.planning/verification/20260609115253-runtime-config-merge-follow-up.md` |
+| Profile home selection and legacy internal adoption | done | `.planning/verification/20260609174225-home-selection-adoption.md` |
+| Interactive home prompt refinement | done | `.planning/verification/20260609180600-interactive-home-prompt-refinement.md` |
+| Bulky support sync exclusion repair | done | `.planning/verification/20260609183515-bulky-support-sync-exclusion.md` |
+| Active-home-aware prompt repair | done | `.planning/verification/20260609185052-active-home-aware-prompt-repair.md` |
+| Semantic prompt recommendation repair | done | `.planning/verification/20260609185938-semantic-prompt-recommendation-repair.md` |
+| Desktop wrapper runtime config comments | done | `.planning/verification/20260609204042-desktop-wrapper-runtime-config-comments.md` |
+| Shared support symlink loop repair | done | `.planning/verification/20260609210522-shared-support-symlink-loop-repair.md` |
+| Official Desktop personality preservation | done | `.planning/verification/20260610123723-official-personality-preservation.md` |
+| Removed profile setting preservation | done | `.planning/verification/20260610125325-removed-profile-setting-preservation.md` |
+| Invalid reasoning effort runtime guard | done | `.planning/verification/20260610145055-invalid-reasoning-effort-runtime-guard.md` |
+| Internal Desktop model alias proxy | done | `.planning/verification/20260612184349-internal-desktop-model-alias-proxy.md` |
+
+### Invalid Reasoning Effort Runtime Guard
+
+**Status:** done
+
+**Goal**
+- Prevent unsupported runtime `model_reasoning_effort` values from persisting
+  into managed internal homes when the active model catalog declares the
+  supported effort set.
+
+**Files / Modules**
+- `scripts/codex_switch_home_sync.py`
+- `scripts/test_codex_profile_switch.py`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+
+**Implementation**
+- [x] Add a failing regression test for a valid TOML runtime config whose
+  `model_reasoning_effort` is unsupported by the configured model catalog.
+- [x] Treat that runtime seed as invalid and fall back to the canonical
+  profile config.
+- [x] Preserve existing runtime-first behavior when no catalog support data is
+  available.
+
+**Tests**
+- [x] Run focused regression coverage for the invalid reasoning effort guard.
+- [x] Run the smallest relevant broader regression set.
+
+### Internal Desktop Model Alias Proxy
+
+**Status:** done
+
+**Goal**
+- Prevent Codex Desktop from showing the static fallback reasoning-effort list
+  with `Max` when the internal profile uses a versioned Azure/AIDP deployment
+  model that the Desktop frontend treats as a custom model.
+
+**Files / Modules**
+- `scripts/codex_switch_app_proxy.py`
+- `scripts/codex_switch_app_wrapper.py`
+- `scripts/test_codex_profile_switch.py`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+
+**Implementation**
+- [x] Add a regression test for masking a versioned deployment model to a
+  Desktop-compatible alias while preserving the catalog-supported effort list.
+- [x] Add a regression test for masking thread and conversation model fields
+  that the Desktop composer uses for reasoning-effort lookup.
+- [x] Add a regression test for translating Desktop alias selections back to
+  the versioned backend deployment model.
+- [x] Route managed internal `app-server --stdio` launches through the proxy
+  while keeping non-app-server wrapper invocations unchanged.
+- [x] Regenerate the local internal Desktop wrapper and verify the proxied
+  `model/list`, `config/read`, and thread/conversation payloads expose
+  `gpt-5.5` with `low`, `medium`, `high`, and `xhigh` only.
+
+**Tests**
+- [x] Run focused regression coverage for the app proxy and wrapper route.
+- [x] Run the smallest relevant broader regression set.
+
+## Acceptance Criteria
+
+- [x] Required behavior matches the OpenSpec scenarios.
+- [x] Tests cover the changed behavior.
+- [x] No required capability remains unimplemented without a blocker.
+
+## Validation Commands
+
+```bash
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+```
+
+## Final Verification
+
+- [x] Focused tests pass.
+- [x] Broader tests, lint, typecheck, or build pass where applicable.
+- [x] Verification evidence is recorded.

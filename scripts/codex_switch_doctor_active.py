@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from codex_switch_constants import APP_CLI_ENV, SwitchError
 from codex_switch_io import read_json
 from codex_switch_launch import read_launch_agent_cli_path
@@ -21,7 +23,8 @@ def active_app_cli_observation(store: Store) -> tuple[str, str]:
 def active_profile_problems(store: Store) -> list[str]:
     if not store.active_path.exists():
         return []
-    active_profile = read_json(store.active_path).get("profile")
+    active = read_json(store.active_path)
+    active_profile = active.get("profile")
     if not isinstance(active_profile, str):
         return []
     try:
@@ -32,6 +35,15 @@ def active_profile_problems(store: Store) -> list[str]:
     expected_app_cli = profile_app_cli_path(active_manifest)
     observed_label, current_app_cli = active_app_cli_observation(store)
     problems: list[str] = []
+    codex_home = active.get("codex_home")
+    if isinstance(codex_home, str) and not store.profile_dir(active_profile).exists():
+        problems.append(f"active profile {active_profile}: profile directory is missing")
+    if isinstance(codex_home, str):
+        if not Path(codex_home).expanduser().exists():
+            problems.append(f"active profile {active_profile}: CODEX_HOME is missing: {codex_home}")
+    backup_id = active.get("backup_id")
+    if isinstance(backup_id, str) and not (store.backups_dir / backup_id / "backup.json").exists():
+        problems.append(f"active profile {active_profile}: backup is missing: {backup_id}")
     if (
         expected_app_cli
         and current_app_cli
