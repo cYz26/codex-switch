@@ -66,7 +66,10 @@ Release-installed local commands self-sync the `codex-switch` implementation
 before ordinary command execution. The wrapper checks at most once per day by
 default, only when it is running from the release implementation directory
 under `~/.local/share/codex-switch/current`, and re-execs the original command
-after a successful sync. Source checkout commands do not rewrite the repository.
+after a successful sync. When a due check runs, it prints self-update status to
+stderr, including "checking latest release", "already up to date <version>", a
+synced version transition, or a warning before continuing. Source checkout
+commands do not rewrite the repository.
 
 Use these controls when scripting or debugging:
 

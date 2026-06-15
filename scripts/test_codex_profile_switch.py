@@ -374,6 +374,35 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
 
             self.assertIn("synced-wrapper:status --verbose", result.stdout)
+            self.assertIn("codex-switch self-update: checking latest release", result.stderr)
+            self.assertIn(
+                "codex-switch self-update: synced implementation 0.1.1 -> 9.9.9",
+                result.stderr,
+            )
+            self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_local_wrapper_self_update_reports_already_up_to_date(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root, version="9.9.9")
+            tarball = self.make_remote_wrapper_tarball(root, version="9.9.9")
+            env = self.self_update_env(root, tarball)
+
+            result = subprocess.run(
+                [str(local_wrapper), "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("old-switcher:status", result.stdout)
+            self.assertIn("codex-switch self-update: checking latest release", result.stderr)
+            self.assertIn(
+                "codex-switch self-update: already up to date 9.9.9",
+                result.stderr,
+            )
             self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
 
     def test_local_wrapper_skip_self_update_keeps_existing_install(self) -> None:
@@ -393,6 +422,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
 
             self.assertIn("old-switcher:status", result.stdout)
+            self.assertNotIn("self-update", result.stderr)
             self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
 
     def test_source_checkout_wrapper_does_not_self_update(self) -> None:

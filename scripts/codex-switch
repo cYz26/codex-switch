@@ -289,6 +289,7 @@ sync_self_update() {
   next_version="$(bundle_version "$staged")"
   if [[ -n "$current_version" && -n "$next_version" && "$current_version" == "$next_version" ]]; then
     rm -rf "$staged"
+    echo "codex-switch self-update: already up to date $current_version" >&2
     return 3
   fi
 
@@ -339,6 +340,7 @@ maybe_self_update() {
   fi
 
   record_self_update_check
+  echo "codex-switch self-update: checking latest release..." >&2
   if sync_self_update; then
     export CODEX_SWITCH_SELF_UPDATE_REEXECED=1
     exec "$SCRIPT_DIR/codex-switch" "${ORIGINAL_ARGS[@]}"

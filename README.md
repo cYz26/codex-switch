@@ -54,6 +54,11 @@ newer bundle is available, and re-runs the original command against the synced
 wrapper. Source checkout usage such as `scripts/codex-switch status` does not
 self-modify.
 
+When a self-update check runs, status is printed to stderr before the command's
+normal output. A current install reports `codex-switch self-update: already up
+to date <version>`; an updated install reports the synced version transition.
+Explicitly skipped checks and interval-skipped checks stay quiet.
+
 Self-update controls:
 
 ```bash
