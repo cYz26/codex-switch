@@ -15,6 +15,7 @@ from pathlib import Path
 
 from codex_switch_running_app import (
     RunningCodexProcess,
+    app_server_command_path,
     parse_env_app_cli_path,
     parse_ps_processes,
     running_desktop_problems,
@@ -2600,6 +2601,32 @@ class CodexProfileSwitchTests(unittest.TestCase):
         )
 
         self.assertEqual(parse_env_app_cli_path(output), "/Users/cY/.local/bin/codex")
+
+    def test_app_server_command_path_ignores_payload_mentions(self) -> None:
+        args = (
+            "/Users/cY/.codex/computer-use/Codex Computer Use.app/Contents/"
+            "SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient "
+            "turn-ended "
+            '{"last-assistant-message":"Host --> AppServer[\\"codex app-server --stdio\\"]"}'
+        )
+
+        self.assertEqual(app_server_command_path(args), "")
+
+    def test_app_server_command_path_accepts_codex_executables(self) -> None:
+        self.assertEqual(
+            app_server_command_path(
+                "/Users/cY/.codex-switch/bin/codex-internal-app "
+                "app-server --analytics-default-enabled"
+            ),
+            "/Users/cY/.codex-switch/bin/codex-internal-app",
+        )
+        self.assertEqual(
+            app_server_command_path(
+                "/Users/cY/.vscode/extensions/openai.chatgpt/bin/macos-aarch64/codex "
+                "app-server --analytics-default-enabled"
+            ),
+            "/Users/cY/.vscode/extensions/openai.chatgpt/bin/macos-aarch64/codex",
+        )
 
     def test_running_desktop_problem_reports_stale_app_server(self) -> None:
         store = Store(

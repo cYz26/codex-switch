@@ -1,7 +1,12 @@
 # Local workflow installs and runtime state
 .codex/
+.agents/
 .dev-flow/
 log/
+
+# Local workflow diagnostics
+.planning/context-health/
+.planning/verification/local/
 
 # Build output
 dist/

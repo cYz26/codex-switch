@@ -11,9 +11,11 @@ from codex_switch_store import Store
 
 
 DESKTOP_APP_MARKER = "/Applications/Codex.app/Contents/MacOS/Codex"
-APP_SERVER_MARKER = " app-server"
 LISTEN_ARG = "--listen"
 PRIMARY_APP_SERVER_ARG = "--analytics-default-enabled"
+APP_SERVER_COMMAND = re.compile(
+    r"^(?P<command>(?:\S*/)?codex(?:-[^\s/]*)?)\s+app-server(?:\s|$)"
+)
 
 
 @dataclass(frozen=True)
@@ -54,9 +56,10 @@ def parse_env_app_cli_path(output: str) -> str:
 
 
 def app_server_command_path(args: str) -> str:
-    if APP_SERVER_MARKER not in args:
+    match = APP_SERVER_COMMAND.search(args)
+    if not match:
         return ""
-    return args.split(APP_SERVER_MARKER, 1)[0]
+    return match.group("command")
 
 
 def process_app_cli_env(pid: int) -> str:

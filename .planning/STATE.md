@@ -53,7 +53,7 @@ context_management:
     - validation_recorded_if_applicable
 
 context_health:
-  last_report: .planning/context-health/reports/20260615174938-context-health.json
+  last_report: .planning/context-health/reports/20260616115750-context-health.json
   last_risk: medium
   last_confidence: medium
   last_decision: reconcile
