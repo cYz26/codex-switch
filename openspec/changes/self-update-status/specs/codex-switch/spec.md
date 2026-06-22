@@ -5,12 +5,11 @@
 ### Requirement: Self-update status output
 
 The system SHALL print concise status messages when a release-installed
-`codex-switch` wrapper performs a due self-update check.
+`codex-switch` wrapper performs a self-update check.
 
 #### Scenario: Same-version check reports current status
 
 - GIVEN a release-installed wrapper is eligible for self-update
-- AND the self-update interval has elapsed
 - AND the configured release bundle has the same version as the installed
   bundle
 - WHEN the user invokes a local `codex-switch` command
@@ -20,7 +19,6 @@ The system SHALL print concise status messages when a release-installed
 #### Scenario: Sync-needed check reports version transition
 
 - GIVEN a release-installed wrapper is eligible for self-update
-- AND the self-update interval has elapsed
 - AND the configured release bundle has a newer version than the installed
   bundle
 - WHEN the user invokes a local `codex-switch` command

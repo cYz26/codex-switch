@@ -64,18 +64,18 @@ install.
 
 ### Requirement: Local command implementation self-update
 
-The system SHALL provide a bounded self-update check for persistent local
-`codex-switch` commands installed from a release bundle.
+The system SHALL check for self-updates on every ordinary persistent local
+`codex-switch` command installed from a release bundle.
 
 #### Scenario: Eligible release install syncs before command execution
 
 - GIVEN the local wrapper is running from the configured release implementation
   directory
-- AND the self-update interval has elapsed
 - AND the configured release bundle contains executable `scripts/codex-switch`
 - WHEN the user invokes a local `codex-switch` command
-- THEN the wrapper syncs the stable implementation directory from the release
-  bundle
+- THEN the wrapper checks the stable implementation directory against the
+  release bundle
+- AND syncs from the release bundle when the release bundle version differs
 - AND re-execs the original command once against the synced wrapper.
 
 #### Scenario: Source checkout does not self-modify
@@ -111,7 +111,6 @@ The system SHALL provide a bounded self-update check for persistent local
 #### Scenario: Same-version check reports current status
 
 - GIVEN a release-installed wrapper is eligible for self-update
-- AND the self-update interval has elapsed
 - AND the configured release bundle has the same version as the installed
   bundle
 - WHEN the user invokes a local `codex-switch` command
@@ -121,12 +120,19 @@ The system SHALL provide a bounded self-update check for persistent local
 #### Scenario: Sync-needed check reports version transition
 
 - GIVEN a release-installed wrapper is eligible for self-update
-- AND the self-update interval has elapsed
 - AND the configured release bundle has a newer version than the installed
   bundle
 - WHEN the user invokes a local `codex-switch` command
 - THEN stderr reports that self-update is checking the latest release
 - AND stderr reports the synced implementation version transition.
+
+#### Scenario: Repeated invocations check every time
+
+- GIVEN a release-installed wrapper is eligible for self-update
+- AND the configured release bundle has the same version as the installed
+  bundle
+- WHEN the user invokes a local `codex-switch` command twice in sequence
+- THEN each invocation reports that self-update is checking the latest release.
 
 #### Scenario: Skipped checks remain quiet
 

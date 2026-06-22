@@ -46,25 +46,23 @@ codex-switch env check-internal
 automatically delegates to `codex-switch update-internal` when a newer internal
 release is detected.
 
-Persistent local commands installed by `install.sh` also perform a bounded
-codex-switch implementation self-update before ordinary command execution. By
-default, a release-installed wrapper checks at most once per day, syncs
-`~/.local/share/codex-switch/current` from the configured release tarball when a
-newer bundle is available, and re-runs the original command against the synced
-wrapper. Source checkout usage such as `scripts/codex-switch status` does not
-self-modify.
+Persistent local commands installed by `install.sh` also check for a
+codex-switch implementation self-update before every ordinary command execution.
+A release-installed wrapper syncs `~/.local/share/codex-switch/current` from the
+configured release tarball when a newer bundle is available, and re-runs the
+original command against the synced wrapper. Source checkout usage such as
+`scripts/codex-switch status` does not self-modify.
 
 When a self-update check runs, status is printed to stderr before the command's
 normal output. A current install reports `codex-switch self-update: already up
 to date <version>`; an updated install reports the synced version transition.
-Explicitly skipped checks and interval-skipped checks stay quiet.
+Explicitly skipped checks stay quiet.
 
 Self-update controls:
 
 ```bash
 codex-switch --skip-self-update status
 CODEX_SWITCH_SKIP_SELF_UPDATE=1 codex-switch status
-CODEX_SWITCH_SELF_UPDATE_INTERVAL_SECONDS=0 codex-switch status
 CODEX_SWITCH_TARBALL_URL="https://example.com/codex-switch.tar.gz" codex-switch status
 CODEX_SWITCH_SOURCE_TARBALL_URL="https://github.com/cYz26/codex-switch/archive/refs/tags/v0.1.3.tar.gz" codex-switch status
 ```

@@ -8,7 +8,7 @@ current_phase:
   status: planning
 
 current_change:
-  id: internal-app-protocol-compat
+  id: always-check-self-update
   status: verified
 
 gates:
@@ -58,15 +58,17 @@ context_health:
   last_confidence: medium
   last_decision: reconcile
   last_goal_status: aligned
-  goal_summary: Internal Desktop app-server protocol compatibility is implemented and verified. The generated internal wrapper now routes every app-server invocation through the proxy, and the app proxy flattens namespace dynamic tools for older internal backends and filters unsupported plugin marketplace kinds while preserving the configured internal binary. Focused regressions, full tests, py_compile, diff check, and OpenSpec strict validation passed. Archive remains closed by gate.
+  goal_summary: Local codex-switch self-update cooldown removal is implemented and verified. Release-installed wrappers now check self-update on every ordinary command invocation while preserving explicit skip controls, source-checkout safety, non-blocking failures, and re-exec loop prevention. Focused regressions, full tests, py_compile, shell syntax checks, package generation, diff check, and OpenSpec strict validation passed. Archive remains closed by gate.
 ---
 
 # Workflow State
 
 ## Current Status
 
-Change `internal-app-protocol-compat` is implemented and locally verified. Internal Desktop mode keeps the configured internal binary, routes all Desktop app-server launches through the generated app proxy, and normalizes the observed newer Desktop request shapes that older internal app-server versions reject.
+Change `always-check-self-update` is implemented and locally verified. Persistent release-installed `codex-switch` commands now check for self-update on every ordinary command invocation instead of using a daily cooldown. Explicit skip controls and source checkout safety remain unchanged.
+
+Previous verified change `internal-app-protocol-compat` remains active and unarchived. Archive remains unavailable because the archive gate is closed.
 
 ## Next Action
 
-Review and submit the verified `internal-app-protocol-compat` change. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.
+Review and submit the verified `always-check-self-update` change. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.

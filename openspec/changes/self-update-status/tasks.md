@@ -4,7 +4,7 @@
 
 Release-installed `codex-switch` commands show self-update status when a check
 actually runs: check start, already-current result, sync result, or existing
-failure warning. Explicitly skipped and interval-skipped checks stay quiet.
+failure warning. Explicitly skipped checks stay quiet.
 
 ## Completion Contract
 
@@ -28,7 +28,7 @@ failure warning. Explicitly skipped and interval-skipped checks stay quiet.
 - `scripts/test_codex_profile_switch.py`
 
 **Implementation**
-- [x] Add a failing test for same-version due check status output.
+- [x] Add a failing test for same-version check status output.
 - [x] Extend sync-needed and skip tests to assert status output.
 
 **Validation Commands**
@@ -50,7 +50,7 @@ python3 scripts/test_codex_profile_switch.py \
 - `scripts/codex-switch`
 
 **Implementation**
-- [x] Print check-start status after eligibility and interval gates pass.
+- [x] Print check-start status after eligibility gates pass.
 - [x] Print already-up-to-date status when staged and current versions match.
 - [x] Preserve existing sync success and warning messages.
 

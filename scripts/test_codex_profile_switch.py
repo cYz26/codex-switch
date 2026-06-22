@@ -253,7 +253,6 @@ class CodexProfileSwitchTests(unittest.TestCase):
         env = os.environ.copy()
         env["CODEX_SWITCH_LIB_DIR"] = str(root / "lib")
         env["CODEX_SWITCH_TARBALL_URL"] = tarball.as_uri()
-        env["CODEX_SWITCH_SELF_UPDATE_INTERVAL_SECONDS"] = "0"
         return env
 
     def test_remote_runner_downloads_release_and_execs_command(self) -> None:
@@ -404,6 +403,39 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "codex-switch self-update: already up to date 9.9.9",
                 result.stderr,
             )
+            self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_local_wrapper_self_update_checks_every_invocation(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root, version="9.9.9")
+            tarball = self.make_remote_wrapper_tarball(root, version="9.9.9")
+            env = self.self_update_env(root, tarball)
+
+            first = subprocess.run(
+                [str(local_wrapper), "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            second = subprocess.run(
+                [str(local_wrapper), "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            for result in (first, second):
+                self.assertIn("old-switcher:status", result.stdout)
+                self.assertIn("codex-switch self-update: checking latest release", result.stderr)
+                self.assertIn(
+                    "codex-switch self-update: already up to date 9.9.9",
+                    result.stderr,
+                )
             self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
 
     def test_local_wrapper_skip_self_update_keeps_existing_install(self) -> None:
