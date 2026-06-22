@@ -173,7 +173,7 @@ PY
 rm -f "$APP_CODEX_HOME/auth.json"
 
 export CODEX_HOME="$APP_CODEX_HOME"
-if [ "${{1:-}}" = "app-server" ] && [ "${{2:-}}" = "--stdio" ]; then
+if [ "${{1:-}}" = "app-server" ]; then
   exec env PYTHONPATH="$SWITCH_SCRIPTS" python3 \\
     "$SWITCH_SCRIPTS/codex_switch_app_proxy.py" \\
     "$CODEX_BIN" \\

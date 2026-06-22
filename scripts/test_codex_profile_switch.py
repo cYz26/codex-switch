@@ -1212,6 +1212,110 @@ class CodexProfileSwitchTests(unittest.TestCase):
         self.assertEqual(translated["params"]["writes"][0]["value"], actual_model)
         self.assertEqual(message["params"]["model"], desktop_model)
 
+    def test_desktop_app_proxy_flattens_namespace_dynamic_tools_for_older_backend(self) -> None:
+        actual_model = "gpt-5.5-2026-04-24"
+        desktop_model = "gpt-5.5"
+        message = {
+            "id": 10,
+            "method": "thread/start",
+            "params": {
+                "model": desktop_model,
+                "dynamicTools": [
+                    {
+                        "type": "namespace",
+                        "name": "tool_search",
+                        "description": "Search available tools.",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "search",
+                                "description": "Search tool catalog.",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {"query": {"type": "string"}},
+                                },
+                                "deferLoading": True,
+                            }
+                        ],
+                    },
+                    {
+                        "type": "function",
+                        "name": "read_file",
+                        "description": "Read a file.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                        },
+                    },
+                ],
+            },
+        }
+
+        translated = translate_desktop_message_for_backend(
+            message,
+            actual_model=actual_model,
+            desktop_model=desktop_model,
+        )
+
+        self.assertEqual(
+            translated["params"]["dynamicTools"],
+            [
+                {
+                    "namespace": "tool_search",
+                    "type": "function",
+                    "name": "search",
+                    "description": "Search tool catalog.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                    },
+                    "deferLoading": True,
+                },
+                {
+                    "type": "function",
+                    "name": "read_file",
+                    "description": "Read a file.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                },
+            ],
+        )
+        self.assertEqual(translated["params"]["model"], actual_model)
+        self.assertEqual(message["params"]["dynamicTools"][0]["type"], "namespace")
+
+    def test_desktop_app_proxy_filters_unsupported_plugin_marketplace_kind(self) -> None:
+        actual_model = "gpt-5.5-2026-04-24"
+        desktop_model = "gpt-5.5"
+        message = {
+            "id": 11,
+            "method": "plugin/list",
+            "params": {
+                "marketplaceKinds": [
+                    "local",
+                    "created-by-me-remote",
+                    "shared-with-me",
+                ],
+                "cwds": ["/Users/cY/dev/codex-switch"],
+            },
+        }
+
+        translated = translate_desktop_message_for_backend(
+            message,
+            actual_model=actual_model,
+            desktop_model=desktop_model,
+        )
+
+        self.assertEqual(
+            translated["params"]["marketplaceKinds"],
+            ["local", "shared-with-me"],
+        )
+        self.assertEqual(
+            message["params"]["marketplaceKinds"],
+            ["local", "created-by-me-remote", "shared-with-me"],
+        )
+
     def test_canonical_refresh_does_not_resurrect_removed_profile_settings(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -2051,7 +2155,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn(str(Path(__file__).parent), wrapper_text)
             self.assertNotIn("/old/missing/path", wrapper_text)
             self.assertIn("codex_switch_app_proxy.py", wrapper_text)
-            self.assertIn('app-server" ] && [ "${2:-}" = "--stdio"', wrapper_text)
+            self.assertIn('if [ "${1:-}" = "app-server" ]; then', wrapper_text)
+            self.assertNotIn('&& [ "${2:-}" = "--stdio" ]', wrapper_text)
 
             result = subprocess.run(
                 [str(app_wrapper), "--version"],
