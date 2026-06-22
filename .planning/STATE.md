@@ -8,7 +8,7 @@ current_phase:
   status: planning
 
 current_change:
-  id: always-check-self-update
+  id: internal-app-protocol-compat
   status: verified
 
 gates:
@@ -58,17 +58,32 @@ context_health:
   last_confidence: medium
   last_decision: reconcile
   last_goal_status: aligned
-  goal_summary: Local codex-switch self-update cooldown removal is implemented and verified. Release-installed wrappers now check self-update on every ordinary command invocation while preserving explicit skip controls, source-checkout safety, non-blocking failures, and re-exec loop prevention. Focused regressions, full tests, py_compile, shell syntax checks, package generation, diff check, and OpenSpec strict validation passed. Archive remains closed by gate.
+  goal_summary: Internal Desktop app protocol compatibility is implemented and verified for both older 0.140-style backends and the current 0.141 internal backend. The app proxy now preserves canonical namespace dynamic tools for 0.141+ while keeping legacy flattening for older backends. Local source was installed, the internal app wrapper was regenerated, focused installed-runtime probes passed, full tests and OpenSpec strict validation passed. Archive remains closed by gate.
 ---
 
 # Workflow State
 
 ## Current Status
 
-Change `always-check-self-update` is implemented and locally verified. Persistent release-installed `codex-switch` commands now check for self-update on every ordinary command invocation instead of using a daily cooldown. Explicit skip controls and source checkout safety remain unchanged.
+Change `internal-app-protocol-compat` is implemented and locally verified for
+the current `codex-cli 0.141.0` internal backend. The Desktop app proxy now
+detects namespace dynamic tool support from the configured backend version and
+preserves canonical `dynamicTools` for `0.141+` while retaining legacy
+flattening for older `0.140` backends.
 
-Previous verified change `internal-app-protocol-compat` remains active and unarchived. Archive remains unavailable because the archive gate is closed.
+The local source checkout was reinstalled to
+`/Users/cY/.local/share/codex-switch/current`, the generated internal Desktop
+wrapper was refreshed, and normal `codex-switch status` self-update now reports
+`already up to date 0.1.8` without overwriting the installed repair.
+
+Previous verified change `always-check-self-update` remains active and
+unarchived. Archive remains unavailable because the archive gate is closed.
 
 ## Next Action
 
-Review and submit the verified `always-check-self-update` change. Archive remains unavailable because the archive gate is closed. Do not archive until the gate is explicitly opened.
+Review the verified `internal-app-protocol-compat` repair. A full interactive
+Desktop switch to internal was intentionally not run during this session to
+avoid disrupting the active official-mode Desktop session; the generated
+wrapper/proxy `app-server --stdio` path no longer reproduces the reported
+dynamicTools format error. Archive remains unavailable because the archive gate
+is closed. Do not archive until the gate is explicitly opened.

@@ -30,6 +30,16 @@ SHALL normalize known newer Desktop request shapes before forwarding them.
 - AND each converted tool includes the original namespace name
 - AND no namespace dynamic tool spec is forwarded to the older backend.
 
+#### Scenario: Canonical dynamic tools are preserved for namespace-capable internal backends
+
+- GIVEN internal mode is configured with an internal backend that accepts
+  canonical namespace dynamic tool specs
+- AND Codex Desktop sends a `thread/start` request containing a canonical
+  namespace dynamic tool spec and a canonical function dynamic tool spec
+- WHEN the app proxy forwards the request to the backend
+- THEN the dynamic tool specs remain in canonical format
+- AND no mixed canonical and legacy dynamic tool array is forwarded.
+
 #### Scenario: Unsupported plugin marketplace kinds are filtered
 
 - GIVEN internal mode is configured with an older Codex backend that does not

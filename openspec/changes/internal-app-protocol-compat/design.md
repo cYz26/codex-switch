@@ -5,8 +5,9 @@
 - Request kind: bug repair for Codex Desktop/internal profile compatibility.
 - Workflow mode: brownfield, OpenSpec-required compatibility and error-handling
   change.
-- `capability-research`: skipped as a separate workflow; local generated
-  app-server schemas and Desktop logs provide the required capability evidence.
+- `capability-research`: used. Current local CLI help/schema generation,
+  Desktop logs, `codex-switch status`, and direct `app-server --stdio` probes
+  define the compatibility contract.
 - `superpowers:systematic-debugging`: used to establish root cause before
   fixing.
 - `superpowers:writing-plans`: used for implementation planning discipline;
@@ -40,7 +41,7 @@ before forwarding.
 | Normalize in the existing app proxy | The proxy is already the boundary between newer Desktop and profile-specific backend binaries. | Change profile bin binding; rejected because internal must use the specified bin. |
 | Keep conversions narrow and request-side only | The observed failures happen before backend work starts, and current response masking already works for model aliases. | Broad generic protocol shim; too risky for a local repair. |
 | Proxy all wrapper `app-server` invocations | Desktop can launch app-server with flags other than `--stdio`; the proxy is still the compatibility boundary for those launches. | Proxy only `app-server --stdio`; rejected because it bypasses the shim for `--analytics-default-enabled`. |
-| Flatten namespace dynamic tools | `0.140` supports flat specs with optional `namespace`; this preserves namespace identity without requiring newer schema support. | Drop namespace tools; would make task creation work but silently remove tool access. |
+| Version-gate namespace dynamic tool conversion | `0.140` needs legacy flat specs, while `0.141+` accepts canonical namespace specs and rejects mixed canonical/legacy arrays. | Always flatten; rejected because it breaks `0.141`. Never flatten; rejected because it breaks `0.140`. |
 | Filter unsupported plugin marketplace kinds | `0.140` rejects unknown enum values during request parsing. | Map to another kind; would misrepresent the user's requested collection. |
 
 ## Capability Evidence
@@ -56,6 +57,14 @@ before forwarding.
   `/Users/cY/.local/bin/codex app-server generate-json-schema` for `0.140.0`
   only accepts flat dynamic tool specs requiring `inputSchema` and does not
   accept `created-by-me-remote`.
+- Local current version evidence: `codex-switch status` and direct version
+  checks show the internal `codex_bin` is `/Users/cY/.local/bin/codex` at
+  `0.141.0`, while the Desktop bundle remains `0.142.0-alpha.6`.
+- Local direct probe evidence for `0.141.0`: a canonical `thread/start`
+  dynamicTools array containing one namespace spec and one function spec passes
+  dynamicTools parsing and reaches the later `Not initialized` gate; the proxy's
+  current mixed legacy/canonical output fails immediately with `Invalid request:
+  dynamic tools must use either canonical or legacy format consistently`.
 - Current profile evidence: `codex-switch status` shows active profile
   `openai-official`; the internal profile manifest keeps `codex_bin` bound to
   `/Users/cY/.local/bin/codex`.
@@ -70,10 +79,12 @@ before forwarding.
 - [ ] No internal profile binding is changed to the Desktop App bundle.
 - [ ] The generated wrapper sends any `app-server` invocation through the
       proxy while leaving non-app-server CLI commands direct.
-- [ ] Namespace dynamic tool specs are converted to flat function specs with
-      `namespace`, `type`, `name`, `description`, `inputSchema`, and optional
-      `deferLoading`.
-- [ ] Existing flat function dynamic tool specs remain valid for `0.140`.
+- [ ] `0.141+` internal backends receive canonical dynamic tool specs unchanged.
+- [ ] Older internal backends receive namespace dynamic tool specs converted to
+      flat function specs with `namespace`, `type`, `name`, `description`,
+      `inputSchema`, and optional `deferLoading`.
+- [ ] Existing flat function dynamic tool specs remain valid for older
+      backends.
 - [ ] `plugin/list.params.marketplaceKinds` drops unsupported newer values.
 - [ ] Existing model alias masking tests still pass.
 - [ ] Verification evidence records focused and broad commands.
@@ -104,6 +115,13 @@ Desktop passes.
 Run focused tests, full Python regression, compile checks, OpenSpec validation,
 diff checks, then record verification and update `.planning/STATE.md`.
 
+### Slice 5: 0.141 canonical dynamic tool compatibility
+
+Add a focused failing test for the upgraded internal backend path, detect
+backend namespace dynamic tool support from the configured `codex --version`,
+preserve canonical dynamic tool specs for `0.141+`, and keep `0.140` legacy
+flattening behavior covered.
+
 ## Execution Ledger
 
 Track status in `tasks.md`. Mark a slice done only after its validation command
@@ -117,6 +135,8 @@ passes or a blocker is recorded.
       proxy.
 - [ ] The proxy no longer forwards namespace dynamic tool specs in a shape that
       causes `missing field inputSchema` on `0.140`.
+- [ ] The proxy no longer converts `0.141+` canonical namespace dynamic tool
+      requests into mixed legacy/canonical arrays.
 - [ ] The proxy no longer forwards `created-by-me-remote` to a `0.140`
       `plugin/list` backend.
 - [ ] Existing proxy model alias behavior remains unchanged.
@@ -126,6 +146,7 @@ passes or a blocker is recorded.
 ```bash
 PYTHONPATH=scripts python3 -m unittest \
   scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_desktop_app_proxy_flattens_namespace_dynamic_tools_for_older_backend \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_desktop_app_proxy_preserves_canonical_dynamic_tools_for_namespace_backend \
   scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_desktop_app_proxy_filters_unsupported_plugin_marketplace_kind \
   scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_internal_switch_refreshes_desktop_wrapper_with_shared_config
 PYTHONPATH=scripts python3 -m unittest scripts.test_codex_profile_switch.CodexProfileSwitchTests

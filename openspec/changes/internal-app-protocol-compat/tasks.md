@@ -9,7 +9,8 @@ app-server versions can start threads and list plugins.
 
 ## Completion Contract
 
-- [x] Target State is implemented.
+- [x] Target State is implemented for both `0.140` and `0.141+` internal
+      backend compatibility.
 - [x] Every Capability Slice is done or blocked with a recorded reason.
 - [x] Acceptance Criteria are checked.
 - [x] Validation Commands have been run or documented as unavailable.
@@ -121,6 +122,50 @@ openspec validate --all --strict --no-interactive
 git diff --check
 ```
 
+### Slice 5: 0.141 canonical dynamic tool compatibility
+
+**Status:** done
+
+**Goal**
+- Preserve canonical namespace dynamic tool requests for upgraded internal
+  backends while keeping the older `0.140` flattening path.
+
+**Capability Evidence**
+- `codex-switch status` shows internal `codex_bin` is
+  `/Users/cY/.local/bin/codex`.
+- `/Users/cY/.local/bin/codex --version` returns `codex-cli 0.141.0`.
+- Direct `app-server --stdio` probe against `0.141.0` accepts canonical
+  `[namespace, function]` dynamic tools far enough to return `Not initialized`.
+- The same probe rejects current proxy mixed output with
+  `Invalid request: dynamic tools must use either canonical or legacy format
+  consistently`.
+
+**Files / Modules**
+- `scripts/codex_switch_app_proxy.py`
+- `scripts/test_codex_profile_switch.py`
+- `.planning/verification/`
+- `.planning/STATE.md`
+- `openspec/changes/internal-app-protocol-compat/`
+
+**Implementation**
+- [x] Add a failing test that canonical namespace dynamic tool requests remain
+      canonical when backend namespace dynamic tools are supported.
+- [x] Add focused tests for backend version parsing.
+- [x] Detect namespace dynamic tool support from the configured backend
+      `codex --version` output.
+- [x] Pass the detected capability through the app proxy forwarding path.
+- [x] Keep existing `0.140` legacy flattening tests passing.
+- [x] Refresh installed codex-switch runtime and generated internal wrapper.
+- [x] Record verification evidence and update workflow state.
+
+**Validation Commands**
+```bash
+PYTHONPATH=scripts python3 -m unittest \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_desktop_app_proxy_preserves_canonical_dynamic_tools_for_namespace_backend \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_desktop_app_proxy_flattens_namespace_dynamic_tools_for_older_backend \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_desktop_app_proxy_detects_namespace_dynamic_tool_support_from_backend_version -v
+```
+
 ## Execution Ledger
 
 | Slice | Status | Evidence |
@@ -129,20 +174,22 @@ git diff --check
 | Request normalization implementation | done | `.planning/verification/20260622112616-internal-app-protocol-compat.md` |
 | Wrapper app-server routing | done | `.planning/verification/20260622112616-internal-app-protocol-compat.md` |
 | Verification and state update | done | `.planning/verification/20260622112616-internal-app-protocol-compat.md` |
+| 0.141 canonical dynamic tool compatibility | done | `.planning/verification/20260622161613-internal-app-protocol-compat-0141.md` |
 
 ## Acceptance Criteria
 
 - [x] Internal `codex_bin` remains configured as the specified internal binary.
 - [x] Generated internal Desktop wrapper proxies all `app-server` invocations,
       not only `app-server --stdio`.
-- [x] Namespace dynamic tool specs are forwarded as flat function specs, not as
-      namespace specs.
+- [x] Namespace dynamic tool specs are preserved for `0.141+` backends.
+- [x] Namespace dynamic tool specs are forwarded as flat function specs for
+      `0.140` backends, not as namespace specs.
 - [x] `created-by-me-remote` is not forwarded to `0.140` plugin listing.
 - [x] Existing proxy model alias behavior remains covered and passing.
 
 ## Final Verification
 
-- [x] Focused regressions pass.
+- [x] Focused regressions pass for the new `0.141` compatibility case.
 - [x] Full Python regression passes.
 - [x] Compile, OpenSpec, and diff checks pass.
 - [x] Verification evidence is recorded.

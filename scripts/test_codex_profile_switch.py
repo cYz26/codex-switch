@@ -21,6 +21,7 @@ from codex_switch_running_app import (
     running_desktop_problems,
 )
 from codex_switch_app_proxy import (
+    codex_version_supports_canonical_dynamic_tools,
     mask_backend_message_for_desktop,
     translate_desktop_message_for_backend,
 )
@@ -1316,6 +1317,65 @@ class CodexProfileSwitchTests(unittest.TestCase):
         )
         self.assertEqual(translated["params"]["model"], actual_model)
         self.assertEqual(message["params"]["dynamicTools"][0]["type"], "namespace")
+
+    def test_desktop_app_proxy_preserves_canonical_dynamic_tools_for_namespace_backend(self) -> None:
+        actual_model = "gpt-5.5-2026-04-24"
+        desktop_model = "gpt-5.5"
+        dynamic_tools = [
+            {
+                "type": "namespace",
+                "name": "tool_search",
+                "description": "Search available tools.",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "search",
+                        "description": "Search tool catalog.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                        },
+                        "deferLoading": True,
+                    }
+                ],
+            },
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a file.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            },
+        ]
+        message = {
+            "id": 12,
+            "method": "thread/start",
+            "params": {
+                "model": desktop_model,
+                "dynamicTools": dynamic_tools,
+            },
+        }
+
+        translated = translate_desktop_message_for_backend(
+            message,
+            actual_model=actual_model,
+            desktop_model=desktop_model,
+            supports_canonical_dynamic_tools=True,
+        )
+
+        self.assertEqual(translated["params"]["dynamicTools"], dynamic_tools)
+        self.assertEqual(translated["params"]["model"], actual_model)
+        self.assertEqual(message["params"]["dynamicTools"][0]["type"], "namespace")
+
+    def test_desktop_app_proxy_detects_namespace_dynamic_tool_support_from_backend_version(self) -> None:
+        self.assertFalse(codex_version_supports_canonical_dynamic_tools("codex-cli 0.140.0"))
+        self.assertTrue(codex_version_supports_canonical_dynamic_tools("codex-cli 0.141.0"))
+        self.assertTrue(
+            codex_version_supports_canonical_dynamic_tools("codex-cli 0.142.0-alpha.6")
+        )
+        self.assertFalse(codex_version_supports_canonical_dynamic_tools("not a version"))
 
     def test_desktop_app_proxy_filters_unsupported_plugin_marketplace_kind(self) -> None:
         actual_model = "gpt-5.5-2026-04-24"

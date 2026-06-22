@@ -14,6 +14,8 @@ from codex_switch_toml_edit import top_level_assignment
 
 
 DATE_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+CODEX_CLI_VERSION = re.compile(r"\bcodex-cli\s+(\d+)\.(\d+)\.(\d+)")
+MIN_CANONICAL_DYNAMIC_TOOLS_VERSION = (0, 141, 0)
 MODEL_VALUE_KEYS = {
     "model",
     "latestModel",
@@ -44,6 +46,30 @@ def read_desktop_model_alias(config_path: Path) -> tuple[str | None, str | None]
     if desktop_model == actual_model:
         return actual_model, None
     return actual_model, desktop_model
+
+
+def codex_version_supports_canonical_dynamic_tools(version_text: str) -> bool:
+    match = CODEX_CLI_VERSION.search(version_text)
+    if not match:
+        return False
+    version = tuple(int(part) for part in match.groups())
+    return version >= MIN_CANONICAL_DYNAMIC_TOOLS_VERSION
+
+
+def backend_supports_canonical_dynamic_tools(codex_bin: str) -> bool:
+    try:
+        result = subprocess.run(
+            [codex_bin, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return codex_version_supports_canonical_dynamic_tools(
+        f"{result.stdout}\n{result.stderr}"
+    )
 
 
 def message_id(message: dict) -> str | int | None:
@@ -194,9 +220,11 @@ def translate_desktop_message_for_backend(
     *,
     actual_model: str,
     desktop_model: str,
+    supports_canonical_dynamic_tools: bool = False,
 ) -> dict:
     translated = replace_model_value(message, old=desktop_model, new=actual_model)
-    translated = normalize_desktop_request_for_older_backend(translated)
+    if not supports_canonical_dynamic_tools:
+        translated = normalize_desktop_request_for_older_backend(translated)
     if isinstance(translated, dict):
         translated = filter_plugin_list_marketplace_kinds_for_older_backend(translated)
     return translated
@@ -212,6 +240,7 @@ def forward_client_to_backend(
     pending_methods: dict[str | int, str],
     actual_model: str,
     desktop_model: str,
+    supports_canonical_dynamic_tools: bool,
 ) -> None:
     assert backend.stdin is not None
     try:
@@ -231,6 +260,7 @@ def forward_client_to_backend(
                     message,
                     actual_model=actual_model,
                     desktop_model=desktop_model,
+                    supports_canonical_dynamic_tools=supports_canonical_dynamic_tools,
                 )
                 write_json_line(backend.stdin, message)
             else:
@@ -278,6 +308,7 @@ def forward_backend_stderr(backend: subprocess.Popen[str]) -> None:
 
 def run_proxy(codex_bin: str, config_path: Path, args: list[str]) -> int:
     actual_model, desktop_model = read_desktop_model_alias(config_path)
+    supports_canonical_dynamic_tools = backend_supports_canonical_dynamic_tools(codex_bin)
     backend = subprocess.Popen(
         [codex_bin, *args],
         stdin=subprocess.PIPE,
@@ -289,7 +320,7 @@ def run_proxy(codex_bin: str, config_path: Path, args: list[str]) -> int:
     if not actual_model or not desktop_model:
         client_thread = threading.Thread(
             target=forward_client_to_backend,
-            args=(backend, {}, "", ""),
+            args=(backend, {}, "", "", supports_canonical_dynamic_tools),
             daemon=True,
         )
         stdout_thread = threading.Thread(
@@ -301,7 +332,13 @@ def run_proxy(codex_bin: str, config_path: Path, args: list[str]) -> int:
         pending_methods: dict[str | int, str] = {}
         client_thread = threading.Thread(
             target=forward_client_to_backend,
-            args=(backend, pending_methods, actual_model, desktop_model),
+            args=(
+                backend,
+                pending_methods,
+                actual_model,
+                desktop_model,
+                supports_canonical_dynamic_tools,
+            ),
             daemon=True,
         )
         stdout_thread = threading.Thread(
