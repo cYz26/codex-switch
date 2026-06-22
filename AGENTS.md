@@ -6,6 +6,26 @@ This repository uses a Codex-first development workflow with GSD-style planning,
 
 Do not implement non-trivial changes directly from chat memory.
 
+## Codex Internal Binary Upgrade Context
+
+When the `internal` profile's configured `codex_bin` is upgraded or rebound,
+treat it as a compatibility and migration boundary. Do not assume the existing
+Desktop wrapper, app-server proxy shim, or profile-home migration behavior still
+matches the new internal backend version.
+
+Before treating internal mode as healthy after an internal binary update:
+
+- Verify the actual Desktop App bundle binary, shell PATH binary, internal
+  profile `codex_bin`, generated app wrapper, and running app-server path.
+- Re-compare Desktop bundle and internal app-server request schemas when
+  protocol compatibility could have changed.
+- Re-check whether proxy conversions such as namespace dynamic tools,
+  unsupported marketplace kinds, model aliases, and app-server flag routing are
+  still needed, sufficient, or removable.
+- Re-run a real internal Desktop switch test plus focused regression tests.
+- If behavior, compatibility, migration, or error handling must change, create
+  or update the relevant OpenSpec change before implementation.
+
 ## Workflow Ownership
 
 - GSD owns roadmap, milestones, phases, and phase verification.
