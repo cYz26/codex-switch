@@ -20,6 +20,9 @@ MODEL_VALUE_KEYS = {
     "previousTurnModel",
     "userSavedModelString",
 }
+UNSUPPORTED_OLDER_BACKEND_PLUGIN_MARKETPLACE_KINDS = {
+    "created-by-me-remote",
+}
 
 
 def desktop_alias_for_model(model: str) -> str:
@@ -70,6 +73,67 @@ def replace_model_value(value, *, old: str, new: str):
     if isinstance(value, list):
         return [replace_model_value(item, old=old, new=new) for item in value]
     return value
+
+
+def older_backend_function_dynamic_tool_spec(tool: dict, *, namespace: str | None = None) -> dict:
+    spec = {}
+    if namespace is not None:
+        spec["namespace"] = namespace
+    for key in ("type", "name", "description", "inputSchema", "deferLoading"):
+        if key in tool:
+            spec[key] = normalize_desktop_request_for_older_backend(tool[key])
+    return spec
+
+
+def flatten_namespace_dynamic_tool_spec(spec: dict) -> list[dict] | None:
+    if spec.get("type") != "namespace":
+        return None
+    namespace = spec.get("name")
+    tools = spec.get("tools")
+    if not isinstance(namespace, str) or not isinstance(tools, list):
+        return None
+    flattened = []
+    for tool in tools:
+        if isinstance(tool, dict):
+            flattened.append(older_backend_function_dynamic_tool_spec(tool, namespace=namespace))
+        else:
+            flattened.append(normalize_desktop_request_for_older_backend(tool))
+    return flattened
+
+
+def normalize_desktop_request_for_older_backend(value):
+    if isinstance(value, list):
+        normalized = []
+        for item in value:
+            flattened = flatten_namespace_dynamic_tool_spec(item) if isinstance(item, dict) else None
+            if flattened is None:
+                normalized.append(normalize_desktop_request_for_older_backend(item))
+            else:
+                normalized.extend(flattened)
+        return normalized
+    if isinstance(value, dict):
+        return {
+            key: normalize_desktop_request_for_older_backend(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def filter_plugin_list_marketplace_kinds_for_older_backend(message: dict) -> dict:
+    if message.get("method") != "plugin/list":
+        return message
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return message
+    kinds = params.get("marketplaceKinds")
+    if not isinstance(kinds, list):
+        return message
+    params["marketplaceKinds"] = [
+        kind
+        for kind in kinds
+        if kind not in UNSUPPORTED_OLDER_BACKEND_PLUGIN_MARKETPLACE_KINDS
+    ]
+    return message
 
 
 def mask_model_list_response(message: dict, *, actual_model: str, desktop_model: str) -> dict:
@@ -131,7 +195,11 @@ def translate_desktop_message_for_backend(
     actual_model: str,
     desktop_model: str,
 ) -> dict:
-    return replace_model_value(message, old=desktop_model, new=actual_model)
+    translated = replace_model_value(message, old=desktop_model, new=actual_model)
+    translated = normalize_desktop_request_for_older_backend(translated)
+    if isinstance(translated, dict):
+        translated = filter_plugin_list_marketplace_kinds_for_older_backend(translated)
+    return translated
 
 
 def write_json_line(stream, message: dict) -> None:
