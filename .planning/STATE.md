@@ -8,7 +8,7 @@ current_phase:
   status: planning
 
 current_change:
-  id: internal-app-protocol-compat
+  id: independent-profile-homes
   status: verified
 
 gates:
@@ -53,37 +53,70 @@ context_management:
     - validation_recorded_if_applicable
 
 context_health:
-  last_report: .planning/context-health/reports/20260618180934-context-health.json
+  last_report: .planning/context-health/reports/20260624210101-context-health.json
   last_risk: medium
   last_confidence: medium
   last_decision: reconcile
   last_goal_status: aligned
-  goal_summary: Internal Desktop app protocol compatibility is implemented and verified for both older 0.140-style backends and the current 0.141 internal backend. The app proxy now preserves canonical namespace dynamic tools for 0.141+ while keeping legacy flattening for older backends. Local source was installed, the internal app wrapper was regenerated, focused installed-runtime probes passed, full tests and OpenSpec strict validation passed. Archive remains closed by gate.
+  goal_summary: Official/internal independent home switching regression repaired and hardened. Doctor now accepts the managed internal Desktop app-server proxy chain, stale unavailable enabled plugin selectors have an explicit disable cleanup path, unavailable browser-use/local-personal dev-flow selectors were disabled in local config, pdf primary-runtime cache was refreshed, the generated local bundle was installed, and installed doctor passes on the real workstation.
 ---
 
 # Workflow State
 
 ## Current Status
 
-Change `internal-app-protocol-compat` is implemented and locally verified for
-the current `codex-cli 0.141.0` internal backend. The Desktop app proxy now
-detects namespace dynamic tool support from the configured backend version and
-preserves canonical `dynamicTools` for `0.141+` while retaining legacy
-flattening for older `0.140` backends.
+Change `independent-profile-homes` has an additional verified repair for the
+official/internal switch regression reported on 2026-06-24. The repair prevents
+`openai-official` from using a contaminated managed runtime config as its
+profile seed when a clean explicit `openai-official.config.toml` layer exists,
+merges legacy profile-layer plugin support blocks into generated independent
+home configs, refreshes target-home profile layers from validated runtime
+configs, and adds active-profile plugin materialization checks plus
+`repair-plugins <profile>` remediation. One-key `codex-switch internal` and
+`codex-switch official` now run plugin repair after a successful switch and
+before doctor; `--skip-plugin-repair` skips that repair step. Plugin
+directories and caches remain profile-local; repair refreshes target-profile
+plugin marketplace/catalog state, primes the available plugin catalog, and
+installs missing enabled plugins through the target profile's configured Codex
+binary only when those plugins appear in the refreshed available catalog.
+Unavailable enabled plugins are skipped by repair and left for doctor to report
+as active-profile materialization issues. One-key `internal --help` and
+`official --help` now print help without running self-update, switch, plugin
+repair, doctor, or status steps.
 
-The local source checkout was reinstalled to
-`/Users/cY/.local/share/codex-switch/current`, the generated internal Desktop
-wrapper was refreshed, and normal `codex-switch status` self-update now reports
-`already up to date 0.1.8` without overwriting the installed repair.
+The repair was hardened again on 2026-06-24. `codex-switch doctor` and
+`codex-switch status` now recognize the valid managed internal Desktop chain
+where Codex Desktop starts `codex-internal-app`, that wrapper starts
+`codex_switch_app_proxy.py`, and the proxy starts the configured internal
+`codex_bin` child app-server. `repair-plugins <profile>` also has an explicit
+`--disable-unavailable` cleanup path that disables missing enabled plugin
+selectors only after a real catalog refresh proves they are unavailable. This
+keeps normal doctor checks read-only, keeps default repair behavior
+catalog-aware, and gives stale config a durable cleanup path.
 
-Previous verified change `always-check-self-update` remains active and
-unarchived. Archive remains unavailable because the archive gate is closed.
+The real workstation was repaired and remains active on `internal`: active
+`CODEX_HOME` is `/Users/cY/.codex-switch/homes/internal`, LaunchAgent and GUI
+`CODEX_CLI_PATH` point to `/Users/cY/.codex-switch/bin/codex-internal-app`,
+installed `codex-switch --skip-self-update doctor` passes, and status reports
+the running app-server as `/Users/cY/.local/bin/codex (via app proxy pid
+29858)`. The stale unavailable `browser-use@openai-bundled` and
+`dev-flow@local-personal-plugins` selectors were disabled in the live shared
+config, managed internal runtime config, and internal profile layer; the
+enabled `dev-flow@cy-codex-skills` cache remains present.
+`pdf@openai-primary-runtime` was refreshed to `26.623.12021` and now matches
+source in the updater cache verification. The source checkout passes
+verification, and
+`scripts/package-release.sh` generated `dist/codex-switch.tar.gz`; that
+generated local bundle was explicitly installed to
+`/Users/cY/.local/share/codex-switch/current`.
+
+Archive remains unavailable because the archive gate is closed.
 
 ## Next Action
 
-Review the verified `internal-app-protocol-compat` repair. A full interactive
-Desktop switch to internal was intentionally not run during this session to
-avoid disrupting the active official-mode Desktop session; the generated
-wrapper/proxy `app-server --stdio` path no longer reproduces the reported
-dynamicTools format error. Archive remains unavailable because the archive gate
-is closed. Do not archive until the gate is explicitly opened.
+No immediate repair action remains for the local Desktop/internal plugin
+materialization issue: installed `codex-switch --skip-self-update doctor`
+passes. Archive remains unavailable because the archive gate is closed. Do not
+archive until the gate is explicitly opened. Separate follow-ups remain
+available for project-local DevFlow skill layout migration and external
+`gsd-core` update, but they are outside this repair.

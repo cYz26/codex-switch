@@ -25,6 +25,7 @@ from codex_switch_capture import cmd_capture
 from codex_switch_doctor import cmd_doctor
 from codex_switch_lifecycle import cmd_init
 from codex_switch_list import cmd_list
+from codex_switch_plugins import cmd_repair_plugins
 from codex_switch_status import cmd_status
 from codex_switch_restore import cmd_restore
 from codex_switch_switching import (
@@ -196,6 +197,25 @@ def add_simple_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser])
 
     doctor = sub.add_parser("doctor", help="Validate profile store health.")
     doctor.set_defaults(func=cmd_doctor)
+
+    repair_plugins = sub.add_parser(
+        "repair-plugins",
+        help=(
+            "Refresh plugin catalogs and install enabled plugins that are "
+            "missing from a profile CODEX_HOME."
+        ),
+    )
+    repair_plugins.add_argument("name")
+    repair_plugins.add_argument("--dry-run", action="store_true")
+    repair_plugins.add_argument(
+        "--disable-unavailable",
+        action="store_true",
+        help=(
+            "After refreshing the available plugin catalog, disable missing "
+            "enabled plugin selectors that are not available for install."
+        ),
+    )
+    repair_plugins.set_defaults(func=cmd_repair_plugins)
 
     shim_env = sub.add_parser("shim-env", help="Print shell export used by the codex shim.")
     shim_env.set_defaults(func=cmd_shim_env)

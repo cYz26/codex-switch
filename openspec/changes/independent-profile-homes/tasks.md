@@ -307,6 +307,155 @@ git diff --check
 | Removed profile setting preservation | done | `.planning/verification/20260610125325-removed-profile-setting-preservation.md` |
 | Invalid reasoning effort runtime guard | done | `.planning/verification/20260610145055-invalid-reasoning-effort-runtime-guard.md` |
 | Internal Desktop model alias proxy | done | `.planning/verification/20260612184349-internal-desktop-model-alias-proxy.md` |
+| Official switch contamination and plugin layer repair | done | `.planning/verification/20260624152010-official-switch-contamination-plugin-repair.md` |
+| Active profile plugin materialization repair | done | `.planning/verification/20260624180317-plugin-materialization-repair.md` |
+| Plugin repair help and unavailable-catalog hardening | done | `.planning/verification/20260624193841-plugin-repair-hardening.md` |
+| Proxy-aware doctor and stale plugin cleanup hardening | done | `.planning/verification/20260624205509-proxy-doctor-stale-plugin-cleanup.md` |
+
+### Proxy-aware Doctor and Stale Plugin Cleanup Hardening
+
+**Status:** done
+
+**Skill Routing Ledger**
+- request kind: workflow repair / compatibility hardening
+- `capability-research`: used; local process tree, wrapper, plugin catalog, and
+  profile cache state were inspected before selecting the implementation path
+- `brainstorming`: used; selected systemic repair over another restart-only or
+  manual-config-only recommendation
+- `writing-plans`: used; this OpenSpec ledger is the canonical plan instead of
+  a parallel Superpowers document
+- OpenSpec routing: existing `independent-profile-homes` change updated before
+  implementation because behavior, compatibility, and error-handling change
+
+**Target State**
+- `codex-switch doctor` accepts the valid internal Desktop app-server launch
+  chain where `codex-internal-app` starts `codex_switch_app_proxy.py` and the
+  proxy starts the configured internal `codex_bin` child process.
+- Missing enabled plugin checks keep reporting real profile-local cache gaps,
+  but stale enabled plugin selectors that are unavailable in the refreshed
+  catalog have an explicit `--disable-unavailable` cleanup path.
+- The cleanup path disables stale selectors in runtime and reseeding config
+  files without deleting plugin directories, copying plugin state across
+  profiles, or silently changing config during normal doctor checks.
+
+**Completion Contract**
+- [x] Focused regression tests fail before implementation and pass after it.
+- [x] Existing plugin repair install/skip behavior remains compatible.
+- [x] `codex-switch doctor` stops reporting the proxy-child app-server as a
+  stale process while still reporting direct mismatched app-server processes.
+- [x] `repair-plugins <profile> --disable-unavailable` disables unavailable
+  stale selectors and makes the focused doctor check pass for those selectors.
+- [x] Verification evidence and workflow state are updated.
+
+**Files / Modules**
+- `scripts/codex_switch_running_app.py`
+- `scripts/codex_switch_plugins.py`
+- `scripts/codex_profile_switch.py`
+- `scripts/test_codex_profile_switch.py`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+- `.planning/STATE.md`
+- `.planning/verification/`
+
+**Capability Slices**
+- [x] Add process-tree parsing and proxy-aware app-server doctor/status
+  behavior.
+- [x] Add unavailable enabled plugin disable support behind explicit
+  `repair-plugins <profile> --disable-unavailable`.
+- [x] Preserve existing default repair behavior and dry-run truthfulness.
+- [x] Record validation evidence and update state.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_running_desktop_problem_accepts_internal_proxy_child_app_server
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_repair_plugins_disable_unavailable_stale_enabled_plugins
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_repair_plugins_skips_unavailable_enabled_plugins_after_catalog_refresh
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_repair_plugins_installs_missing_profile_plugins
+python3 scripts/test_codex_profile_switch.py CodexProfileSwitchTests.test_running_desktop_problem_reports_stale_app_server
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate independent-profile-homes --strict --no-interactive
+git diff --check
+```
+
+### Active Profile Plugin Materialization Repair
+
+**Status:** done
+
+**Goal**
+- Keep plugin directories and caches profile-local while detecting when the
+  active profile's synced plugin configuration references enabled plugins that
+  are not installed in that profile's `CODEX_HOME`.
+- Provide an explicit repair command that installs missing enabled plugins
+  through the target profile's configured Codex binary, without copying or
+  symlinking another profile's `plugins` directory.
+
+**Files / Modules**
+- `scripts/codex_switch_plugins.py`
+- `scripts/codex_switch_doctor_active.py`
+- `scripts/codex_profile_switch.py`
+- `scripts/codex-switch`
+- `scripts/test_codex_profile_switch.py`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+- `.planning/verification/`
+
+**Implementation**
+- [x] Add active-profile doctor checks for enabled plugin configs whose
+  profile-local install cache is missing.
+- [x] Add `repair-plugins <profile>` with a dry-run option and target
+  `CODEX_HOME` scoping.
+- [x] Refresh the target profile's plugin marketplace/catalog view inside
+  `repair-plugins <profile>` before checking for missing enabled plugins.
+- [x] Run `repair-plugins <profile>` automatically after successful one-key
+  switches, before doctor, with `--skip-plugin-repair` as the explicit opt-out.
+- [x] Filter missing enabled plugin installs through the refreshed available
+  plugin catalog so unavailable enabled plugins do not fail the repair step.
+- [x] Keep `repair-plugins --dry-run` from printing unverified `plugin add`
+  commands before the available catalog has actually been refreshed.
+- [x] Make one-key `internal --help` and `official --help` side-effect free.
+- [x] Keep plugin cache materialization explicit instead of expanding shared
+  support sync to include `plugins/`.
+
+**Tests**
+- [x] Run focused doctor and repair-plugin regression tests.
+- [x] Run available plugin catalog refresh regression tests for missing and
+  already-installed enabled plugin states.
+- [x] Run unavailable plugin, plugin repair dry-run, and one-key help
+  regression tests.
+- [x] Run one-key switch post-switch repair regression tests.
+- [x] Run the smallest relevant broader regression set.
+
+### Official Switch Contamination and Plugin Layer Repair
+
+**Status:** done
+
+**Goal**
+- Repair the regression where switching back to `official` can preserve
+  internal-only model/provider settings from a managed official runtime config,
+  and where legacy profile-layer plugin enablement is dropped when profiles use
+  independent homes.
+
+**Files / Modules**
+- `scripts/codex_switch_home_sync.py`
+- `scripts/codex_switch_switching.py`
+- `scripts/test_codex_profile_switch.py`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+- `.planning/verification/`
+
+**Implementation**
+- [x] Add regression tests for contaminated managed official runtime config
+  repair.
+- [x] Add regression tests for legacy profile-layer plugin settings merging
+  into generated independent home configs.
+- [x] Prefer explicit profile-layer seeds over contaminated managed official
+  runtime seeds.
+- [x] Merge plugin support shared blocks from legacy profile layers into the
+  generated runtime shared config.
+- [x] Refresh target-home profile layers and canonical profile configs from the
+  validated generated runtime config.
+
+**Tests**
+- [x] Run focused official/plugin regression tests.
+- [x] Run the smallest relevant broader regression set.
 
 ### Invalid Reasoning Effort Runtime Guard
 

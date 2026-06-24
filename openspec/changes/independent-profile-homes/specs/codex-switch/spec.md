@@ -25,6 +25,19 @@ The system SHALL activate `official` using the official Codex home and activate
 - AND internal auth, runtime state, model/provider profile layers, and session
   data are not copied to the official home.
 
+#### Scenario: Official activation repairs internal profile layer contamination
+
+- GIVEN the official home `config.toml` was previously generated as a managed
+  official runtime config
+- AND that generated config contains internal-only model/provider settings
+- AND an explicit `openai-official.config.toml` profile layer exists without
+  those internal-only model/provider settings
+- WHEN the user switches to `official`
+- THEN the generated official `config.toml` uses the explicit official profile
+  layer instead of the contaminated managed runtime config
+- AND the official canonical profile config is refreshed without internal-only
+  model/provider settings.
+
 #### Scenario: Bulky support and credential state is excluded from sync plans
 
 - GIVEN a source home contains plugin caches, AgentKB data, computer-use state,
@@ -168,6 +181,146 @@ profile config only as fallback.
 - THEN it remains valid TOML
 - AND it includes managed comments identifying shared settings
 - AND it includes managed comments identifying profile-specific settings.
+
+#### Scenario: Legacy profile layers preserve plugin enablement during home split
+
+- GIVEN a legacy `<profile>.config.toml` contains marketplace, plugin, skill,
+  or hook trust settings
+- AND the target profile has an independent Codex home
+- WHEN the user switches to that target profile
+- THEN those shared plugin support settings are merged into the generated
+  target home `config.toml`
+- AND the generated profile-specific canonical config still excludes shared
+  plugin support settings.
+
+#### Scenario: Active profile plugin materialization is checked separately from config sync
+
+- GIVEN the active profile runtime `config.toml` enables a plugin
+- AND the active profile `CODEX_HOME` does not contain an installed plugin cache
+  for that enabled plugin
+- WHEN the user runs `codex-switch doctor`
+- THEN doctor reports the missing active-profile plugin installation
+- AND the reported remediation includes `codex-switch repair-plugins <profile>`
+- AND it also identifies `codex-switch repair-plugins <profile> --disable-unavailable`
+  as the explicit cleanup path when the refreshed catalog proves the enabled
+  plugin selector is stale.
+
+#### Scenario: Missing active profile plugins can be explicitly repaired
+
+- GIVEN the active profile runtime `config.toml` enables a plugin
+- AND the active profile `CODEX_HOME` does not contain an installed plugin cache
+  for that enabled plugin
+- WHEN the user runs `codex-switch repair-plugins <profile>`
+- THEN codex-switch runs the profile's configured Codex binary with
+  `CODEX_HOME` set to the profile home
+- AND codex-switch refreshes configured plugin marketplaces through
+  `codex plugin marketplace upgrade --json`
+- AND codex-switch primes the profile-local available plugin catalog through
+  `codex plugin list --available --json`
+- AND the enabled plugin is installed through `codex plugin add` only when it
+  appears in the refreshed available plugin catalog
+- AND codex-switch does not copy or symlink another profile's `plugins`
+  directory.
+
+#### Scenario: Unavailable enabled plugins do not fail plugin repair
+
+- GIVEN the active profile runtime `config.toml` enables a plugin
+- AND the active profile `CODEX_HOME` does not contain an installed plugin cache
+  for that enabled plugin
+- AND the refreshed available plugin catalog does not include that enabled
+  plugin
+- WHEN the user runs `codex-switch repair-plugins <profile>`
+- THEN codex-switch skips the unavailable enabled plugin without calling
+  `codex plugin add`
+- AND doctor can still report the missing active-profile plugin installation.
+
+#### Scenario: Unavailable stale enabled plugins can be explicitly disabled
+
+- GIVEN the active profile runtime `config.toml` enables a plugin
+- AND the active profile `CODEX_HOME` does not contain an installed plugin cache
+  for that enabled plugin
+- AND the refreshed available plugin catalog does not include that enabled
+  plugin
+- WHEN the user runs
+  `codex-switch repair-plugins <profile> --disable-unavailable`
+- THEN codex-switch disables the unavailable plugin selector in the profile
+  runtime config and any existing shared/profile-layer config files that can
+  re-seed that profile runtime config
+- AND codex-switch does not delete plugin directories or copy plugin state from
+  another profile
+- AND a following `codex-switch doctor` no longer reports that disabled stale
+  plugin selector as a missing active-profile plugin.
+
+#### Scenario: Plugin repair dry-run does not claim catalog-filtered installs
+
+- GIVEN the active profile runtime `config.toml` enables a plugin
+- AND the active profile `CODEX_HOME` does not contain an installed plugin cache
+  for that enabled plugin
+- WHEN the user runs `codex-switch repair-plugins <profile> --dry-run`
+- THEN codex-switch prints the marketplace refresh and available catalog
+  commands that would run
+- AND it reports that missing enabled plugins would only be installed if they
+  appear in the refreshed available plugin catalog
+- AND it does not print a concrete `codex plugin add` command for an
+  unverified plugin selector.
+
+#### Scenario: Internal app-server proxy chain is accepted by doctor
+
+- GIVEN the active profile's Desktop app CLI is the managed
+  `codex-internal-app` wrapper
+- AND Codex Desktop starts that wrapper for `app-server`
+- AND the wrapper starts `codex_switch_app_proxy.py`, which then runs the
+  configured internal `codex_bin` child process
+- WHEN the user runs `codex-switch doctor` or `codex-switch status`
+- THEN codex-switch recognizes the proxy-parented app-server child as matching
+  the active profile's Desktop app CLI binding
+- AND doctor does not report a stale app-server binary mismatch for that
+  proxy-parented child.
+
+#### Scenario: Plugin repair materializes available plugin catalog without missing enabled plugins
+
+- GIVEN the active profile runtime `config.toml` has plugin marketplace or
+  plugin support settings
+- AND every enabled plugin already has an installed plugin cache in the active
+  profile `CODEX_HOME`
+- WHEN the user runs `codex-switch repair-plugins <profile>`
+- THEN codex-switch runs the profile's configured Codex binary with
+  `CODEX_HOME` set to the profile home
+- AND codex-switch refreshes configured plugin marketplaces through
+  `codex plugin marketplace upgrade --json`
+- AND codex-switch primes the profile-local available plugin catalog through
+  `codex plugin list --available --json`
+- AND codex-switch does not copy or symlink another profile's `plugins`
+  directory.
+
+#### Scenario: One-key switching repairs plugin catalogs and missing enabled plugins before doctor
+
+- GIVEN a one-key `codex-switch internal` or `codex-switch official` command
+  completes the profile switch
+- AND the target profile runtime `config.toml` enables a plugin
+- AND the target profile `CODEX_HOME` does not contain an installed plugin
+  cache for that enabled plugin
+- WHEN the post-switch flow runs
+- THEN codex-switch runs `repair-plugins <profile>` before doctor to refresh
+  plugin marketplaces and available plugin catalog
+- AND doctor observes the repaired active profile plugin materialization state.
+
+#### Scenario: Plugin repair can be skipped for one-key switches
+
+- GIVEN a one-key `codex-switch internal` or `codex-switch official` command
+  includes `--skip-plugin-repair`
+- WHEN the post-switch flow runs
+- THEN codex-switch does not run plugin repair
+- AND doctor still checks the active profile plugin materialization state.
+
+#### Scenario: One-key help is side-effect free
+
+- GIVEN the user invokes `codex-switch internal --help` or
+  `codex-switch official --help`
+- WHEN the command runs
+- THEN codex-switch prints help and exits successfully
+- AND it does not run self-update, switch, plugin repair, doctor, or status
+  steps.
 
 #### Scenario: Internal Desktop wrapper preserves official profile settings
 

@@ -6,6 +6,7 @@ from codex_switch_constants import APP_CLI_ENV, SwitchError
 from codex_switch_io import read_json
 from codex_switch_launch import read_launch_agent_cli_path
 from codex_switch_paths import detect_current_app_cli_path, equivalent_paths, profile_app_cli_path
+from codex_switch_plugins import plugin_materialization_problems
 from codex_switch_running_app import running_desktop_problems
 from codex_switch_store import Store
 
@@ -54,4 +55,5 @@ def active_profile_problems(store: Store) -> list[str]:
             f"{current_app_cli}, expected {expected_app_cli}"
         )
     problems.extend(running_desktop_problems(store, active_profile, expected_app_cli))
+    problems.extend(plugin_materialization_problems(store, active_profile))
     return problems

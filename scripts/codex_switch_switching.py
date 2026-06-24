@@ -239,6 +239,7 @@ def independent_switch_paths(
         backup_paths.extend(
             [
                 internal_home / "config.toml",
+                internal_home / "internal.config.toml",
                 internal_home / "auth.json",
                 store.profile_dir("internal") / "config.toml",
                 *shared_support_targets(official_home, internal_home),
@@ -256,6 +257,7 @@ def independent_switch_paths(
         backup_paths.extend(
             [
                 official_home / "config.toml",
+                official_home / "openai-official.config.toml",
                 store.profile_dir("openai-official") / "config.toml",
                 *shared_support_targets(internal_home, official_home),
             ]
@@ -373,7 +375,16 @@ def switch_independent_profile(
             ).encode(),
             mode=0o600,
         )
-        refresh_profile_canonical_config(name, target_home / "config.toml", config_path)
+        profile_config_text = refresh_profile_canonical_config(
+            name,
+            target_home / "config.toml",
+            config_path,
+        )
+        atomic_write(
+            target_home / f"{name}.config.toml",
+            profile_config_text.encode(),
+            mode=0o600,
+        )
         auth_path = target_home / "auth.json"
         if auth_path.exists():
             auth_path.unlink()
@@ -390,7 +401,16 @@ def switch_independent_profile(
         )
         if merged_config is not None:
             atomic_write(official_home / "config.toml", merged_config.encode(), mode=0o600)
-            refresh_profile_canonical_config(name, official_home / "config.toml", config_path)
+            profile_config_text = refresh_profile_canonical_config(
+                name,
+                official_home / "config.toml",
+                config_path,
+            )
+            atomic_write(
+                official_home / f"{name}.config.toml",
+                profile_config_text.encode(),
+                mode=0o600,
+            )
         sync_shared_support(internal_home, official_home, prefer_link=False)
         restored_auth = official_auth_restore_path(store, official_home)
         if restored_auth:

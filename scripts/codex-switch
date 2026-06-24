@@ -52,7 +52,7 @@ One-key commands:
   version                  Print codex-switch version.
 
 Pass-through commands:
-  init | capture | switch | restore | status | list | doctor | shim-env
+  init | capture | switch | restore | status | list | doctor | repair-plugins | shim-env
   login-internal | login-official
   login | set-bin | set-app-bin
   raw <codex_profile_switch.py args...>
@@ -75,6 +75,7 @@ Switch options for internal/official:
   --skip-shim                  Do not update the codex shim.
   --skip-login                 Do not auto-login official when file auth is missing.
   --skip-update-check          Do not check for updates or auto-update internal.
+  --skip-plugin-repair         Do not install missing enabled plugins after switch.
   --no-status                  Do not print status after a real switch.
   --skip-doctor                Do not run doctor after a real switch.
 
@@ -436,10 +437,16 @@ print_final_result() {
       echo "- Verify active state: codex-switch status"
       ;;
     "ACTION REQUIRED")
-      echo "- Review the Doctor section above and fix each listed issue."
-      echo "- If it mentions running Codex Desktop or app-server, quit Codex Desktop completely and reopen it."
-      echo "- Re-run doctor: codex-switch doctor"
-      echo "- Check active state: codex-switch status"
+      if [[ "$failed_step" == "plugin repair" ]]; then
+        echo "- Review the Plugin repair section above and fix the install error."
+        echo "- Re-run plugin repair: codex-switch repair-plugins $profile"
+        echo "- Re-run doctor: codex-switch doctor"
+      else
+        echo "- Review the Doctor section above and fix each listed issue."
+        echo "- If it mentions running Codex Desktop or app-server, quit Codex Desktop completely and reopen it."
+        echo "- Re-run doctor: codex-switch doctor"
+        echo "- Check active state: codex-switch status"
+      fi
       ;;
     "DRY RUN OK")
       echo "- Apply the switch: codex-switch $command_alias"
@@ -457,12 +464,17 @@ switch_profile() {
   local dry_run=0
   local show_status=1
   local run_doctor=1
+  local run_plugin_repair=1
   local update_check=1
   local auto_login=1
   local switch_args=()
 
   while (($#)); do
     case "$1" in
+      -h|--help|help)
+        usage
+        return 0
+        ;;
       --dry-run)
         dry_run=1
         ;;
@@ -471,6 +483,9 @@ switch_profile() {
         ;;
       --skip-doctor|--no-doctor)
         run_doctor=0
+        ;;
+      --skip-plugin-repair|--no-plugin-repair)
+        run_plugin_repair=0
         ;;
       --skip-update-check|--no-update-check)
         update_check=0
@@ -554,6 +569,21 @@ switch_profile() {
     switch_status=$?
     print_final_result "$profile" "FAILED" "$switch_status" "not-run" "not-run" "switch"
     return "$switch_status"
+  fi
+
+  local repair_status="skipped"
+  if [[ "$run_plugin_repair" == 1 ]]; then
+    print_section "Plugin repair"
+    if run_switcher repair-plugins "$profile"; then
+      repair_status="passed"
+    else
+      repair_status=$?
+      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "plugin repair"
+      return "$repair_status"
+    fi
+  else
+    print_section "Plugin repair"
+    echo "Plugin repair: skipped by command option."
   fi
 
   local doctor_status="skipped"
@@ -890,6 +920,13 @@ if [[ -z "$cmd" ]]; then
 fi
 shift
 
+case "$cmd" in
+  internal|i|official|openai|openai-official|o)
+    case "${1:-}" in
+      -h|--help|help) SKIP_SELF_UPDATE=1 ;;
+    esac
+    ;;
+esac
 maybe_self_update "$cmd"
 
 case "$cmd" in
@@ -929,7 +966,7 @@ case "$cmd" in
   login-official)
     run_switcher login openai-official "$@"
     ;;
-  init|capture|switch|restore|status|list|doctor|shim-env|login|set-bin|set-app-bin)
+  init|capture|switch|restore|status|list|doctor|repair-plugins|shim-env|login|set-bin|set-app-bin)
     run_switcher "$cmd" "$@"
     ;;
   raw)

@@ -11,6 +11,7 @@ from codex_switch_store import Store
 
 
 DESKTOP_APP_MARKER = "/Applications/Codex.app/Contents/MacOS/Codex"
+APP_PROXY_MARKER = "codex_switch_app_proxy.py"
 LISTEN_ARG = "--listen"
 PRIMARY_APP_SERVER_ARG = "--analytics-default-enabled"
 APP_SERVER_COMMAND = re.compile(
@@ -24,6 +25,8 @@ class RunningCodexProcess:
     kind: str
     command_path: str
     app_cli_env: str
+    ppid: int = 0
+    parent_command: str = ""
 
 
 def is_default_desktop_context(store: Store) -> bool:
@@ -50,6 +53,19 @@ def parse_ps_processes(output: str) -> list[tuple[int, str]]:
     return processes
 
 
+def parse_ps_process_tree(output: str) -> list[tuple[int, int, str]]:
+    processes: list[tuple[int, int, str]] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        processes.append((int(parts[0]), int(parts[1]), parts[2]))
+    return processes
+
+
 def parse_env_app_cli_path(output: str) -> str:
     match = re.search(rf"(?:^|\s){re.escape(APP_CLI_ENV)}=([^\s]+)", output)
     return match.group(1) if match else ""
@@ -70,12 +86,14 @@ def process_app_cli_env(pid: int) -> str:
 
 
 def running_codex_processes() -> list[RunningCodexProcess]:
-    code, output = run_quiet(["/bin/ps", "-axo", "pid=,args="])
+    code, output = run_quiet(["/bin/ps", "-axo", "pid=,ppid=,args="])
     if code != 0:
         return []
 
     observations: list[RunningCodexProcess] = []
-    for pid, args in parse_ps_processes(output):
+    processes = parse_ps_process_tree(output)
+    command_by_pid = {pid: args for pid, _ppid, args in processes}
+    for pid, ppid, args in processes:
         if DESKTOP_APP_MARKER in args:
             observations.append(
                 RunningCodexProcess(
@@ -83,6 +101,8 @@ def running_codex_processes() -> list[RunningCodexProcess]:
                     kind="desktop",
                     command_path=DESKTOP_APP_MARKER,
                     app_cli_env=process_app_cli_env(pid),
+                    ppid=ppid,
+                    parent_command=command_by_pid.get(ppid, ""),
                 )
             )
             continue
@@ -98,9 +118,23 @@ def running_codex_processes() -> list[RunningCodexProcess]:
                 kind="app-server",
                 command_path=command_path,
                 app_cli_env=process_app_cli_env(pid),
+                ppid=ppid,
+                parent_command=command_by_pid.get(ppid, ""),
             )
         )
     return observations
+
+
+def app_server_matches_expected_cli(process: RunningCodexProcess, expected_app_cli: str) -> bool:
+    if equivalent_paths(process.command_path, expected_app_cli):
+        return True
+    parent_command = getattr(process, "parent_command", "")
+    observed_app_cli = getattr(process, "app_cli_env", "")
+    return (
+        bool(observed_app_cli)
+        and equivalent_paths(observed_app_cli, expected_app_cli)
+        and APP_PROXY_MARKER in parent_command
+    )
 
 
 def running_desktop_problems(
@@ -126,7 +160,7 @@ def running_desktop_problems(
                     f"{expected_app_cli}; quit Codex Desktop completely and reopen it"
                 )
         elif process.kind == "app-server":
-            if not equivalent_paths(process.command_path, expected_app_cli):
+            if not app_server_matches_expected_cli(process, expected_app_cli):
                 problems.append(
                     f"running Codex app-server pid {process.pid} uses "
                     f"{process.command_path}, but active profile {active_profile} "
@@ -155,7 +189,12 @@ def print_running_desktop_status(store: Store, expected_app_cli: str) -> None:
             print(line)
         elif process.kind == "app-server":
             line = f"Running Codex app-server pid {process.pid}: {process.command_path}"
-            if expected_app_cli and not equivalent_paths(
+            if expected_app_cli and app_server_matches_expected_cli(
+                process, expected_app_cli
+            ) and not equivalent_paths(process.command_path, expected_app_cli):
+                ppid = getattr(process, "ppid", 0)
+                line += f" (via app proxy pid {ppid})"
+            elif expected_app_cli and not equivalent_paths(
                 process.command_path, expected_app_cli
             ):
                 line += f" (expected {expected_app_cli})"

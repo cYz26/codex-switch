@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 from codex_switch_running_app import (
@@ -62,6 +63,34 @@ def write_fake_codex(path: Path, label: str) -> None:
 def write_fake_script(path: Path, body: str) -> None:
     path.write_text(body)
     path.chmod(0o755)
+
+
+def write_fake_plugin_catalog_codex(path: Path) -> None:
+    write_fake_script(
+        path,
+        "#!/usr/bin/env sh\n"
+        "set -eu\n"
+        "printf '%s\\n' \"$*\" >> \"$CODEX_HOME/codex-calls.log\"\n"
+        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
+        "  printf '{\"upgraded\":[]}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
+        "  mkdir -p \"$CODEX_HOME/.tmp/plugins/plugins/catalog-only\"\n"
+        "  printf '{\"installed\":[],\"available\":[{\"pluginId\":\"missing-plugin@local-test\"},{\"pluginId\":\"installed-plugin@local-test\"}]}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
+        "  selector=\"$3\"\n"
+        "  plugin=\"${selector%@*}\"\n"
+        "  marketplace=\"${selector##*@}\"\n"
+        "  mkdir -p \"$CODEX_HOME/plugins/cache/$marketplace/$plugin/1.0.0\"\n"
+        "  printf '{}\\n' > \"$CODEX_HOME/plugins/cache/$marketplace/$plugin/1.0.0/.codex-plugin\"\n"
+        "  echo installed \"$selector\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "echo fake-codex\n",
+    )
 
 
 class CodexProfileSwitchTests(unittest.TestCase):
@@ -1482,6 +1511,720 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn('model = "official-runtime"', canonical_config)
             self.assertNotIn("[mcp_servers.from-internal]", canonical_config)
 
+    def test_official_switch_repairs_contaminated_managed_runtime_profile_seed(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            (live_home / "auth.json").write_text('{"official":"auth"}\n')
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Internal Azure"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_home = root / "store" / "homes" / "internal"
+            (internal_home / "config.toml").write_text(
+                (internal_home / "config.toml").read_text()
+                + "\n[mcp_servers.from-internal]\n"
+                + 'command = "internal-mcp"\n'
+            )
+            contaminated = (
+                "# codex-switch: managed runtime config for profile openai-official\n"
+                "# codex-switch: shared settings are merged from "
+                f"{internal_home / 'config.toml'}\n"
+                "# codex-switch: profile-specific settings are preserved from last runtime config\n"
+                "\n"
+                "# codex-switch: profile-specific settings\n"
+                'model = "internal-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Internal Azure"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            (live_home / "config.toml").write_text(contaminated)
+            (root / "store" / "profiles" / "openai-official" / "config.toml").write_text(
+                "# codex-switch: canonical fallback config for profile openai-official\n"
+                "\n"
+                'cli_auth_credentials_store = "file"\n'
+                'model = "internal-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Internal Azure"\n'
+            )
+            (live_home / "openai-official.config.toml").write_text(
+                'cli_auth_credentials_store = "file"\n'
+                "\n"
+                '[plugins."figma@openai-curated"]\n'
+                "enabled = true\n"
+            )
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            official_config = (live_home / "config.toml").read_text()
+            self.assertIn("# codex-switch: managed runtime config for profile openai-official", official_config)
+            self.assertIn("[mcp_servers.from-internal]", official_config)
+            self.assertIn('[plugins."figma@openai-curated"]', official_config)
+            self.assertNotIn('model = "internal-model"', official_config)
+            self.assertNotIn('model_provider = "azure"', official_config)
+            self.assertNotIn("[model_providers.azure]", official_config)
+            canonical_config = (
+                root / "store" / "profiles" / "openai-official" / "config.toml"
+            ).read_text()
+            self.assertIn('cli_auth_credentials_store = "file"', canonical_config)
+            self.assertNotIn('model = "internal-model"', canonical_config)
+            self.assertNotIn("[plugins.", canonical_config)
+            home_profile_layer = (live_home / "openai-official.config.toml").read_text()
+            self.assertNotIn('model = "internal-model"', home_profile_layer)
+            self.assertNotIn("[plugins.", home_profile_layer)
+
+    def test_official_switch_keeps_managed_runtime_model_without_provider(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_home = root / "store" / "homes" / "internal"
+            (live_home / "config.toml").write_text(
+                "# codex-switch: managed runtime config for profile openai-official\n"
+                "# codex-switch: shared settings are merged from "
+                f"{internal_home / 'config.toml'}\n"
+                "# codex-switch: profile-specific settings are preserved from last runtime config\n"
+                "\n"
+                "# codex-switch: profile-specific settings\n"
+                'model = "official-runtime"\n'
+                "\n"
+                "# codex-switch: shared settings\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            (live_home / "openai-official.config.toml").write_text(
+                'cli_auth_credentials_store = "file"\n'
+            )
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            official_config = (live_home / "config.toml").read_text()
+            self.assertIn('model = "official-runtime"', official_config)
+            canonical_config = (
+                root / "store" / "profiles" / "openai-official" / "config.toml"
+            ).read_text()
+            self.assertIn('model = "official-runtime"', canonical_config)
+
+    def test_internal_switch_merges_legacy_profile_layer_plugin_settings(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            (live_home / "internal.config.toml").write_text(
+                'model = "internal-model"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."dev-flow@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/legacy-skill/SKILL.md"\n'
+                "enabled = false\n"
+                "\n"
+                '[hooks.state."dev-flow@cy-codex-skills:hooks.json:stop:0:0"]\n'
+                'trusted_hash = "sha256:test"\n'
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_config = (root / "store" / "homes" / "internal" / "config.toml").read_text()
+            self.assertIn('model = "internal-model"', internal_config)
+            self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
+            self.assertIn('[plugins."dev-flow@cy-codex-skills"]', internal_config)
+            self.assertIn("[[skills.config]]", internal_config)
+            self.assertIn(
+                '[hooks.state."dev-flow@cy-codex-skills:hooks.json:stop:0:0"]',
+                internal_config,
+            )
+            canonical_config = (
+                root / "store" / "profiles" / "internal" / "config.toml"
+            ).read_text()
+            self.assertIn('model = "internal-model"', canonical_config)
+            self.assertNotIn("[marketplaces.cy-codex-skills]", canonical_config)
+            self.assertNotIn('[plugins."dev-flow@cy-codex-skills"]', canonical_config)
+
+    def test_doctor_reports_missing_active_profile_enabled_plugin_cache(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            result = self.run_switcher(root, "doctor", check=False)
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn(
+                "active profile openai-official: enabled plugin is not installed in "
+                "CODEX_HOME: missing-plugin@local-test",
+                output,
+            )
+            self.assertIn("codex-switch repair-plugins openai-official", output)
+
+    def test_doctor_accepts_active_profile_enabled_plugin_cache(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."installed-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            installed = (
+                root
+                / "live"
+                / "plugins"
+                / "cache"
+                / "local-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            installed.mkdir(parents=True)
+            (installed / ".codex-plugin").write_text("{}\n")
+
+            result = self.run_switcher(root, "doctor")
+
+            self.assertEqual(0, result.returncode)
+            self.assertIn("Doctor passed", result.stdout)
+
+    def test_repair_plugins_installs_missing_profile_plugins(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_plugin_catalog_codex(official_codex)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
+            doctor = self.run_switcher(root, "doctor")
+
+            self.assertIn("Installing plugin: missing-plugin@local-test", repair.stdout)
+            self.assertIn("Doctor passed", doctor.stdout)
+
+    def test_repair_plugins_refreshes_available_catalog_before_installing_missing_profile_plugins(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_plugin_catalog_codex(official_codex)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
+
+            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    "plugin marketplace upgrade --json",
+                    "plugin list --available --json",
+                    "plugin add missing-plugin@local-test",
+                ],
+                calls,
+            )
+            self.assertTrue((live_home / ".tmp" / "plugins" / "plugins" / "catalog-only").is_dir())
+            self.assertTrue(
+                (
+                    live_home
+                    / "plugins"
+                    / "cache"
+                    / "local-test"
+                    / "missing-plugin"
+                    / "1.0.0"
+                    / ".codex-plugin"
+                ).exists()
+            )
+            self.assertIn("Refreshing plugin marketplaces for openai-official", repair.stdout)
+            self.assertIn("Priming available plugin catalog for openai-official", repair.stdout)
+            self.assertIn("Installing plugin: missing-plugin@local-test", repair.stdout)
+
+    def test_repair_plugins_refreshes_available_catalog_when_enabled_plugins_are_installed(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_plugin_catalog_codex(official_codex)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."installed-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            installed = (
+                live_home
+                / "plugins"
+                / "cache"
+                / "local-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            installed.mkdir(parents=True)
+            (installed / ".codex-plugin").write_text("{}\n")
+
+            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
+
+            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    "plugin marketplace upgrade --json",
+                    "plugin list --available --json",
+                ],
+                calls,
+            )
+            self.assertTrue((live_home / ".tmp" / "plugins" / "plugins" / "catalog-only").is_dir())
+            self.assertIn("No missing enabled plugins for openai-official", repair.stdout)
+
+    def test_repair_plugins_skips_unavailable_enabled_plugins_after_catalog_refresh(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_script(
+                official_codex,
+                "#!/usr/bin/env sh\n"
+                "set -eu\n"
+                "printf '%s\\n' \"$*\" >> \"$CODEX_HOME/codex-calls.log\"\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
+                "  printf '{\"upgraded\":[]}\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
+                "  printf '{\"installed\":[],\"available\":[{\"pluginId\":\"other-plugin@local-test\"}]}\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
+                "  echo unexpected-add \"$3\"\n"
+                "  exit 44\n"
+                "fi\n"
+                "echo fake-codex\n",
+            )
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
+
+            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    "plugin marketplace upgrade --json",
+                    "plugin list --available --json",
+                ],
+                calls,
+            )
+            self.assertIn(
+                "Skipping unavailable enabled plugin: missing-plugin@local-test",
+                repair.stdout,
+            )
+
+    def test_repair_plugins_disable_unavailable_stale_enabled_plugins(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_script(
+                official_codex,
+                "#!/usr/bin/env sh\n"
+                "set -eu\n"
+                "printf '%s\\n' \"$*\" >> \"$CODEX_HOME/codex-calls.log\"\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
+                "  printf '{\"upgraded\":[]}\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
+                "  printf '{\"installed\":[],\"available\":[{\"pluginId\":\"other-plugin@local-test\"}]}\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
+                "  echo unexpected-add \"$3\"\n"
+                "  exit 44\n"
+                "fi\n"
+                "echo fake-codex\n",
+            )
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            profile_layer = live_home / "openai-official.config.toml"
+            profile_layer.write_text(
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            canonical_profile = root / "store" / "profiles" / "openai-official" / "config.toml"
+            canonical_profile.write_text(
+                canonical_profile.read_text()
+                + '\n[plugins."missing-plugin@local-test"]\n'
+                + "enabled = true\n"
+            )
+
+            repair = self.run_wrapper(
+                root,
+                "repair-plugins",
+                "openai-official",
+                "--disable-unavailable",
+                env=env,
+            )
+            doctor = self.run_switcher(root, "doctor")
+
+            self.assertIn(
+                "Disabling unavailable enabled plugin: missing-plugin@local-test",
+                repair.stdout,
+            )
+            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    "plugin marketplace upgrade --json",
+                    "plugin list --available --json",
+                ],
+                calls,
+            )
+            for config_path in (live_home / "config.toml", profile_layer, canonical_profile):
+                config_text = config_path.read_text()
+                self.assertIn('[plugins."missing-plugin@local-test"]', config_text)
+                self.assertIn("enabled = false", config_text)
+                self.assertNotIn("enabled = true", config_text)
+            self.assertIn("Doctor passed", doctor.stdout)
+
+    def test_repair_plugins_dry_run_does_not_claim_unverified_plugin_add(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_plugin_catalog_codex(official_codex)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            repair = self.run_wrapper(
+                root,
+                "repair-plugins",
+                "openai-official",
+                "--dry-run",
+                env=env,
+            )
+
+            self.assertIn("Dry run: plugin catalog is not inspected", repair.stdout)
+            self.assertIn(
+                "Dry run: would install if available: missing-plugin@local-test",
+                repair.stdout,
+            )
+            self.assertNotIn("plugin add missing-plugin@local-test", repair.stdout)
+
+    def test_wrapper_one_key_help_is_pure_help(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            result = self.run_wrapper(root, "internal", "--help")
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode)
+            self.assertIn("Switch options for internal/official:", output)
+            self.assertNotIn("Dry-run plan", output)
+            self.assertFalse((root / "store").exists())
+
+    def test_wrapper_one_key_repairs_plugins_before_doctor(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_plugin_catalog_codex(official_codex)
+            (root / "live" / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = self.run_wrapper(
+                root,
+                "official",
+                "--skip-login",
+                "--skip-update-check",
+                "--skip-launchctl",
+                "--no-status",
+                env=env,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("Plugin repair", output)
+            self.assertIn("Installing plugin: missing-plugin@local-test", output)
+            self.assertIn("Doctor passed", output)
+            self.assertIn("Outcome: SUCCESS", output)
+
+    def test_wrapper_one_key_unavailable_plugin_reaches_doctor_without_repair_failure(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_script(
+                official_codex,
+                "#!/usr/bin/env sh\n"
+                "set -eu\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
+                "  printf '{\"upgraded\":[]}\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
+                "  printf '{\"installed\":[],\"available\":[]}\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
+                "  echo unexpected-add \"$3\"\n"
+                "  exit 44\n"
+                "fi\n"
+                "echo official-codex\n",
+            )
+            (root / "live" / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = self.run_wrapper(
+                root,
+                "official",
+                "--skip-login",
+                "--skip-update-check",
+                "--skip-launchctl",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Skipping unavailable enabled plugin: missing-plugin@local-test", output)
+            self.assertIn("Doctor found issues:", output)
+            self.assertIn("Doctor: failed", output)
+            self.assertNotIn("Failed step: plugin repair", output)
+
+    def test_wrapper_one_key_can_skip_plugin_repair(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            (root / "live" / "config.toml").write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = self.run_wrapper(
+                root,
+                "official",
+                "--skip-login",
+                "--skip-update-check",
+                "--skip-plugin-repair",
+                "--skip-launchctl",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Plugin repair: skipped by command option.", output)
+            self.assertIn("Doctor found issues:", output)
+            self.assertIn("codex-switch repair-plugins openai-official", output)
+
     def test_internal_switch_can_adopt_live_home_and_move_official_home(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -2851,6 +3594,39 @@ class CodexProfileSwitchTests(unittest.TestCase):
 
         self.assertEqual(len(problems), 1)
         self.assertIn("running Codex app-server pid 42 uses", problems[0])
+
+    def test_running_desktop_problem_accepts_internal_proxy_child_app_server(self) -> None:
+        store = Store(
+            root=Path("/tmp/store"),
+            live_codex_home=Path("/tmp/live"),
+            launch_agent_path=Path("/tmp/agent.plist"),
+            launch_agent_label="test",
+        )
+        expected_app_cli = "/Users/cY/.codex-switch/bin/codex-internal-app"
+        observations = [
+            SimpleNamespace(
+                pid=42,
+                kind="app-server",
+                command_path="/Users/cY/.local/bin/codex",
+                app_cli_env=expected_app_cli,
+                parent_command=(
+                    "/usr/bin/python3 /Users/cY/.local/share/codex-switch/current/"
+                    "scripts/codex_switch_app_proxy.py /Users/cY/.local/bin/codex "
+                    "/Users/cY/.codex-switch/homes/internal/config.toml "
+                    "app-server --analytics-default-enabled"
+                ),
+            )
+        ]
+
+        problems = running_desktop_problems(
+            store,
+            active_profile="internal",
+            expected_app_cli=expected_app_cli,
+            observations=observations,
+            enforce_default_context=False,
+        )
+
+        self.assertEqual([], problems)
 
 
 if __name__ == "__main__":

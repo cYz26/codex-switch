@@ -150,6 +150,38 @@ Generated TOML keeps managed `# codex-switch:` comments. These comments mark
 which settings came from the shared layer and which settings are
 profile-specific; they are only annotations, and the file remains normal TOML.
 
+Plugin enablement and plugin installation are separate layers. Profile
+switching syncs shared plugin configuration such as marketplaces, enabled
+plugins, skill config, and hook trust into the target `config.toml`, but it
+does not copy or symlink another profile's `plugins/` cache. One-key switches
+(`codex-switch internal` and `codex-switch official`) run plugin repair after a
+successful switch, before doctor, by refreshing the target profile's
+marketplace/catalog view and installing missing enabled plugins into the target
+profile home. Use `--skip-plugin-repair` to skip that repair step.
+
+The explicit repair command is:
+
+```bash
+codex-switch repair-plugins <profile>
+```
+
+That command runs the profile's configured Codex binary with `CODEX_HOME` set
+to the profile home. It first refreshes configured plugin marketplaces with
+`codex plugin marketplace upgrade --json`, primes the available plugin catalog
+with `codex plugin list --available --json`, and then installs missing enabled
+plugins through `codex plugin add` only when they are present in the refreshed
+available plugin catalog. Enabled plugins that are no longer available from the
+configured marketplaces are skipped by repair and remain visible to
+`codex-switch doctor` as active-profile materialization issues. This keeps
+uninstalled official plugins visible in the target profile without copying
+another profile's `plugins/` directory. `codex-switch doctor` still checks the
+active profile's plugin materialization state and reports this command if
+enabled plugins are missing, including after low-level
+`codex-switch switch <profile>` invocations that bypass the one-key
+post-switch flow. `codex-switch internal --help` and
+`codex-switch official --help` are pure help paths and do not run update,
+switch, plugin repair, doctor, or status steps.
+
 For legacy users who have always used the internal profile in `~/.codex`,
 `internal` can adopt that existing home:
 

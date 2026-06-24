@@ -9,6 +9,7 @@ from codex_switch_config import (
     build_base_config_text,
     build_profile_seed_config_text,
     is_profile_specific_table,
+    merge_preserved_shared_config_overlay,
     merge_shared_config_overlay,
     string_assignment_value,
 )
@@ -305,6 +306,15 @@ def annotate_canonical_profile_config(text: str, profile_name: str) -> str:
     return annotated
 
 
+def managed_runtime_profile_name(text: str) -> str | None:
+    prefix = f"{MANAGED_COMMENT_PREFIX} managed runtime config for profile "
+    for line in text.splitlines()[:5]:
+        if line.startswith(prefix):
+            value = line[len(prefix) :].strip()
+            return value or None
+    return None
+
+
 def read_valid_config(path: Path, label: str) -> str:
     text = path.read_text()
     validate_toml_text(text, label)
@@ -378,17 +388,47 @@ def merge_shared_with_profile_seed(
     profile_name: str,
     target_runtime_config: Path,
     canonical_config: Path,
+    profile_layer_configs: list[Path] | None = None,
 ) -> str:
     shared_text = build_base_config_text(shared_source_config) if shared_source_config.exists() else ""
     errors: list[str] = []
-    candidates: list[tuple[Path, str]] = []
-    if target_runtime_config.exists():
-        candidates.append((target_runtime_config, "last runtime config"))
-    candidates.append((canonical_config, "fallback canonical config"))
-
-    for path, label in candidates:
+    profile_layers = unique_paths(profile_layer_configs or [])
+    profile_layer_texts: dict[Path, str] = {}
+    for path in profile_layers:
+        if not path.exists():
+            continue
         try:
-            profile_text = read_valid_config(path, f"{label}: {path}")
+            profile_layer_text = read_valid_config(path, f"profile layer shared config: {path}")
+            profile_layer_texts[path] = profile_layer_text
+            shared_text = merge_preserved_shared_config_overlay(shared_text, profile_layer_text)
+        except SwitchError as exc:
+            errors.append(str(exc))
+
+    candidates: list[tuple[Path, str, str | None]] = []
+    if target_runtime_config.exists():
+        try:
+            runtime_text = read_valid_config(
+                target_runtime_config,
+                f"last runtime config: {target_runtime_config}",
+            )
+            if not should_skip_managed_runtime_seed(
+                profile_name,
+                runtime_text,
+                profile_layer_texts,
+            ):
+                candidates.append((target_runtime_config, "last runtime config", runtime_text))
+        except SwitchError as exc:
+            errors.append(str(exc))
+    for path in profile_layers:
+        if path.exists():
+            candidates.append((path, "profile layer config", None))
+    candidates.append((canonical_config, "fallback canonical config", None))
+
+    for path, label, preloaded_text in candidates:
+        try:
+            profile_text = preloaded_text
+            if profile_text is None:
+                profile_text = read_valid_config(path, f"{label}: {path}")
             seed_text = build_profile_seed_config_text(
                 profile_name,
                 profile_text,
@@ -413,6 +453,37 @@ def merge_shared_with_profile_seed(
     )
 
 
+def should_skip_managed_runtime_seed(
+    profile_name: str,
+    runtime_text: str,
+    profile_layer_texts: dict[Path, str],
+) -> bool:
+    if profile_name != "openai-official":
+        return False
+    if managed_runtime_profile_name(runtime_text) != profile_name:
+        return False
+    if not profile_layer_texts:
+        return False
+    if not top_level_assignment(runtime_text, "model_provider"):
+        return False
+    return not any(
+        top_level_assignment(profile_layer_text, "model_provider")
+        for profile_layer_text in profile_layer_texts.values()
+    )
+
+
+def unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        resolved = Path(os.path.abspath(path))
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(path)
+    return unique
+
+
 def build_internal_home_config(
     official_home: Path,
     profile_name: str,
@@ -424,6 +495,10 @@ def build_internal_home_config(
         profile_name,
         target_runtime_config,
         canonical_config,
+        profile_layer_configs=[
+            target_runtime_config.parent / f"{profile_name}.config.toml",
+            official_home / f"{profile_name}.config.toml",
+        ],
     )
 
 
@@ -441,6 +516,10 @@ def build_official_home_config_from_internal(
         "openai-official",
         official_config,
         canonical_config,
+        profile_layer_configs=[
+            official_home / "openai-official.config.toml",
+            internal_home / "openai-official.config.toml",
+        ],
     )
 
 
@@ -448,7 +527,7 @@ def refresh_profile_canonical_config(
     profile_name: str,
     runtime_config_path: Path,
     canonical_config_path: Path,
-) -> None:
+) -> str:
     runtime_text = runtime_config_path.read_text()
     fallback_text = canonical_config_path.read_text() if canonical_config_path.exists() else None
     seed_text = build_profile_seed_config_text(
@@ -460,3 +539,4 @@ def refresh_profile_canonical_config(
     )
     seed_text = annotate_canonical_profile_config(seed_text, profile_name)
     atomic_write(canonical_config_path, seed_text.encode(), mode=0o600)
+    return seed_text
