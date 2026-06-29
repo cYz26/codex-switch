@@ -53,17 +53,41 @@ context_management:
     - validation_recorded_if_applicable
 
 context_health:
-  last_report: .planning/context-health/reports/20260624210101-context-health.json
+  last_report: .planning/context-health/reports/20260629124138-context-health.json
   last_risk: medium
   last_confidence: medium
   last_decision: reconcile
   last_goal_status: aligned
-  goal_summary: Official/internal independent home switching regression repaired and hardened. Doctor now accepts the managed internal Desktop app-server proxy chain, stale unavailable enabled plugin selectors have an explicit disable cleanup path, unavailable browser-use/local-personal dev-flow selectors were disabled in local config, pdf primary-runtime cache was refreshed, the generated local bundle was installed, and installed doctor passes on the real workstation.
+  goal_summary: Official/internal independent home switching regression repaired and hardened. Doctor now accepts the managed internal Desktop app-server proxy chain, stale unavailable enabled plugin selectors have an explicit disable cleanup path, unavailable browser-use/local-personal dev-flow selectors were disabled in local config, pdf primary-runtime cache was refreshed, the generated local bundle was installed, internal Desktop config writes now preserve existing shared settings, current workstation configs were restored from the latest valid switch backup, and installed doctor passes on the real workstation.
 ---
 
 # Workflow State
 
 ## Current Status
+
+On 2026-06-29, the internal Desktop config-write regression was repaired.
+Codex Desktop/app-server `config/value/write` and `config/batchWrite` calls are
+now guarded in the internal app proxy by snapshotting the managed runtime
+config before the write and restoring missing unrelated shared defaults after a
+successful response, without overwriting the newly written Desktop value or
+copying profile-specific model/provider settings from the snapshot. Regression
+coverage was added for missing shared default restoration plus both app-server
+config write methods.
+
+The real workstation config was restored from
+`/Users/cY/.codex-switch/backups/20260629T040238Z-switch-openai-official-to-internal/3-config.toml`
+using the same merge helper. Pre-repair copies were saved in
+`/Users/cY/.codex-switch/backups/20260629T043729Z-pre-config-preservation-repair/`.
+Both `/Users/cY/.codex/config.toml` and
+`/Users/cY/.codex-switch/homes/internal/config.toml` now validate as TOML and
+again contain Desktop appearance settings, memories, restored enabled plugin
+entries for `agent-kb@cy-codex-skills` and
+`lark-feishu-ops@cy-codex-skills`, and the other missing shared support blocks
+from the valid switch backup. The local release bundle was regenerated and
+installed to `/Users/cY/.local/share/codex-switch/current`, and
+`/Users/cY/.codex-switch/bin/codex-internal-app` now points `SWITCH_SCRIPTS` at
+that installed bundle. The already-running Desktop app-server process must be
+restarted by Codex Desktop before it loads the repaired proxy code.
 
 Change `independent-profile-homes` has an additional verified repair for the
 official/internal switch regression reported on 2026-06-24. The repair prevents
@@ -114,9 +138,12 @@ Archive remains unavailable because the archive gate is closed.
 
 ## Next Action
 
-No immediate repair action remains for the local Desktop/internal plugin
-materialization issue: installed `codex-switch --skip-self-update doctor`
-passes. Archive remains unavailable because the archive gate is closed. Do not
-archive until the gate is explicitly opened. Separate follow-ups remain
-available for project-local DevFlow skill layout migration and external
-`gsd-core` update, but they are outside this repair.
+No immediate code or config repair action remains for the internal Desktop
+config preservation issue: focused tests pass, the full test file passes, the
+installed bundle and generated wrapper were refreshed, and installed
+`codex-switch --skip-self-update doctor` passes. Restart Codex Desktop to make
+the currently running app-server load the repaired proxy. Archive remains
+unavailable because the archive gate is closed. Do not archive until the gate
+is explicitly opened. Separate follow-ups remain available for project-local
+DevFlow skill layout migration and external `gsd-core` update, but they are
+outside this repair.

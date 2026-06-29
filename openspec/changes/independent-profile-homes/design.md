@@ -64,13 +64,29 @@ Track slice status in `tasks.md`, `.planning/STATE.md`, or a repo-specific ledge
 
 ## Capability Evidence
 
-Complete this section when the design depends on current, external, platform, plugin, API, hook, CLI, installed-cache, or local-vs-platform capability.
-
-- authoritative/current: source or command used, observed capability, version or date when available.
-- local scan: files, config, cache paths, scripts, tests, or generated artifacts inspected.
-- comparison: native option, local state, fallback option, recommendation, and tradeoffs.
-- assumptions: what remains unverified and why it is acceptable or blocking.
-- contract: scenarios and validation commands that prove the selected behavior.
+- authoritative/current: `/Applications/Codex.app/Contents/Resources/codex
+  --version` reports `codex-cli 0.142.3`; `/Users/cY/.local/bin/codex
+  --version` reports `codex-cli 0.142.2`; both app-server binaries expose
+  `config/value/write`, `config/batchWrite`, and `config/read` in generated
+  TypeScript protocol bindings.
+- local scan: inspected the active LaunchAgent and running Desktop process,
+  the managed internal wrapper, `codex_switch_app_proxy.py`,
+  `codex_switch_config.py`, current and backed-up
+  `~/.codex-switch/homes/internal/config.toml`, and the active plugin cache.
+  The latest switch backup retained Desktop preferences and enabled
+  `agent-kb`/`lark-feishu-ops`, while the current runtime config retained only
+  a narrow `[desktop]` table after Desktop started.
+- comparison: switch-time config merging already preserves shared settings,
+  but runtime Desktop config writes can rewrite the managed internal runtime
+  config after the switch. The durable repair belongs in the internal
+  app-server proxy so future Desktop config writes preserve existing unrelated
+  shared settings while keeping the newly written value.
+- assumptions: the active running app-server must be restarted by Codex
+  Desktop to load a regenerated proxy; the file-level repair still restores
+  config immediately.
+- contract: regression tests cover `config/value/write` and
+  `config/batchWrite` preservation, plus workstation restoration is validated
+  by `codex-switch status`, `doctor`, and targeted config checks.
 
 ## Approach
 
@@ -89,6 +105,13 @@ Official switch:
 internal home -> classify shared state -> backup official mutation targets ->
 sync shared config/support into official home -> update shim/Desktop -> write
 active record -> finalize backup post-state.
+
+Internal Desktop runtime config write:
+Desktop JSON-RPC request -> `codex_switch_app_proxy.py` snapshots the current
+managed internal `config.toml` for `config/value/write` and
+`config/batchWrite` -> backend applies the requested write -> proxy restores
+missing unrelated shared settings from the snapshot without overwriting the new
+Desktop value -> response is forwarded to Desktop.
 
 ## Compatibility
 

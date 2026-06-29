@@ -515,6 +515,71 @@ git diff --check
 - [x] Run focused regression coverage for the app proxy and wrapper route.
 - [x] Run the smallest relevant broader regression set.
 
+### Internal Desktop Config Write Preservation
+
+**Status:** verified
+
+**Goal**
+- Prevent Codex Desktop config writes in internal mode from dropping unrelated
+  shared settings such as Desktop appearance, memories, apps, plugin
+  marketplaces, enabled plugins, skill config, MCP servers, and hook trust
+  state, then restore the current workstation config from the latest valid
+  switch backup.
+
+**Files / Modules**
+- `scripts/codex_switch_config.py`
+- `scripts/codex_switch_app_proxy.py`
+- `scripts/test_codex_profile_switch.py`
+- `openspec/changes/independent-profile-homes/specs/codex-switch/spec.md`
+- `.planning/STATE.md`
+
+**Implementation**
+- [x] Add failing regression tests for preserving missing shared config blocks
+  while keeping the newly written Desktop value.
+- [x] Add failing regression tests for app proxy repair after
+  `config/value/write` and `config/batchWrite`.
+- [x] Implement a missing-default shared config merge helper that excludes
+  profile-specific model/provider settings.
+- [x] Have the internal app proxy snapshot managed runtime config before
+  Desktop config writes and restore missing unrelated shared settings after
+  successful backend writes.
+- [x] Restore the current workstation shared/internal runtime config from the
+  latest valid backup using the same preservation helper.
+- [x] Refresh the installed codex-switch bundle and generated internal Desktop
+  wrapper so future Desktop launches use the repaired proxy.
+
+**Tests**
+- [x] Run focused config preservation and proxy tests.
+- [x] Run the smallest relevant broader regression set.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_missing_shared_config_defaults_preserve_new_desktop_value \
+  CodexProfileSwitchTests.test_app_proxy_restores_missing_shared_config_after_config_value_write \
+  CodexProfileSwitchTests.test_app_proxy_restores_missing_shared_config_after_config_batch_write
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+scripts/codex-switch --skip-self-update doctor
+```
+
+**Verification Evidence**
+- Focused config preservation/proxy tests: 3 tests passed.
+- Full `scripts/test_codex_profile_switch.py`: 87 tests passed.
+- Syntax checks passed for Python scripts and shell entrypoints.
+- Workstation configs restored from
+  `~/.codex-switch/backups/20260629T040238Z-switch-openai-official-to-internal/3-config.toml`;
+  pre-repair copies saved under
+  `~/.codex-switch/backups/20260629T043729Z-pre-config-preservation-repair/`.
+- Installed bundle refreshed at
+  `~/.local/share/codex-switch/current`; generated internal app wrapper points
+  `SWITCH_SCRIPTS` at that installed bundle.
+- `codex-switch --skip-self-update doctor` passed after restoration.
+
 ## Acceptance Criteria
 
 - [x] Required behavior matches the OpenSpec scenarios.

@@ -14,6 +14,7 @@ from codex_switch_toml_scan import (
     toml_table_name,
 )
 from codex_switch_toml_validate import validate_toml_text
+from codex_switch_toml_validate import commentless_line
 
 PROFILE_TABLE_PREFIXES = (
     "model_providers.",
@@ -189,6 +190,70 @@ def merge_shared_config_overlay(updated: str, overlay_text: str) -> str:
         "shared config overlay",
     )
     validate_toml_text(merged, "shared config overlay")
+    return merged
+
+
+def is_array_toml_table_block(block: str) -> bool:
+    lines = block.splitlines()
+    return bool(lines) and lines[0].strip().startswith("[[")
+
+
+def table_assignment_lines(block: str) -> list[tuple[str, str]]:
+    assignments: list[tuple[str, str]] = []
+    for line in block.splitlines()[1:]:
+        bare = commentless_line(line).strip()
+        if not bare or bare.startswith("[") or "=" not in bare:
+            continue
+        key = bare.split("=", 1)[0].strip()
+        if key:
+            assignments.append((key, line.strip()))
+    return assignments
+
+
+def merge_missing_table_assignments(existing_block: str, defaults_block: str) -> str:
+    existing_keys = {key for key, _ in table_assignment_lines(existing_block)}
+    missing_lines = [
+        line
+        for key, line in table_assignment_lines(defaults_block)
+        if key not in existing_keys
+    ]
+    if not missing_lines:
+        return existing_block
+    return f"{existing_block.rstrip()}\n" + "\n".join(missing_lines) + "\n"
+
+
+def merge_missing_shared_config_defaults(updated: str, defaults_text: str) -> str:
+    defaults_shared = build_base_config_text_from_text(
+        defaults_text,
+        "missing shared config defaults",
+    )
+    merged = updated
+    for key, assignment in top_level_assignments(defaults_shared):
+        if not top_level_assignment(merged, key):
+            merged = upsert_top_level_assignment(merged, key, assignment)
+
+    default_blocks = matching_toml_table_blocks(
+        defaults_shared,
+        lambda table: not is_profile_specific_table(table),
+    )
+    for defaults_block in default_blocks:
+        table = toml_table_name(defaults_block.splitlines()[0])
+        if not table:
+            continue
+        existing_blocks = matching_toml_table_blocks(merged, lambda name: name == table)
+        if is_array_toml_table_block(defaults_block):
+            if defaults_block not in existing_blocks:
+                merged = append_toml_block(merged, defaults_block)
+            continue
+        if not existing_blocks:
+            merged = append_toml_block(merged, defaults_block)
+            continue
+        existing_block = existing_blocks[0]
+        merged_block = merge_missing_table_assignments(existing_block, defaults_block)
+        if merged_block != existing_block:
+            merged = merged.replace(existing_block, merged_block, 1)
+
+    validate_toml_text(merged, "missing shared config defaults")
     return merged
 
 

@@ -24,9 +24,15 @@ from codex_switch_running_app import (
 from codex_switch_app_proxy import (
     codex_version_supports_canonical_dynamic_tools,
     mask_backend_message_for_desktop,
+    remember_config_write_request,
+    restore_config_write_response,
     translate_desktop_message_for_backend,
 )
-from codex_switch_config import build_base_config_text, build_profile_v2_config_text
+from codex_switch_config import (
+    build_base_config_text,
+    build_profile_v2_config_text,
+    merge_missing_shared_config_defaults,
+)
 from codex_switch_home_sync import refresh_profile_canonical_config, sync_shared_support
 from codex_switch_store import Store
 
@@ -1436,6 +1442,136 @@ class CodexProfileSwitchTests(unittest.TestCase):
             message["params"]["marketplaceKinds"],
             ["local", "created-by-me-remote", "shared-with-me"],
         )
+
+    def test_missing_shared_config_defaults_preserve_new_desktop_value(self) -> None:
+        defaults = (
+            'model = "gpt-5.5-2026-04-24"\n'
+            'model_provider = "azure"\n'
+            "\n"
+            "[model_providers.azure]\n"
+            'name = "Azure"\n'
+            "\n"
+            "[desktop]\n"
+            'appearanceTheme = "dark"\n'
+            'followUpQueueMode = "off"\n'
+            "\n"
+            "[desktop.appearanceDarkChromeTheme]\n"
+            'background = "#101010"\n'
+            "\n"
+            "[memories]\n"
+            "enabled = true\n"
+            "\n"
+            "[apps.connector_test]\n"
+            'command = "connector-test"\n'
+            "\n"
+            "[marketplaces.cy-codex-skills]\n"
+            'source_type = "github"\n'
+            'source = "cy/codex-skills"\n'
+            "\n"
+            '[plugins."agent-kb@cy-codex-skills"]\n'
+            "enabled = true\n"
+            "\n"
+            "[[skills.config]]\n"
+            'path = "/Users/me/.codex/skills/agent-kb/SKILL.md"\n'
+            "\n"
+            '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]\n'
+            "enabled = true\n"
+        )
+        updated = (
+            "[desktop]\n"
+            'followUpQueueMode = "queue"\n'
+            "\n"
+            '[plugins."github@openai-curated"]\n'
+            "enabled = true\n"
+        )
+
+        merged = merge_missing_shared_config_defaults(updated, defaults)
+
+        self.assertIn('followUpQueueMode = "queue"', merged)
+        self.assertIn('appearanceTheme = "dark"', merged)
+        self.assertNotIn('followUpQueueMode = "off"', merged)
+        self.assertIn("[desktop.appearanceDarkChromeTheme]", merged)
+        self.assertIn("[memories]", merged)
+        self.assertIn("[apps.connector_test]", merged)
+        self.assertIn("[marketplaces.cy-codex-skills]", merged)
+        self.assertIn('[plugins."agent-kb@cy-codex-skills"]', merged)
+        self.assertIn('[plugins."github@openai-curated"]', merged)
+        self.assertIn("[[skills.config]]", merged)
+        self.assertIn(
+            '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]',
+            merged,
+        )
+        self.assertNotIn('model_provider = "azure"', merged)
+        self.assertNotIn("[model_providers.azure]", merged)
+
+    def test_app_proxy_restores_missing_shared_config_after_config_value_write(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            config_path = root / "config.toml"
+            config_path.write_text(
+                "[desktop]\n"
+                'appearanceTheme = "dark"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "github"\n'
+                'source = "cy/codex-skills"\n'
+                "\n"
+                '[plugins."agent-kb@cy-codex-skills"]\n'
+                "enabled = true\n"
+            )
+            pending = {}
+            request = {
+                "id": 1,
+                "method": "config/value/write",
+                "params": {"keyPath": "desktop.followUpQueueMode", "value": "queue"},
+            }
+
+            remember_config_write_request(request, config_path, pending)
+            config_path.write_text("[desktop]\n" 'followUpQueueMode = "queue"\n')
+            restore_config_write_response({"id": 1, "result": {"status": "ok"}}, pending)
+
+            restored = config_path.read_text()
+            self.assertIn('followUpQueueMode = "queue"', restored)
+            self.assertIn('appearanceTheme = "dark"', restored)
+            self.assertIn("[marketplaces.cy-codex-skills]", restored)
+            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', restored)
+
+    def test_app_proxy_restores_missing_shared_config_after_config_batch_write(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            config_path = root / "config.toml"
+            config_path.write_text(
+                "[memories]\n"
+                "enabled = true\n"
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/Users/me/.codex/skills/agent-kb/SKILL.md"\n'
+            )
+            pending = {}
+            request = {
+                "id": 2,
+                "method": "config/batchWrite",
+                "params": {
+                    "filePath": str(config_path),
+                    "writes": [
+                        {
+                            "keyPath": "desktop.followUpQueueMode",
+                            "value": "queue",
+                        }
+                    ],
+                },
+            }
+
+            remember_config_write_request(request, root / "other.toml", pending)
+            config_path.write_text("[desktop]\n" 'followUpQueueMode = "queue"\n')
+            restore_config_write_response({"id": 2, "result": {"status": "ok"}}, pending)
+
+            restored = config_path.read_text()
+            self.assertIn('followUpQueueMode = "queue"', restored)
+            self.assertIn("[memories]", restored)
+            self.assertIn("enabled = true", restored)
+            self.assertIn("[[skills.config]]", restored)
+            self.assertIn("/Users/me/.codex/skills/agent-kb/SKILL.md", restored)
 
     def test_canonical_refresh_does_not_resurrect_removed_profile_settings(self) -> None:
         temp_dir, root = self.make_workspace()

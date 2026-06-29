@@ -9,13 +9,15 @@ import sys
 import threading
 from pathlib import Path
 
-from codex_switch_config import string_assignment_value
+from codex_switch_config import merge_missing_shared_config_defaults, string_assignment_value
+from codex_switch_io import atomic_write
 from codex_switch_toml_edit import top_level_assignment
 
 
 DATE_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 CODEX_CLI_VERSION = re.compile(r"\bcodex-cli\s+(\d+)\.(\d+)\.(\d+)")
 MIN_CANONICAL_DYNAMIC_TOOLS_VERSION = (0, 141, 0)
+CONFIG_WRITE_METHODS = {"config/value/write", "config/batchWrite"}
 MODEL_VALUE_KEYS = {
     "model",
     "latestModel",
@@ -77,6 +79,69 @@ def message_id(message: dict) -> str | int | None:
     if isinstance(value, (str, int)):
         return value
     return None
+
+
+def config_write_target_path(message: dict, default_config_path: Path) -> Path:
+    params = message.get("params")
+    if isinstance(params, dict):
+        file_path = params.get("filePath")
+        if isinstance(file_path, str) and file_path:
+            return Path(file_path)
+    return default_config_path
+
+
+def remember_config_write_request(
+    message: dict,
+    default_config_path: Path,
+    pending_config_writes: dict[str | int, tuple[Path, str]],
+) -> None:
+    if message.get("method") not in CONFIG_WRITE_METHODS:
+        return
+    request_id = message_id(message)
+    if request_id is None:
+        return
+    target_path = config_write_target_path(message, default_config_path)
+    if not target_path.exists():
+        return
+    try:
+        defaults_text = target_path.read_text()
+    except OSError as exc:
+        print(
+            f"codex-switch app proxy: unable to snapshot config write target "
+            f"{target_path}: {exc}",
+            file=sys.stderr,
+        )
+        return
+    pending_config_writes[request_id] = (target_path, defaults_text)
+
+
+def restore_config_write_response(
+    message: dict,
+    pending_config_writes: dict[str | int, tuple[Path, str]],
+) -> None:
+    request_id = message_id(message)
+    if request_id is None:
+        return
+    pending = pending_config_writes.pop(request_id, None)
+    if pending is None or "error" in message:
+        return
+    target_path, defaults_text = pending
+    if not target_path.exists():
+        return
+    try:
+        current_text = target_path.read_text()
+        restored_text = merge_missing_shared_config_defaults(current_text, defaults_text)
+    except Exception as exc:
+        print(
+            f"codex-switch app proxy: unable to restore config write target "
+            f"{target_path}: {exc}",
+            file=sys.stderr,
+        )
+        return
+    if restored_text == current_text:
+        return
+    mode = target_path.stat().st_mode & 0o777
+    atomic_write(target_path, restored_text.encode(), mode=mode)
 
 
 def replace_model_value(value, *, old: str, new: str):
@@ -238,6 +303,8 @@ def write_json_line(stream, message: dict) -> None:
 def forward_client_to_backend(
     backend: subprocess.Popen[str],
     pending_methods: dict[str | int, str],
+    pending_config_writes: dict[str | int, tuple[Path, str]],
+    config_path: Path,
     actual_model: str,
     desktop_model: str,
     supports_canonical_dynamic_tools: bool,
@@ -256,6 +323,11 @@ def forward_client_to_backend(
                 method = message.get("method")
                 if request_id is not None and isinstance(method, str):
                     pending_methods[request_id] = method
+                remember_config_write_request(
+                    message,
+                    config_path,
+                    pending_config_writes,
+                )
                 message = translate_desktop_message_for_backend(
                     message,
                     actual_model=actual_model,
@@ -273,6 +345,7 @@ def forward_client_to_backend(
 def forward_backend_to_client(
     backend: subprocess.Popen[str],
     pending_methods: dict[str | int, str],
+    pending_config_writes: dict[str | int, tuple[Path, str]],
     actual_model: str,
     desktop_model: str,
 ) -> None:
@@ -287,6 +360,7 @@ def forward_backend_to_client(
         if isinstance(message, dict):
             request_id = message_id(message)
             method = pending_methods.pop(request_id, None) if request_id is not None else None
+            restore_config_write_response(message, pending_config_writes)
             message = mask_backend_message_for_desktop(
                 message,
                 method=method,
@@ -309,6 +383,8 @@ def forward_backend_stderr(backend: subprocess.Popen[str]) -> None:
 def run_proxy(codex_bin: str, config_path: Path, args: list[str]) -> int:
     actual_model, desktop_model = read_desktop_model_alias(config_path)
     supports_canonical_dynamic_tools = backend_supports_canonical_dynamic_tools(codex_bin)
+    pending_methods: dict[str | int, str] = {}
+    pending_config_writes: dict[str | int, tuple[Path, str]] = {}
     backend = subprocess.Popen(
         [codex_bin, *args],
         stdin=subprocess.PIPE,
@@ -320,21 +396,30 @@ def run_proxy(codex_bin: str, config_path: Path, args: list[str]) -> int:
     if not actual_model or not desktop_model:
         client_thread = threading.Thread(
             target=forward_client_to_backend,
-            args=(backend, {}, "", "", supports_canonical_dynamic_tools),
+            args=(
+                backend,
+                pending_methods,
+                pending_config_writes,
+                config_path,
+                "",
+                "",
+                supports_canonical_dynamic_tools,
+            ),
             daemon=True,
         )
         stdout_thread = threading.Thread(
             target=forward_backend_to_client,
-            args=(backend, {}, "", ""),
+            args=(backend, pending_methods, pending_config_writes, "", ""),
             daemon=True,
         )
     else:
-        pending_methods: dict[str | int, str] = {}
         client_thread = threading.Thread(
             target=forward_client_to_backend,
             args=(
                 backend,
                 pending_methods,
+                pending_config_writes,
+                config_path,
                 actual_model,
                 desktop_model,
                 supports_canonical_dynamic_tools,
@@ -343,7 +428,13 @@ def run_proxy(codex_bin: str, config_path: Path, args: list[str]) -> int:
         )
         stdout_thread = threading.Thread(
             target=forward_backend_to_client,
-            args=(backend, pending_methods, actual_model, desktop_model),
+            args=(
+                backend,
+                pending_methods,
+                pending_config_writes,
+                actual_model,
+                desktop_model,
+            ),
             daemon=True,
         )
     stderr_thread = threading.Thread(target=forward_backend_stderr, args=(backend,), daemon=True)

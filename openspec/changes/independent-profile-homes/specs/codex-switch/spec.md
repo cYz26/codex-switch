@@ -333,6 +333,21 @@ profile config only as fallback.
   home
 - AND official profile-specific settings remain in the official home.
 
+#### Scenario: Internal Desktop config writes preserve existing shared settings
+
+- GIVEN the managed internal Desktop app-server starts with a runtime
+  `config.toml` containing shared Desktop preferences, memories settings,
+  apps, plugin marketplaces, enabled plugins, skill config, MCP servers, and
+  hook trust state
+- WHEN Codex Desktop writes a narrower config edit such as
+  `desktop.followUpQueueMode` through `config/value/write` or
+  `config/batchWrite`
+- THEN the write keeps the new value from Desktop
+- AND existing unrelated shared settings remain in the managed internal
+  runtime config
+- AND profile-specific model/provider settings are not copied into the shared
+  official home.
+
 ### Requirement: Profile home selection and adoption
 
 The system SHALL support explicit and interactive Codex home selection for
