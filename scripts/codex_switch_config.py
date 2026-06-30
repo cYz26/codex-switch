@@ -178,6 +178,14 @@ def merge_preserved_shared_config_overlay(updated: str, overlay_text: str) -> st
     )
 
 
+def build_preserved_shared_config_text_from_text(text: str, label: str) -> str:
+    updated = ""
+    for block in matching_toml_table_blocks(text, is_preserved_shared_table):
+        updated = append_toml_block(updated, block)
+    validate_toml_text(updated, label)
+    return updated
+
+
 def merge_shared_config_overlay(updated: str, overlay_text: str) -> str:
     overlay_shared = build_base_config_text_from_text(overlay_text, "shared config overlay")
     merged = updated

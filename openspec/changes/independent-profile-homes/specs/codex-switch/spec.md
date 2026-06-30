@@ -136,6 +136,30 @@ profile config only as fallback.
 - AND structural auth settings may still be preserved from the canonical
   fallback when absent from runtime config.
 
+#### Scenario: Source-home profile seed is not reused for official
+
+- GIVEN `openai-official` has an explicit profile layer with official model
+  settings
+- AND the current official home `config.toml` is an unannotated config whose
+  profile-specific model/provider settings match the internal source home
+- WHEN the user switches to `openai-official`
+- THEN the generated official runtime config uses the explicit
+  `openai-official` profile layer as its profile seed
+- AND it does not copy the internal source home model/provider settings into
+  the official runtime or canonical profile config.
+
+#### Scenario: Explicit official profile layer wins over unannotated provider runtime
+
+- GIVEN `openai-official` has an explicit profile layer with official model
+  settings and no `model_provider`
+- AND the current official home `config.toml` is unannotated and contains a
+  `model_provider`
+- WHEN the user switches to `openai-official`
+- THEN the generated official runtime config uses the explicit official
+  profile layer instead of the unannotated provider runtime
+- AND the official profile layer and canonical profile config are not rewritten
+  with that provider runtime's model/provider settings.
+
 #### Scenario: Canonical profile config is used as fallback
 
 - GIVEN the target profile runtime `config.toml` is missing or invalid
@@ -192,6 +216,35 @@ profile config only as fallback.
   target home `config.toml`
 - AND the generated profile-specific canonical config still excludes shared
   plugin support settings.
+
+#### Scenario: Profile-local plugin support survives source-home plugin loss
+
+- GIVEN the target profile previously generated a runtime `config.toml` with
+  marketplace, plugin, skill, or hook trust settings
+- AND the current source home `config.toml` no longer contains those plugin
+  support settings because another profile or Desktop write narrowed the shared
+  config
+- WHEN the user switches back to the target profile
+- THEN the generated target runtime `config.toml` restores those plugin support
+  settings from the target profile's previous runtime config or profile-local
+  plugin support snapshot
+- AND the switch refreshes that profile-local plugin support snapshot from the
+  generated runtime config
+- AND profile-specific canonical config still excludes shared plugin support
+  settings.
+
+#### Scenario: Source profile plugin support snapshot is used as shared fallback
+
+- GIVEN the source profile has a profile-local plugin support snapshot with
+  marketplace, plugin, skill, or hook trust settings
+- AND the current source home runtime `config.toml` has already been narrowed
+  and lacks those plugin support settings
+- WHEN the user switches to another profile
+- THEN the generated target runtime `config.toml` merges missing plugin support
+  settings from the source profile's plugin support snapshot as shared
+  defaults
+- AND existing target runtime or target snapshot plugin settings continue to
+  take precedence over source snapshot defaults.
 
 #### Scenario: Active profile plugin materialization is checked separately from config sync
 

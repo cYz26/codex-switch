@@ -31,6 +31,7 @@ from codex_switch_restore import cmd_restore
 from codex_switch_switching import (
     cmd_switch,
 )
+from codex_switch_verify import cmd_verify
 
 
 class OfficialHomeAction(argparse.Action):
@@ -216,6 +217,30 @@ def add_simple_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         ),
     )
     repair_plugins.set_defaults(func=cmd_repair_plugins)
+
+    verify = sub.add_parser("verify", help="Verify an active target profile switch.")
+    verify.add_argument("name")
+    verify.add_argument(
+        "--repair",
+        choices=("none", "safe"),
+        default="none",
+        help="Run bounded safe repairs before verification. Default: none.",
+    )
+    verify.add_argument(
+        "--runtime-smoke",
+        action="store_true",
+        help="Run target codex --version and plugin list smoke with profile CODEX_HOME.",
+    )
+    verify.add_argument(
+        "--exec-smoke",
+        help="Run explicit `codex exec --json <prompt>` smoke with profile CODEX_HOME.",
+    )
+    verify.add_argument(
+        "--report",
+        action="store_true",
+        help="Write a JSON verification report under the profile store.",
+    )
+    verify.set_defaults(func=cmd_verify)
 
     shim_env = sub.add_parser("shim-env", help="Print shell export used by the codex shim.")
     shim_env.set_defaults(func=cmd_shim_env)

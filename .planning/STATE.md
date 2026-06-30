@@ -8,7 +8,7 @@ current_phase:
   status: planning
 
 current_change:
-  id: independent-profile-homes
+  id: switch-verification-contract
   status: verified
 
 gates:
@@ -53,12 +53,12 @@ context_management:
     - validation_recorded_if_applicable
 
 context_health:
-  last_report: .planning/context-health/reports/20260629124138-context-health.json
+  last_report: .planning/context-health/reports/20260629130742-context-health.json
   last_risk: medium
   last_confidence: medium
   last_decision: reconcile
   last_goal_status: aligned
-  goal_summary: Official/internal independent home switching regression repaired and hardened. Doctor now accepts the managed internal Desktop app-server proxy chain, stale unavailable enabled plugin selectors have an explicit disable cleanup path, unavailable browser-use/local-personal dev-flow selectors were disabled in local config, pdf primary-runtime cache was refreshed, the generated local bundle was installed, internal Desktop config writes now preserve existing shared settings, current workstation configs were restored from the latest valid switch backup, and installed doctor passes on the real workstation.
+  goal_summary: Official/internal independent home switching regression repaired and hardened. Doctor now accepts the managed internal Desktop app-server proxy chain, stale unavailable enabled plugin selectors have an explicit disable cleanup path, unavailable browser-use/local-personal dev-flow selectors were disabled in local config, pdf primary-runtime cache was refreshed, the generated local bundle was installed, internal Desktop config writes now preserve existing shared settings, current workstation configs were restored from the latest valid switch backup, the official unannotated runtime seed contamination regression is repaired broadly, source-profile plugin support snapshots now act as shared fallback after runtime narrowing, one-key switches now run target-profile verification before doctor, standalone verify supports safe repair, reports, and explicit runtime smoke, and the real workstation ends active on internal with restored shared plugin config, verify passing, and doctor passing.
 ---
 
 # Workflow State
@@ -88,6 +88,69 @@ installed to `/Users/cY/.local/share/codex-switch/current`, and
 `/Users/cY/.codex-switch/bin/codex-internal-app` now points `SWITCH_SCRIPTS` at
 that installed bundle. The already-running Desktop app-server process must be
 restarted by Codex Desktop before it loads the repaired proxy code.
+
+On 2026-06-30, the official unannotated runtime seed contamination regression
+was repaired. A real `codex-switch official` attempt had written
+internal/Azure model-provider settings into the official profile layer and
+canonical profile config even though the pre-switch official profile layer had
+clean official `gpt-5.5` settings. The repair adds regression coverage for an
+unannotated official runtime config that matches the internal source home,
+skips that runtime seed when a clean explicit official profile layer exists,
+and compares profile seeds after removing codex-switch managed comments. The
+local bundle was rebuilt and installed, polluted official layer files were
+backed up under
+`/Users/cY/.codex-switch/backups/20260630111802-pre-official-layer-repair/`,
+the clean layer was restored from
+`20260630T025400Z-switch-internal-to-openai-official`, a real official switch
+was verified to generate official `gpt-5.5` config without internal Azure
+provider settings, and the workstation was switched back to `internal`.
+
+On 2026-06-30, the repeated plugin/config loss after official-to-internal
+switching was repaired more systemically. The root failure path was that
+plugin support blocks were treated as shared config, while the canonical
+profile config intentionally excluded them; if the current source home was
+narrowed by another profile or Desktop write, switching back to `internal`
+could use the old internal runtime only as the model/profile seed and discard
+the runtime's marketplace/plugin/skill/hook blocks. The repair adds
+profile-local plugin support snapshots named
+`<profile>.plugin-support.config.toml`, merges previous runtime/snapshot
+plugin support blocks as missing defaults when the source home lacks them, and
+refreshes those snapshots from every generated runtime config, including the
+managed internal Desktop wrapper path. The canonical profile config remains
+profile-specific. Regression coverage was added for recovery from the target
+runtime and from the profile-local snapshot after runtime loss, stale plugin
+cleanup now updates snapshot files, and Desktop wrapper tests verify snapshot
+refresh. Full profile-switch tests passed (90 tests), OpenSpec validated, the
+local bundle was packaged and installed, and a real workstation
+official-to-internal switch cycle ended active on `internal` with plugin repair
+reporting no missing enabled plugins and doctor passing. The running Desktop
+app-server process should still be restarted to load the updated proxy code.
+
+After a Desktop restart on 2026-06-30, another gap was confirmed: the new
+plugin-support snapshot mechanism prevented future loss only when at least one
+current target runtime/snapshot still had the shared plugin blocks. The real
+workstation's current official/internal runtime configs and snapshots had
+already been narrowed, so the missing historical shared config was not
+recovered. The official profile layer was also polluted again because the
+previous official seed guard only skipped an unannotated provider runtime when
+its profile seed exactly matched the internal source home; the real config was
+similar but not identical. The repair now skips any unannotated
+`openai-official` runtime seed containing `model_provider` when a clean
+explicit official profile layer with `model` and no provider exists, and it
+uses the source profile's `<profile>.plugin-support.config.toml` as shared
+fallback defaults when switching profiles. Post-restart regressions were added
+and verified. Current workstation configs were backed up under
+`/Users/cY/.codex-switch/backups/20260630152911-pre-post-restart-shared-config-repair/`,
+then restored from rich backup
+`20260630T062435Z-switch-openai-official-to-internal/3-config.toml` and clean
+official layers from
+`20260630T065702Z-switch-internal-to-openai-official`. A real
+`official -> internal` switch cycle passed. Final state: official runtime
+`/Users/cY/.codex/config.toml` is `gpt-5.5` without `model_provider`;
+internal runtime is Azure; both runtime/snapshot sets contain 5 marketplaces,
+24 plugin blocks, and 43 hook trust blocks including agent-kb, lark-feishu-ops,
+pdf, and game-design-workshop; `codex-switch --skip-self-update doctor`
+passes.
 
 Change `independent-profile-homes` has an additional verified repair for the
 official/internal switch regression reported on 2026-06-24. The repair prevents
@@ -134,16 +197,40 @@ verification, and
 generated local bundle was explicitly installed to
 `/Users/cY/.local/share/codex-switch/current`.
 
+On 2026-06-30, the switch verification contract was implemented as change
+`switch-verification-contract`. `codex-switch verify <profile>` now validates
+target active state, runtime config, official provider contamination, Desktop
+binding/process observations in the managed default context, plugin support
+snapshots, optional runtime smoke, explicit exec smoke, and optional JSON
+reports. `--repair=safe` refreshes profile-local plugin support snapshots and
+uses the existing catalog-aware plugin repair path only when enabled plugins
+are actually missing. One-key `codex-switch internal` and
+`codex-switch official` now run a Verification section after plugin repair and
+before doctor; `--skip-verify`, `--runtime-smoke`, `--exec-smoke <prompt>`,
+and `--verification-report` control diagnostic and post-upgrade depth. The
+full profile-switch test file passed 97 tests, OpenSpec validation passed 10
+items, the release bundle was packaged and installed locally, installed
+`codex-switch --skip-self-update verify internal --repair=safe --report`
+passed, installed `codex-switch --skip-self-update verify internal
+--repair=safe --runtime-smoke --report` passed, and installed
+`codex-switch --skip-self-update doctor` passed.
+
 Archive remains unavailable because the archive gate is closed.
 
 ## Next Action
 
-No immediate code or config repair action remains for the internal Desktop
-config preservation issue: focused tests pass, the full test file passes, the
-installed bundle and generated wrapper were refreshed, and installed
-`codex-switch --skip-self-update doctor` passes. Restart Codex Desktop to make
-the currently running app-server load the repaired proxy. Archive remains
-unavailable because the archive gate is closed. Do not archive until the gate
-is explicitly opened. Separate follow-ups remain available for project-local
-DevFlow skill layout migration and external `gsd-core` update, but they are
-outside this repair.
+No immediate code or config repair action remains for the repeated
+official/internal plugin-support loss or for the switch verification contract:
+focused tests pass, the full test file passes, OpenSpec validates, the local
+bundle and generated wrapper were refreshed, installed `verify internal
+--repair=safe --report` passes, installed doctor passes, and profile-local
+plugin support snapshots now exist for both profiles with the restored shared
+plugin config. For a future internal Codex backend upgrade, run
+`codex-switch internal --runtime-smoke --verification-report` after the update;
+add `--exec-smoke <prompt>` only when a model-backed smoke is explicitly
+desired. Restart Codex Desktop once more to make the currently running
+app-server load the latest proxy/wrapper code. Archive remains unavailable
+because the archive gate is closed. Do not archive until the gate is explicitly
+opened. Separate follow-ups remain available for project-local DevFlow skill
+layout migration and external `gsd-core` update, but they are outside this
+repair.

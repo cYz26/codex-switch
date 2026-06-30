@@ -10,6 +10,7 @@ from pathlib import Path
 
 from codex_switch_constants import SwitchError
 from codex_switch_home_select import profile_home_binding
+from codex_switch_home_sync import plugin_support_snapshot_name
 from codex_switch_io import atomic_write
 from codex_switch_store import Store, make_store
 from codex_switch_toml_scan import toml_table_name
@@ -195,17 +196,22 @@ def disable_plugin_selector_in_text(text: str, selector: str) -> tuple[str, bool
 
 
 def profile_plugin_config_paths(store: Store, name: str, home: Path) -> list[Path]:
+    plugin_support_name = plugin_support_snapshot_name(name)
     candidates = [
         home / "config.toml",
+        home / plugin_support_name,
         home / f"{name}.config.toml",
         store.profile_dir(name) / "config.toml",
+        store.profile_dir(name) / plugin_support_name,
         store.live_codex_home / "config.toml",
+        store.live_codex_home / plugin_support_name,
         store.live_codex_home / f"{name}.config.toml",
     ]
     internal_home = store.managed_home("internal")
     candidates.extend(
         [
             internal_home / "config.toml",
+            internal_home / plugin_support_name,
             internal_home / f"{name}.config.toml",
         ]
     )

@@ -6,9 +6,11 @@ import shutil
 from pathlib import Path
 
 from codex_switch_config import (
-    build_base_config_text,
+    build_base_config_text_from_text,
     build_profile_seed_config_text,
+    build_preserved_shared_config_text_from_text,
     is_profile_specific_table,
+    merge_missing_shared_config_defaults,
     merge_preserved_shared_config_overlay,
     merge_shared_config_overlay,
     string_assignment_value,
@@ -306,6 +308,18 @@ def annotate_canonical_profile_config(text: str, profile_name: str) -> str:
     return annotated
 
 
+def annotate_plugin_support_snapshot(text: str, profile_name: str) -> str:
+    body = strip_managed_comments(text)
+    annotated = (
+        f"{MANAGED_COMMENT_PREFIX} profile-local plugin support snapshot for {profile_name}\n"
+        f"{MANAGED_COMMENT_PREFIX} contains marketplace, plugin, skill, and hook trust settings\n"
+    )
+    if body.strip():
+        annotated += f"\n{body}"
+    validate_toml_text(annotated, f"plugin support snapshot for {profile_name}")
+    return annotated
+
+
 def managed_runtime_profile_name(text: str) -> str | None:
     prefix = f"{MANAGED_COMMENT_PREFIX} managed runtime config for profile "
     for line in text.splitlines()[:5]:
@@ -389,9 +403,51 @@ def merge_shared_with_profile_seed(
     target_runtime_config: Path,
     canonical_config: Path,
     profile_layer_configs: list[Path] | None = None,
+    profile_shared_layer_configs: list[Path] | None = None,
 ) -> str:
-    shared_text = build_base_config_text(shared_source_config) if shared_source_config.exists() else ""
+    shared_source_text = ""
+    if shared_source_config.exists():
+        shared_source_text = read_valid_config(
+            shared_source_config,
+            f"shared source config: {shared_source_config}",
+        )
+    shared_text = (
+        build_base_config_text_from_text(shared_source_text, str(shared_source_config))
+        if shared_source_text
+        else ""
+    )
     errors: list[str] = []
+    target_runtime_text: str | None = None
+    if target_runtime_config.exists():
+        try:
+            target_runtime_text = read_valid_config(
+                target_runtime_config,
+                f"last runtime config: {target_runtime_config}",
+            )
+            shared_text = merge_preserved_shared_defaults_from_text(
+                shared_text,
+                target_runtime_text,
+                f"last runtime plugin support: {target_runtime_config}",
+            )
+        except SwitchError as exc:
+            errors.append(str(exc))
+
+    for path in unique_paths(profile_shared_layer_configs or []):
+        if not path.exists():
+            continue
+        try:
+            shared_layer_text = read_valid_config(
+                path,
+                f"profile plugin support snapshot: {path}",
+            )
+            shared_text = merge_preserved_shared_defaults_from_text(
+                shared_text,
+                shared_layer_text,
+                f"profile plugin support snapshot: {path}",
+            )
+        except SwitchError as exc:
+            errors.append(str(exc))
+
     profile_layers = unique_paths(profile_layer_configs or [])
     profile_layer_texts: dict[Path, str] = {}
     for path in profile_layers:
@@ -405,18 +461,15 @@ def merge_shared_with_profile_seed(
             errors.append(str(exc))
 
     candidates: list[tuple[Path, str, str | None]] = []
-    if target_runtime_config.exists():
+    if target_runtime_text is not None:
         try:
-            runtime_text = read_valid_config(
-                target_runtime_config,
-                f"last runtime config: {target_runtime_config}",
-            )
             if not should_skip_managed_runtime_seed(
                 profile_name,
-                runtime_text,
+                target_runtime_text,
                 profile_layer_texts,
+                shared_source_text,
             ):
-                candidates.append((target_runtime_config, "last runtime config", runtime_text))
+                candidates.append((target_runtime_config, "last runtime config", target_runtime_text))
         except SwitchError as exc:
             errors.append(str(exc))
     for path in profile_layers:
@@ -453,23 +506,65 @@ def merge_shared_with_profile_seed(
     )
 
 
+def merge_preserved_shared_defaults_from_text(
+    shared_text: str,
+    defaults_text: str,
+    label: str,
+) -> str:
+    preserved_text = build_preserved_shared_config_text_from_text(defaults_text, label)
+    if not preserved_text.strip():
+        return shared_text
+    return merge_missing_shared_config_defaults(shared_text, preserved_text)
+
+
 def should_skip_managed_runtime_seed(
     profile_name: str,
     runtime_text: str,
     profile_layer_texts: dict[Path, str],
+    shared_source_text: str = "",
 ) -> bool:
     if profile_name != "openai-official":
-        return False
-    if managed_runtime_profile_name(runtime_text) != profile_name:
         return False
     if not profile_layer_texts:
         return False
     if not top_level_assignment(runtime_text, "model_provider"):
         return False
-    return not any(
+    if any(
         top_level_assignment(profile_layer_text, "model_provider")
         for profile_layer_text in profile_layer_texts.values()
-    )
+    ):
+        return False
+    if any(
+        top_level_assignment(profile_layer_text, "model")
+        for profile_layer_text in profile_layer_texts.values()
+    ):
+        return True
+    if managed_runtime_profile_name(runtime_text) == profile_name:
+        return True
+    return profile_seed_matches_shared_source(profile_name, runtime_text, shared_source_text)
+
+
+def profile_seed_matches_shared_source(
+    profile_name: str,
+    runtime_text: str,
+    shared_source_text: str,
+) -> bool:
+    if not shared_source_text:
+        return False
+    try:
+        runtime_seed = build_profile_seed_config_text(
+            profile_name,
+            runtime_text,
+            "runtime profile seed comparison",
+        )
+        shared_seed = build_profile_seed_config_text(
+            profile_name,
+            shared_source_text,
+            "shared source profile seed comparison",
+        )
+    except SwitchError:
+        return False
+    return strip_managed_comments(runtime_seed) == strip_managed_comments(shared_seed)
 
 
 def unique_paths(paths: list[Path]) -> list[Path]:
@@ -499,6 +594,15 @@ def build_internal_home_config(
             target_runtime_config.parent / f"{profile_name}.config.toml",
             official_home / f"{profile_name}.config.toml",
         ],
+        profile_shared_layer_configs=[
+            target_runtime_config.parent / plugin_support_snapshot_name(profile_name),
+            official_home / plugin_support_snapshot_name(profile_name),
+            canonical_config.parent / plugin_support_snapshot_name(profile_name),
+            official_home / plugin_support_snapshot_name("openai-official"),
+            canonical_config.parent.parent
+            / "openai-official"
+            / plugin_support_snapshot_name("openai-official"),
+        ],
     )
 
 
@@ -520,6 +624,15 @@ def build_official_home_config_from_internal(
             official_home / "openai-official.config.toml",
             internal_home / "openai-official.config.toml",
         ],
+        profile_shared_layer_configs=[
+            official_home / plugin_support_snapshot_name("openai-official"),
+            internal_home / plugin_support_snapshot_name("openai-official"),
+            canonical_config.parent / plugin_support_snapshot_name("openai-official"),
+            internal_home / plugin_support_snapshot_name("internal"),
+            canonical_config.parent.parent
+            / "internal"
+            / plugin_support_snapshot_name("internal"),
+        ],
     )
 
 
@@ -540,3 +653,26 @@ def refresh_profile_canonical_config(
     seed_text = annotate_canonical_profile_config(seed_text, profile_name)
     atomic_write(canonical_config_path, seed_text.encode(), mode=0o600)
     return seed_text
+
+
+def plugin_support_snapshot_name(profile_name: str) -> str:
+    return f"{profile_name}.plugin-support.config.toml"
+
+
+def refresh_profile_plugin_support_snapshot(
+    profile_name: str,
+    runtime_config_path: Path,
+    snapshot_paths: list[Path],
+) -> str:
+    runtime_text = read_valid_config(
+        runtime_config_path,
+        f"runtime config for plugin support snapshot: {runtime_config_path}",
+    )
+    snapshot_text = build_preserved_shared_config_text_from_text(
+        runtime_text,
+        f"plugin support snapshot for {profile_name}",
+    )
+    snapshot_text = annotate_plugin_support_snapshot(snapshot_text, profile_name)
+    for path in unique_paths(snapshot_paths):
+        atomic_write(path, snapshot_text.encode(), mode=0o600)
+    return snapshot_text

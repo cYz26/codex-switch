@@ -52,7 +52,7 @@ One-key commands:
   version                  Print codex-switch version.
 
 Pass-through commands:
-  init | capture | switch | restore | status | list | doctor | repair-plugins | shim-env
+  init | capture | switch | restore | status | list | doctor | repair-plugins | verify | shim-env
   login-internal | login-official
   login | set-bin | set-app-bin
   raw <codex_profile_switch.py args...>
@@ -76,6 +76,10 @@ Switch options for internal/official:
   --skip-login                 Do not auto-login official when file auth is missing.
   --skip-update-check          Do not check for updates or auto-update internal.
   --skip-plugin-repair         Do not install missing enabled plugins after switch.
+  --skip-verify                Do not verify the target profile after switch.
+  --runtime-smoke              During verify, run target codex local runtime smoke.
+  --exec-smoke <prompt>        During verify, run explicit codex exec --json smoke.
+  --verification-report        Write a JSON verification report during verify.
   --no-status                  Do not print status after a real switch.
   --skip-doctor                Do not run doctor after a real switch.
 
@@ -396,9 +400,10 @@ print_final_result() {
   local profile="$1"
   local outcome="$2"
   local switch_status="$3"
-  local doctor_status="$4"
-  local status_status="$5"
-  local failed_step="${6:-}"
+  local verify_status="$4"
+  local doctor_status="$5"
+  local status_status="$6"
+  local failed_step="${7:-}"
   local command_alias
   command_alias="$(profile_command_alias "$profile")"
 
@@ -412,6 +417,12 @@ print_final_result() {
     succeeded) echo "Switch: succeeded" ;;
     skipped) echo "Switch: not run" ;;
     *) echo "Switch: failed${failed_step:+ at $failed_step} (exit $switch_status)" ;;
+  esac
+  case "$verify_status" in
+    passed) echo "Verify: passed" ;;
+    skipped) echo "Verify: skipped" ;;
+    not-run) echo "Verify: not run" ;;
+    *) echo "Verify: failed (exit $verify_status)" ;;
   esac
   case "$doctor_status" in
     passed) echo "Doctor: passed" ;;
@@ -440,6 +451,12 @@ print_final_result() {
       if [[ "$failed_step" == "plugin repair" ]]; then
         echo "- Review the Plugin repair section above and fix the install error."
         echo "- Re-run plugin repair: codex-switch repair-plugins $profile"
+        echo "- Re-run verification: codex-switch verify $profile --repair=safe"
+        echo "- Re-run doctor: codex-switch doctor"
+      elif [[ "$failed_step" == "verification" ]]; then
+        echo "- Review the Verification section above and fix each listed issue."
+        echo "- Re-run verification: codex-switch verify $profile --repair=safe"
+        echo "- If it mentions running Codex Desktop or app-server, quit Codex Desktop completely and reopen it."
         echo "- Re-run doctor: codex-switch doctor"
       else
         echo "- Review the Doctor section above and fix each listed issue."
@@ -465,6 +482,10 @@ switch_profile() {
   local show_status=1
   local run_doctor=1
   local run_plugin_repair=1
+  local run_verify=1
+  local runtime_smoke=0
+  local verification_report=0
+  local exec_smoke=""
   local update_check=1
   local auto_login=1
   local switch_args=()
@@ -486,6 +507,23 @@ switch_profile() {
         ;;
       --skip-plugin-repair|--no-plugin-repair)
         run_plugin_repair=0
+        ;;
+      --skip-verify|--no-verify)
+        run_verify=0
+        ;;
+      --runtime-smoke)
+        runtime_smoke=1
+        ;;
+      --verification-report)
+        verification_report=1
+        ;;
+      --exec-smoke)
+        if [[ $# -lt 2 ]]; then
+          echo "$1 requires a value" >&2
+          exit 2
+        fi
+        exec_smoke="$2"
+        shift
         ;;
       --skip-update-check|--no-update-check)
         update_check=0
@@ -523,11 +561,11 @@ switch_profile() {
     plan_status=0
   else
     plan_status=$?
-    print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "dry-run plan"
+    print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "dry-run plan"
     return "$plan_status"
   fi
   if [[ "$dry_run" == 1 ]]; then
-    print_final_result "$profile" "DRY RUN OK" "skipped" "not-run" "not-run"
+    print_final_result "$profile" "DRY RUN OK" "skipped" "not-run" "not-run" "not-run"
     return
   fi
 
@@ -538,7 +576,7 @@ switch_profile() {
       update_status=0
     else
       update_status=$?
-      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "update check"
+      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "update check"
       return "$update_status"
     fi
   else
@@ -553,7 +591,7 @@ switch_profile() {
       login_status=0
     else
       login_status=$?
-      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "profile preparation"
+      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "profile preparation"
       return "$login_status"
     fi
   elif [[ "$profile" == "openai-official" ]]; then
@@ -567,7 +605,7 @@ switch_profile() {
     switch_status=0
   else
     switch_status=$?
-    print_final_result "$profile" "FAILED" "$switch_status" "not-run" "not-run" "switch"
+    print_final_result "$profile" "FAILED" "$switch_status" "not-run" "not-run" "not-run" "switch"
     return "$switch_status"
   fi
 
@@ -578,12 +616,37 @@ switch_profile() {
       repair_status="passed"
     else
       repair_status=$?
-      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "plugin repair"
+      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "not-run" "plugin repair"
       return "$repair_status"
     fi
   else
     print_section "Plugin repair"
     echo "Plugin repair: skipped by command option."
+  fi
+
+  local verify_status="skipped"
+  if [[ "$run_verify" == 1 ]]; then
+    print_section "Verification"
+    local verify_args=("$profile")
+    if [[ "$runtime_smoke" == 1 ]]; then
+      verify_args+=(--runtime-smoke)
+    fi
+    if [[ -n "$exec_smoke" ]]; then
+      verify_args+=(--exec-smoke "$exec_smoke")
+    fi
+    if [[ "$verification_report" == 1 ]]; then
+      verify_args+=(--report)
+    fi
+    if run_switcher verify "${verify_args[@]}"; then
+      verify_status="passed"
+    else
+      verify_status=$?
+      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "not-run" "not-run" "verification"
+      return "$verify_status"
+    fi
+  else
+    print_section "Verification"
+    echo "Verification: skipped by command option."
   fi
 
   local doctor_status="skipped"
@@ -606,13 +669,17 @@ switch_profile() {
     fi
   fi
 
-  if [[ "$doctor_status" == "passed" || "$doctor_status" == "skipped" ]] \
+  if [[ "$verify_status" == "passed" || "$verify_status" == "skipped" ]] \
+    && [[ "$doctor_status" == "passed" || "$doctor_status" == "skipped" ]] \
     && [[ "$status_status" == "printed" || "$status_status" == "skipped" ]]; then
-    print_final_result "$profile" "SUCCESS" "succeeded" "$doctor_status" "$status_status"
+    print_final_result "$profile" "SUCCESS" "succeeded" "$verify_status" "$doctor_status" "$status_status"
     return 0
   fi
 
-  print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$doctor_status" "$status_status"
+  print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "$doctor_status" "$status_status"
+  if [[ "$verify_status" != "passed" && "$verify_status" != "skipped" ]]; then
+    return "$verify_status"
+  fi
   if [[ "$doctor_status" != "passed" && "$doctor_status" != "skipped" ]]; then
     return "$doctor_status"
   fi
@@ -966,7 +1033,7 @@ case "$cmd" in
   login-official)
     run_switcher login openai-official "$@"
     ;;
-  init|capture|switch|restore|status|list|doctor|repair-plugins|shim-env|login|set-bin|set-app-bin)
+  init|capture|switch|restore|status|list|doctor|repair-plugins|verify|shim-env|login|set-bin|set-app-bin)
     run_switcher "$cmd" "$@"
     ;;
   raw)

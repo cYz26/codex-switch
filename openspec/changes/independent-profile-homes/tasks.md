@@ -311,6 +311,123 @@ git diff --check
 | Active profile plugin materialization repair | done | `.planning/verification/20260624180317-plugin-materialization-repair.md` |
 | Plugin repair help and unavailable-catalog hardening | done | `.planning/verification/20260624193841-plugin-repair-hardening.md` |
 | Proxy-aware doctor and stale plugin cleanup hardening | done | `.planning/verification/20260624205509-proxy-doctor-stale-plugin-cleanup.md` |
+| Profile-local plugin support snapshot repair | verified | `.planning/verification/20260630145758-profile-plugin-support-snapshot-repair.md` |
+
+### Profile-local Plugin Support Snapshot Repair
+
+**Status:** verified
+
+**Skill Routing Ledger**
+- request kind: repeated workflow repair / compatibility hardening
+- systematic-debugging: used; current wrapper, app-server process chain,
+  profile homes, manifests, plugin lists, and switch backups were inspected
+  before implementation
+- test-driven-development: used; add failing regressions before production
+  code
+- OpenSpec routing: existing `independent-profile-homes` behavior change is
+  updated because profile switching compatibility and error handling change
+
+**Target State**
+- Profile-local plugin support settings (`marketplaces.*`, `plugins.*`,
+  `skills.config`, and `hooks.state.*`) have a durable profile-local snapshot
+  and are not solely dependent on the current source home retaining those
+  blocks.
+- Switching back to `internal` after `official` or after an internal CLI update
+  restores previously configured plugin support blocks from the target
+  runtime/snapshot when the source home has been narrowed.
+- The canonical profile config remains profile-specific and does not become a
+  second shared-plugin source of truth.
+
+**Completion Contract**
+- [x] Focused regressions fail before implementation and pass after the fix.
+- [x] Existing official contamination and plugin materialization regressions
+  still pass.
+- [x] OpenSpec validates after the scenario update.
+- [x] Verification evidence and workflow state are updated.
+
+**Capability Slice**
+- [x] Add regression for switching back to `internal` when the official source
+  config lacks plugin support blocks but the internal runtime retained them.
+- [x] Add regression for the profile-local plugin support snapshot restoring
+  plugin blocks after the target runtime was narrowed.
+- [x] Implement snapshot refresh and fallback merge without copying plugin
+  cache directories between profiles.
+- [x] Include snapshot files in backup and stale-selector cleanup paths.
+- [x] Run focused and broader validation.
+
+**Post-restart Follow-up**
+- [x] Add regression for source profile plugin-support snapshots acting as
+  shared fallback when the source runtime config is narrowed.
+- [x] Add regression for explicit official profile layer winning over any
+  unannotated provider runtime, even when the provider runtime is not an exact
+  profile-seed match for the internal source home.
+- [x] Restore the real workstation shared config from the latest rich backup,
+  regenerate plugin-support snapshots, and re-run real switch/doctor checks.
+
+**Post-restart Verification Evidence**
+- New post-restart regressions failed before implementation:
+  `test_official_switch_ignores_unannotated_provider_runtime_when_explicit_layer_is_clean`
+  preserved `workspace-provider-model`/`model_provider = "azure"` in official,
+  and `test_internal_switch_restores_plugin_support_from_source_profile_snapshot`
+  dropped `[marketplaces.cy-codex-skills]`.
+- The two new regressions passed after implementation.
+- Focused neighboring regression set passed, 9 tests.
+- Full `python3 scripts/test_codex_profile_switch.py` passed, 92 tests.
+- `python3 -m py_compile scripts/*.py`, shell syntax checks,
+  `openspec validate --all --strict --no-interactive`, and `git diff --check`
+  passed.
+- `scripts/package-release.sh` passed and the local bundle was installed.
+- Current real workstation configs were backed up under
+  `/Users/cY/.codex-switch/backups/20260630152911-pre-post-restart-shared-config-repair/`.
+- Real workstation shared config was restored from rich backup
+  `20260630T062435Z-switch-openai-official-to-internal/3-config.toml`, clean
+  official profile layers were restored from
+  `20260630T065702Z-switch-internal-to-openai-official`, official/internal
+  runtime configs and plugin-support snapshots were regenerated, and a real
+  `official -> internal` switch cycle passed.
+- Final real state: `/Users/cY/.codex/config.toml` is official `gpt-5.5`
+  without `model_provider`; `/Users/cY/.codex-switch/homes/internal/config.toml`
+  is internal Azure; both runtime/snapshot sets contain 5 marketplaces, 24
+  plugin blocks, and 43 hook trust blocks including agent-kb, lark-feishu-ops,
+  pdf, and game-design-workshop. `codex-switch --skip-self-update doctor`
+  passed.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_internal_switch_restores_plugin_support_from_target_runtime_when_source_lost_it \
+  CodexProfileSwitchTests.test_internal_switch_restores_plugin_support_from_profile_snapshot_after_runtime_loss
+openspec validate independent-profile-homes --strict --no-interactive
+```
+
+**Verification Evidence**
+- New regression failed before implementation because internal switch dropped
+  `[marketplaces.cy-codex-skills]` and the profile-local plugin support
+  snapshot did not exist.
+- Focused regression command passed, 2 tests.
+- Neighboring contamination, plugin cleanup, Desktop wrapper, and one-key
+  auto-update regressions passed, 7 tests.
+- Full `python3 scripts/test_codex_profile_switch.py` passed, 90 tests.
+- `python3 -m py_compile scripts/*.py` passed.
+- Shell syntax checks passed for `scripts/codex-switch`,
+  `scripts/codex_env_setup`, `install.sh`, and `run.sh`.
+- `openspec validate independent-profile-homes --strict --no-interactive`
+  passed, and `openspec validate --all --strict --no-interactive` passed 9
+  items.
+- `git diff --check` passed.
+- `scripts/package-release.sh` passed and wrote `dist/codex-switch.tar.gz`.
+- Installed the repaired local bundle with
+  `CODEX_SWITCH_SOURCE_DIR=/Users/cY/dev/codex-switch ./install.sh`.
+- Real workstation switch cycle completed:
+  `codex-switch --skip-self-update official --skip-login --skip-update-check --skip-plugin-repair --skip-doctor --no-status --skip-launchctl`
+  then
+  `codex-switch --skip-self-update internal --skip-update-check --skip-launchctl`.
+  The final internal switch ran plugin repair, reported no missing enabled
+  plugins, doctor passed, and status showed active `internal`.
+- Real internal runtime and both internal plugin-support snapshots contain the
+  expected marketplace, plugin, and hook trust blocks; generated
+  `codex-internal-app` imports and calls
+  `refresh_profile_plugin_support_snapshot`.
 
 ### Proxy-aware Doctor and Stale Plugin Cleanup Hardening
 
@@ -579,6 +696,71 @@ scripts/codex-switch --skip-self-update doctor
   `~/.local/share/codex-switch/current`; generated internal app wrapper points
   `SWITCH_SCRIPTS` at that installed bundle.
 - `codex-switch --skip-self-update doctor` passed after restoration.
+
+### Official Unannotated Runtime Seed Contamination Repair
+
+**Status:** verified
+
+**Skill Routing Ledger**
+- request kind: bug repair for profile switching behavior
+- capability-research: used; local status, manifests, LaunchAgent, backups,
+  and runtime configs were inspected
+- systematic-debugging: used; root cause was traced before code changes
+- writing-plans: used; AGENTS.md routes the execution ledger into this
+  OpenSpec task file instead of a secondary Superpowers plan file
+- test-driven-development: used; add a failing regression before
+  implementation
+- OpenSpec routing: use existing `independent-profile-homes` behavior change
+
+**Target State**
+- `codex-switch official` must not treat an unannotated config copied from or
+  matching the internal source home as the official profile seed when an
+  explicit `openai-official.config.toml` profile layer exists.
+- Official runtime and canonical profile configs keep official model/provider
+  settings, while shared settings from internal still merge forward.
+
+**Completion Contract**
+- [x] Regression test fails before implementation and passes after the fix.
+- [x] Existing contamination, runtime-first, and shared-preference regressions
+  still pass.
+- [x] OpenSpec validates after the scenario update.
+- [x] Verification evidence is recorded.
+
+**Capability Slice**
+- [x] Add a regression for unannotated official runtime contamination where
+  live `config.toml` matches the internal source home but
+  `openai-official.config.toml` contains the clean official model.
+- [x] Skip that contaminated runtime seed and use explicit profile-layer or
+  canonical profile seed instead.
+- [x] Run focused and OpenSpec validation.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_official_switch_ignores_unannotated_internal_runtime_seed \
+  CodexProfileSwitchTests.test_official_switch_repairs_contaminated_managed_runtime_profile_seed \
+  CodexProfileSwitchTests.test_official_switch_preserves_last_official_runtime_profile_settings \
+  CodexProfileSwitchTests.test_switch_preserves_live_shared_preferences
+openspec validate independent-profile-homes --strict --no-interactive
+```
+
+**Verification Evidence**
+- New regression failed before implementation because official runtime kept
+  `model = "internal-model"` and `model_provider = "azure"`.
+- Focused regression command passed, 4 tests.
+- Full `python3 scripts/test_codex_profile_switch.py` passed, 88 tests.
+- `python3 -m py_compile scripts/*.py` passed.
+- Shell syntax checks passed for `scripts/codex-switch`,
+  `scripts/codex_env_setup`, `install.sh`, and `run.sh`.
+- `openspec validate independent-profile-homes --strict --no-interactive`
+  passed, and `openspec validate --all --strict --no-interactive` passed 9
+  items.
+- `scripts/package-release.sh` passed and wrote `dist/codex-switch.tar.gz`.
+- Installed the repaired bundle through local `install.sh`, restored the
+  polluted official profile layer from pre-contamination backup
+  `20260630T025400Z-switch-internal-to-openai-official`, verified a real
+  `official` switch generated official `gpt-5.5` config without internal
+  Azure provider settings, then switched back to `internal`.
 
 ## Acceptance Criteria
 

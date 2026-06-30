@@ -152,7 +152,11 @@ from codex_switch_config import (
     merge_shared_config_overlay,
 )
 from codex_switch_core import atomic_write
-from codex_switch_home_sync import build_internal_home_config
+from codex_switch_home_sync import (
+    build_internal_home_config,
+    plugin_support_snapshot_name,
+    refresh_profile_plugin_support_snapshot,
+)
 
 base = Path(sys.argv[1])
 profile = Path(sys.argv[2])
@@ -168,6 +172,14 @@ atomic_write(
     target,
     build_internal_home_config(base.parent, profile_name, target, profile).encode(),
     mode=0o600,
+)
+refresh_profile_plugin_support_snapshot(
+    profile_name,
+    target,
+    [
+        target.parent / plugin_support_snapshot_name(profile_name),
+        profile.parent / plugin_support_snapshot_name(profile_name),
+    ],
 )
 PY
 rm -f "$APP_CODEX_HOME/auth.json"

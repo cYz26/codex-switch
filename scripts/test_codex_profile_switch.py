@@ -99,6 +99,29 @@ def write_fake_plugin_catalog_codex(path: Path) -> None:
     )
 
 
+def write_fake_runtime_smoke_codex(path: Path) -> None:
+    write_fake_script(
+        path,
+        "#!/usr/bin/env sh\n"
+        "set -eu\n"
+        "mkdir -p \"$CODEX_HOME\"\n"
+        "printf '%s|%s\\n' \"$CODEX_HOME\" \"$*\" >> \"$CODEX_HOME/runtime-smoke.log\"\n"
+        "if [ \"${1:-}\" = \"--version\" ]; then\n"
+        "  echo codex-cli 9.9.9\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--json\" ]; then\n"
+        "  printf '{\"plugins\":[]}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"exec\" ] && [ \"${2:-}\" = \"--json\" ]; then\n"
+        "  printf '{\"status\":\"ok\"}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "echo fake-runtime-smoke-codex\n",
+    )
+
+
 class CodexProfileSwitchTests(unittest.TestCase):
     def make_workspace(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp_dir = tempfile.TemporaryDirectory()
@@ -1730,6 +1753,127 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn('model = "internal-model"', home_profile_layer)
             self.assertNotIn("[plugins.", home_profile_layer)
 
+    def test_official_switch_ignores_unannotated_internal_runtime_seed(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'model = "official-model"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Internal Azure"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_home = root / "store" / "homes" / "internal"
+            (internal_home / "config.toml").write_text(
+                (internal_home / "config.toml").read_text()
+                + "\n[mcp_servers.from-internal]\n"
+                + 'command = "internal-mcp"\n'
+            )
+            (live_home / "config.toml").write_text(
+                'model = "internal-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Internal Azure"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            (live_home / "openai-official.config.toml").write_text(
+                'model = "official-model"\n'
+                "\n"
+                '[plugins."figma@openai-curated"]\n'
+                "enabled = true\n"
+            )
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            official_config = (live_home / "config.toml").read_text()
+            self.assertIn('model = "official-model"', official_config)
+            self.assertIn("[mcp_servers.from-internal]", official_config)
+            self.assertIn('[plugins."figma@openai-curated"]', official_config)
+            self.assertNotIn('model = "internal-model"', official_config)
+            self.assertNotIn('model_provider = "azure"', official_config)
+            self.assertNotIn("[model_providers.azure]", official_config)
+            canonical_config = (
+                root / "store" / "profiles" / "openai-official" / "config.toml"
+            ).read_text()
+            self.assertIn('model = "official-model"', canonical_config)
+            self.assertNotIn('model = "internal-model"', canonical_config)
+            self.assertNotIn("[model_providers.azure]", canonical_config)
+
+    def test_official_switch_ignores_unannotated_provider_runtime_when_explicit_layer_is_clean(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'model = "official-model"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Internal Azure"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            (live_home / "config.toml").write_text(
+                'model = "workspace-provider-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Workspace Azure"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            (live_home / "openai-official.config.toml").write_text(
+                'model = "official-model"\n'
+            )
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            official_config = (live_home / "config.toml").read_text()
+            self.assertIn('model = "official-model"', official_config)
+            self.assertNotIn('model = "workspace-provider-model"', official_config)
+            self.assertNotIn('model_provider = "azure"', official_config)
+            self.assertNotIn("[model_providers.azure]", official_config)
+            profile_layer = (live_home / "openai-official.config.toml").read_text()
+            self.assertIn('model = "official-model"', profile_layer)
+            self.assertNotIn("workspace-provider-model", profile_layer)
+            self.assertNotIn("model_provider", profile_layer)
+
     def test_official_switch_keeps_managed_runtime_model_without_provider(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -1827,6 +1971,189 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn("[marketplaces.cy-codex-skills]", canonical_config)
             self.assertNotIn('[plugins."dev-flow@cy-codex-skills"]', canonical_config)
 
+    def test_internal_switch_restores_plugin_support_from_target_runtime_when_source_lost_it(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'model = "internal-model"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."agent-kb@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/agent-kb/SKILL.md"\n'
+                "enabled = true\n"
+                "\n"
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]\n'
+                'trusted_hash = "sha256:agent-kb"\n'
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_home = root / "store" / "homes" / "internal"
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            (live_home / "config.toml").write_text(
+                'model = "gpt-5.5"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_config = (internal_home / "config.toml").read_text()
+            self.assertIn("[features]", internal_config)
+            self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
+            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', internal_config)
+            self.assertIn("[[skills.config]]", internal_config)
+            self.assertIn(
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]',
+                internal_config,
+            )
+            canonical_config = (
+                root / "store" / "profiles" / "internal" / "config.toml"
+            ).read_text()
+            self.assertNotIn("[marketplaces.cy-codex-skills]", canonical_config)
+            self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', canonical_config)
+
+    def test_internal_switch_restores_plugin_support_from_profile_snapshot_after_runtime_loss(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'model = "internal-model"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."lark-feishu-ops@cy-codex-skills"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_home = root / "store" / "homes" / "internal"
+            home_snapshot = internal_home / "internal.plugin-support.config.toml"
+            store_snapshot = (
+                root
+                / "store"
+                / "profiles"
+                / "internal"
+                / "internal.plugin-support.config.toml"
+            )
+            for snapshot in (home_snapshot, store_snapshot):
+                snapshot_text = snapshot.read_text()
+                self.assertIn("[marketplaces.cy-codex-skills]", snapshot_text)
+                self.assertIn('[plugins."lark-feishu-ops@cy-codex-skills"]', snapshot_text)
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            (live_home / "config.toml").write_text('model = "gpt-5.5"\n')
+            (internal_home / "config.toml").write_text(
+                "# codex-switch: managed runtime config for profile internal\n"
+                "\n"
+                'model = "internal-model"\n'
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_config = (internal_home / "config.toml").read_text()
+            self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
+            self.assertIn('[plugins."lark-feishu-ops@cy-codex-skills"]', internal_config)
+            canonical_config = (
+                root / "store" / "profiles" / "internal" / "config.toml"
+            ).read_text()
+            self.assertNotIn("[marketplaces.cy-codex-skills]", canonical_config)
+            self.assertNotIn('[plugins."lark-feishu-ops@cy-codex-skills"]', canonical_config)
+
+    def test_internal_switch_restores_plugin_support_from_source_profile_snapshot(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                'model = "gpt-5.5"\n'
+                "\n"
+                "[features]\n"
+                "memory = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            source_snapshot = (
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."agent-kb@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                '[plugins."lark-feishu-ops@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/agent-kb/SKILL.md"\n'
+                "enabled = true\n"
+            )
+            (live_home / "openai-official.plugin-support.config.toml").write_text(
+                source_snapshot
+            )
+            (
+                root
+                / "store"
+                / "profiles"
+                / "openai-official"
+                / "openai-official.plugin-support.config.toml"
+            ).write_text(source_snapshot)
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_config = (
+                root / "store" / "homes" / "internal" / "config.toml"
+            ).read_text()
+            self.assertIn("[features]", internal_config)
+            self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
+            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', internal_config)
+            self.assertIn('[plugins."lark-feishu-ops@cy-codex-skills"]', internal_config)
+            self.assertIn("[[skills.config]]", internal_config)
+
     def test_doctor_reports_missing_active_profile_enabled_plugin_cache(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -1861,6 +2188,173 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 output,
             )
             self.assertIn("codex-switch repair-plugins openai-official", output)
+
+    def test_verify_reports_official_provider_contamination(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_home_config = live_home / "config.toml"
+            live_home_config.write_text('model = "gpt-5.5"\n')
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            live_home_config.write_text(
+                'model = "gpt-5.5"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'base_url = "https://internal.example"\n'
+            )
+
+            result = self.run_switcher(root, "verify", "openai-official", check=False)
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Verification found issues:", output)
+            self.assertIn(
+                "openai-official runtime config contains model_provider",
+                output,
+            )
+
+    def test_verify_safe_repair_refreshes_missing_plugin_support_snapshot(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_home_config = live_home / "config.toml"
+            live_home_config.write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."installed-plugin@local-test"]\n'
+                "enabled = false\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            home_snapshot = live_home / "openai-official.plugin-support.config.toml"
+            profile_snapshot = (
+                root
+                / "store"
+                / "profiles"
+                / "openai-official"
+                / "openai-official.plugin-support.config.toml"
+            )
+            if home_snapshot.exists():
+                home_snapshot.unlink()
+            if profile_snapshot.exists():
+                profile_snapshot.unlink()
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                "--repair=safe",
+            )
+
+            self.assertIn("Verification passed for openai-official", result.stdout)
+            self.assertIn("Refreshed plugin support snapshot", result.stdout)
+            self.assertIn("[marketplaces.local-test]", home_snapshot.read_text())
+            self.assertIn("[marketplaces.local-test]", profile_snapshot.read_text())
+
+    def test_verify_reports_missing_plugin_support_snapshot_without_repair(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_home_config = live_home / "config.toml"
+            live_home_config.write_text(
+                "[marketplaces.local-test]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."installed-plugin@local-test"]\n'
+                "enabled = false\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            home_snapshot = live_home / "openai-official.plugin-support.config.toml"
+            profile_snapshot = (
+                root
+                / "store"
+                / "profiles"
+                / "openai-official"
+                / "openai-official.plugin-support.config.toml"
+            )
+            if home_snapshot.exists():
+                home_snapshot.unlink()
+            if profile_snapshot.exists():
+                profile_snapshot.unlink()
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("plugin support snapshot is missing", output)
+            self.assertIn(str(home_snapshot), output)
+            self.assertIn(str(profile_snapshot), output)
+
+    def test_verify_runtime_smoke_runs_profile_codex_with_target_home(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_runtime_smoke_codex(official_codex)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                "--runtime-smoke",
+            )
+
+            self.assertIn("Runtime smoke: passed", result.stdout)
+            log_lines = (root / "live" / "runtime-smoke.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    f"{root / 'live'}|--version",
+                    f"{root / 'live'}|plugin list --json",
+                ],
+                log_lines,
+            )
 
     def test_doctor_accepts_active_profile_enabled_plugin_cache(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -2138,6 +2632,11 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 '[plugins."missing-plugin@local-test"]\n'
                 "enabled = true\n"
             )
+            profile_snapshot = live_home / "openai-official.plugin-support.config.toml"
+            profile_snapshot.write_text(
+                '[plugins."missing-plugin@local-test"]\n'
+                "enabled = true\n"
+            )
             canonical_profile = root / "store" / "profiles" / "openai-official" / "config.toml"
             canonical_profile.write_text(
                 canonical_profile.read_text()
@@ -2166,7 +2665,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 ],
                 calls,
             )
-            for config_path in (live_home / "config.toml", profile_layer, canonical_profile):
+            for config_path in (
+                live_home / "config.toml",
+                profile_layer,
+                profile_snapshot,
+                canonical_profile,
+            ):
                 config_text = config_path.read_text()
                 self.assertIn('[plugins."missing-plugin@local-test"]', config_text)
                 self.assertIn("enabled = false", config_text)
@@ -2261,6 +2765,37 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn("Plugin repair", output)
             self.assertIn("Installing plugin: missing-plugin@local-test", output)
             self.assertIn("Doctor passed", output)
+            self.assertIn("Outcome: SUCCESS", output)
+
+    def test_wrapper_one_key_runs_verification_before_doctor(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = self.run_wrapper(
+                root,
+                "official",
+                "--skip-login",
+                "--skip-update-check",
+                "--skip-launchctl",
+                "--no-status",
+                env=env,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("== Verification ==", output)
+            self.assertIn("Verification passed for openai-official", output)
+            self.assertLess(output.index("== Verification =="), output.index("== Doctor =="))
+            self.assertIn("Verify: passed", output)
             self.assertIn("Outcome: SUCCESS", output)
 
     def test_wrapper_one_key_unavailable_plugin_reaches_doctor_without_repair_failure(self) -> None:
@@ -3229,6 +3764,25 @@ class CodexProfileSwitchTests(unittest.TestCase):
                     config_text,
                 )
             self.assertNotIn('model = "gpt-5.5-2026-04-24"', live_config)
+            for snapshot_path in (
+                root
+                / "store"
+                / "homes"
+                / "internal"
+                / "internal.plugin-support.config.toml",
+                root
+                / "store"
+                / "profiles"
+                / "internal"
+                / "internal.plugin-support.config.toml",
+            ):
+                snapshot = snapshot_path.read_text()
+                self.assertIn("[marketplaces.openai-bundled]", snapshot)
+                self.assertIn('[plugins."computer-use@openai-bundled"]', snapshot)
+                self.assertIn(
+                    '[hooks.state."computer-use@openai-bundled:hooks.json:stop:0:0"]',
+                    snapshot,
+                )
 
     def test_internal_desktop_wrapper_preserves_official_personality(self) -> None:
         temp_dir, root = self.make_workspace()

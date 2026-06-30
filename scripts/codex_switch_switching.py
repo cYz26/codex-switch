@@ -30,7 +30,9 @@ from codex_switch_app_wrapper import (
 from codex_switch_home_sync import (
     build_internal_home_config,
     build_official_home_config_from_internal,
+    plugin_support_snapshot_name,
     refresh_profile_canonical_config,
+    refresh_profile_plugin_support_snapshot,
     remove_stale_runtime_links,
     shared_support_targets,
     stale_runtime_links,
@@ -240,8 +242,10 @@ def independent_switch_paths(
             [
                 internal_home / "config.toml",
                 internal_home / "internal.config.toml",
+                internal_home / plugin_support_snapshot_name("internal"),
                 internal_home / "auth.json",
                 store.profile_dir("internal") / "config.toml",
+                store.profile_dir("internal") / plugin_support_snapshot_name("internal"),
                 *shared_support_targets(official_home, internal_home),
                 *stale_runtime_links(internal_home, official_home),
             ]
@@ -258,7 +262,10 @@ def independent_switch_paths(
             [
                 official_home / "config.toml",
                 official_home / "openai-official.config.toml",
+                official_home / plugin_support_snapshot_name("openai-official"),
                 store.profile_dir("openai-official") / "config.toml",
+                store.profile_dir("openai-official")
+                / plugin_support_snapshot_name("openai-official"),
                 *shared_support_targets(internal_home, official_home),
             ]
         )
@@ -385,6 +392,14 @@ def switch_independent_profile(
             profile_config_text.encode(),
             mode=0o600,
         )
+        refresh_profile_plugin_support_snapshot(
+            name,
+            target_home / "config.toml",
+            [
+                target_home / plugin_support_snapshot_name(name),
+                profile_dir / plugin_support_snapshot_name(name),
+            ],
+        )
         auth_path = target_home / "auth.json"
         if auth_path.exists():
             auth_path.unlink()
@@ -410,6 +425,15 @@ def switch_independent_profile(
                 official_home / f"{name}.config.toml",
                 profile_config_text.encode(),
                 mode=0o600,
+            )
+        if (official_home / "config.toml").exists():
+            refresh_profile_plugin_support_snapshot(
+                name,
+                official_home / "config.toml",
+                [
+                    official_home / plugin_support_snapshot_name(name),
+                    profile_dir / plugin_support_snapshot_name(name),
+                ],
             )
         sync_shared_support(internal_home, official_home, prefer_link=False)
         restored_auth = official_auth_restore_path(store, official_home)
