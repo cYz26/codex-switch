@@ -160,7 +160,10 @@ def merge_toml_table_overlay(updated: str, overlay_text: str, predicate, label: 
             table_indexes[table] = len(merged_blocks)
             merged_blocks.append(block)
         else:
-            merged_blocks[existing_index] = block
+            merged_blocks[existing_index] = merge_table_assignments_overlay(
+                merged_blocks[existing_index],
+                block,
+            )
 
     merged = remove_matching_toml_table_blocks(updated, predicate)
     for block in merged_blocks:
@@ -228,6 +231,34 @@ def merge_missing_table_assignments(existing_block: str, defaults_block: str) ->
     if not missing_lines:
         return existing_block
     return f"{existing_block.rstrip()}\n" + "\n".join(missing_lines) + "\n"
+
+
+def merge_table_assignments_overlay(existing_block: str, overlay_block: str) -> str:
+    overlay_assignments = table_assignment_lines(overlay_block)
+    if not overlay_assignments:
+        return existing_block
+
+    overlay_by_key = {key: line for key, line in overlay_assignments}
+    replaced: set[str] = set()
+    merged_lines: list[str] = []
+    for line in existing_block.splitlines():
+        bare = commentless_line(line).strip()
+        key = None
+        if bare and not bare.startswith("[") and "=" in bare:
+            key = bare.split("=", 1)[0].strip()
+        if key in overlay_by_key:
+            if key not in replaced:
+                merged_lines.append(overlay_by_key[key])
+                replaced.add(key)
+            continue
+        merged_lines.append(line)
+
+    for key, line in overlay_assignments:
+        if key not in replaced:
+            merged_lines.append(line)
+            replaced.add(key)
+
+    return "\n".join(merged_lines).rstrip() + "\n"
 
 
 def merge_missing_shared_config_defaults(updated: str, defaults_text: str) -> str:

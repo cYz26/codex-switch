@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 import shutil
@@ -49,7 +50,6 @@ NON_SHAREABLE_HOME_ENTRY_NAMES = {
     "installation_id",
     "model-catalogs",
     "models_cache.json",
-    "pets",
     "plugins",
     "secrets",
     "sqlite",
@@ -58,6 +58,72 @@ NON_SHAREABLE_HOME_ENTRY_NAMES = {
     "version.json",
 }
 MANAGED_COMMENT_PREFIX = "# codex-switch:"
+DESKTOP_GLOBAL_STATE_NAME = ".codex-global-state.json"
+DESKTOP_GLOBAL_STATE_TOP_LEVEL_SETTING_KEYS = {
+    "appshotHotkey",
+    "active-workspace-roots",
+    "codex-mobile-has-connected-device",
+    "computer-use-bundled-plugin-auto-install-disabled",
+    "electron-chrome-extension-sync-managed-plugin-ids",
+    "electron-internal-update-cdn-enabled",
+    "electron-main-window-bounds",
+    "electron-openai-mcp-form-elicitations-enabled",
+    "electron-saved-workspace-roots",
+    "primary-runtime-update-jitter-ms",
+    "project-order",
+    "use-copilot-auth-if-available",
+}
+DESKTOP_GLOBAL_STATE_ATOM_KEY = "electron-persisted-atom-state"
+DESKTOP_GLOBAL_STATE_ATOM_SETTING_KEYS = {
+    "agent-mode-by-host-id",
+    "app-shell:bottom-panel-height",
+    "browser-sidebar-bottom-reserve-collapsed-v1",
+    "browser-sidebar-comment-mode-coachmark-dismissed",
+    "codex-mobile-sidebar-nav-item-clicked-v1",
+    "codexCloudAccess",
+    "composer-auto-context-enabled",
+    "composer-permission-mode-visibility",
+    "diff-filter",
+    "editorDiffViewMode",
+    "environment",
+    "fast-mode-personalized-estimate",
+    "has-accepted-appshot-intro",
+    "has-seen-ambient-suggestions-connected-apps-consent",
+    "has-seen-codex-mobile-announcement",
+    "has-seen-fast-mode-announcement",
+    "has-seen-fast-mode-home-banner",
+    "has-seen-multi-agent-composer-banner",
+    "has-seen-work-plugins-announcement",
+    "has-user-changed-service-tier",
+    "last_completed_onboarding",
+    "local-conversation-status-section-visible",
+    "preferred-non-full-access-agent-mode-by-host-id",
+    "rate-limit-reset-home-announcement-dismissal-by-account-id",
+    "seen-model-upgrade-list",
+    "sidebar-collapsed-groups",
+    "sidebar-collapsed-sections-v1",
+    "sidebar-organize-mode-v1",
+    "sidebar-width",
+    "skip-full-access-confirm",
+    "thread-sort-key",
+    "thread-summary-panel-section-expanded-progress",
+    "thread-summary-panel-section-expanded-tool-sources",
+}
+DESKTOP_GLOBAL_STATE_ATOM_SETTING_PREFIXES = (
+    "app-shell:right-panel-width:v2:",
+    "electron:onboarding-",
+    "sidebar-project-expanded-v1-codex:",
+)
+DESKTOP_GLOBAL_STATE_ATOM_RUNTIME_KEYS = {
+    "composer-prompt-drafts-v1",
+    "heartbeat-thread-permissions-by-id",
+    "prompt-history",
+    "unread-thread-ids-by-host-v1",
+}
+DESKTOP_GLOBAL_STATE_ATOM_RUNTIME_PREFIXES = (
+    "remote-thread-summaries:",
+    "thread-client-id-v1:",
+)
 
 
 def is_runtime_state_name(name: str) -> bool:
@@ -87,6 +153,111 @@ def is_shareable_home_entry(path: Path) -> bool:
         and not is_runtime_state_name(name)
         and not is_non_shareable_home_entry_name(name)
     )
+
+
+def is_desktop_global_state_atom_setting_key(key: str) -> bool:
+    if key in DESKTOP_GLOBAL_STATE_ATOM_RUNTIME_KEYS:
+        return False
+    if any(key.startswith(prefix) for prefix in DESKTOP_GLOBAL_STATE_ATOM_RUNTIME_PREFIXES):
+        return False
+    return (
+        key in DESKTOP_GLOBAL_STATE_ATOM_SETTING_KEYS
+        or any(
+            key.startswith(prefix)
+            for prefix in DESKTOP_GLOBAL_STATE_ATOM_SETTING_PREFIXES
+        )
+    )
+
+
+def desktop_global_state_settings_subset(data: object) -> dict[str, object]:
+    if not isinstance(data, dict):
+        return {}
+
+    subset: dict[str, object] = {}
+    for key in DESKTOP_GLOBAL_STATE_TOP_LEVEL_SETTING_KEYS:
+        if key in data:
+            subset[key] = deepcopy(data[key])
+
+    atom = data.get(DESKTOP_GLOBAL_STATE_ATOM_KEY)
+    if isinstance(atom, dict):
+        atom_subset = {
+            key: deepcopy(value)
+            for key, value in atom.items()
+            if isinstance(key, str)
+            and is_desktop_global_state_atom_setting_key(key)
+        }
+        if atom_subset:
+            subset[DESKTOP_GLOBAL_STATE_ATOM_KEY] = atom_subset
+
+    return subset
+
+
+def merge_desktop_global_state_settings(
+    source: object,
+    target: object,
+) -> dict[str, object]:
+    merged = deepcopy(target) if isinstance(target, dict) else {}
+    settings = desktop_global_state_settings_subset(source)
+
+    for key, value in settings.items():
+        if key != DESKTOP_GLOBAL_STATE_ATOM_KEY:
+            merged[key] = deepcopy(value)
+            continue
+
+        target_atom = merged.get(DESKTOP_GLOBAL_STATE_ATOM_KEY)
+        if not isinstance(target_atom, dict):
+            target_atom = {}
+        else:
+            target_atom = deepcopy(target_atom)
+        source_atom = value if isinstance(value, dict) else {}
+        for atom_key, atom_value in source_atom.items():
+            target_atom[atom_key] = deepcopy(atom_value)
+        if target_atom:
+            merged[DESKTOP_GLOBAL_STATE_ATOM_KEY] = target_atom
+
+    return merged
+
+
+def read_json_object_if_valid(path: Path) -> dict[str, object]:
+    if not path.exists() and not path.is_symlink():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def desktop_global_state_path(home: Path) -> Path:
+    return home / DESKTOP_GLOBAL_STATE_NAME
+
+
+def sync_desktop_global_state_settings(source_home: Path, target_home: Path) -> Path | None:
+    source_path = desktop_global_state_path(source_home)
+    if not source_path.exists() and not source_path.is_symlink():
+        return None
+
+    source_data = read_json_object_if_valid(source_path)
+    if not desktop_global_state_settings_subset(source_data):
+        return None
+
+    target_path = desktop_global_state_path(target_home)
+    target_data = read_json_object_if_valid(target_path)
+    merged = merge_desktop_global_state_settings(source_data, target_data)
+    if merged == target_data:
+        return None
+
+    mode = 0o600
+    if target_path.exists() and not target_path.is_symlink():
+        mode = target_path.stat().st_mode & 0o777
+    elif source_path.exists() and not source_path.is_symlink():
+        mode = source_path.stat().st_mode & 0o777
+    atomic_write(
+        target_path,
+        (json.dumps(merged, indent=2, sort_keys=True) + "\n").encode(),
+        mode=mode,
+    )
+    return target_path
 
 
 def shared_support_entries(source_home: Path) -> list[Path]:
@@ -424,10 +595,9 @@ def merge_shared_with_profile_seed(
                 target_runtime_config,
                 f"last runtime config: {target_runtime_config}",
             )
-            shared_text = merge_preserved_shared_defaults_from_text(
+            shared_text = merge_missing_shared_config_defaults(
                 shared_text,
                 target_runtime_text,
-                f"last runtime plugin support: {target_runtime_config}",
             )
         except SwitchError as exc:
             errors.append(str(exc))
@@ -672,6 +842,24 @@ def refresh_profile_plugin_support_snapshot(
         runtime_text,
         f"plugin support snapshot for {profile_name}",
     )
+    for path in unique_paths(snapshot_paths):
+        if not path.exists():
+            continue
+        try:
+            existing_text = read_valid_config(
+                path,
+                f"existing plugin support snapshot: {path}",
+            )
+            existing_snapshot_text = build_preserved_shared_config_text_from_text(
+                existing_text,
+                f"existing plugin support snapshot: {path}",
+            )
+            snapshot_text = merge_missing_shared_config_defaults(
+                snapshot_text,
+                existing_snapshot_text,
+            )
+        except SwitchError:
+            continue
     snapshot_text = annotate_plugin_support_snapshot(snapshot_text, profile_name)
     for path in unique_paths(snapshot_paths):
         atomic_write(path, snapshot_text.encode(), mode=0o600)

@@ -16,6 +16,9 @@ cp "$REPO_ROOT/VERSION" "$PACKAGE_DIR/"
 cp "$REPO_ROOT/run.sh" "$PACKAGE_DIR/"
 cp "$REPO_ROOT/run.sh" "$OUT_DIR/run.sh"
 cp -R "$REPO_ROOT/agents" "$PACKAGE_DIR/"
+if [[ -d "$REPO_ROOT/docs" ]]; then
+  cp -R "$REPO_ROOT/docs" "$PACKAGE_DIR/"
+fi
 cp -R "$REPO_ROOT/evals" "$PACKAGE_DIR/"
 cp -R "$REPO_ROOT/scripts" "$PACKAGE_DIR/"
 rm -rf "$PACKAGE_DIR/scripts/__pycache__"

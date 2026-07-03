@@ -312,6 +312,97 @@ git diff --check
 | Plugin repair help and unavailable-catalog hardening | done | `.planning/verification/20260624193841-plugin-repair-hardening.md` |
 | Proxy-aware doctor and stale plugin cleanup hardening | done | `.planning/verification/20260624205509-proxy-doctor-stale-plugin-cleanup.md` |
 | Profile-local plugin support snapshot repair | verified | `.planning/verification/20260630145758-profile-plugin-support-snapshot-repair.md` |
+| Bidirectional shared settings shrink prevention | verified | `.planning/verification/20260703215156-bidirectional-shared-settings-shrink-prevention.md` |
+
+### Bidirectional Shared Settings Shrink Prevention
+
+**Status:** verified
+
+**Skill Routing Ledger**
+- request kind: repeated workflow repair / compatibility hardening
+- systematic-debugging: used; backup timelines, current profile homes,
+  wrapper startup, switch-time merge, and snapshot refresh were inspected
+  before implementation
+- brainstorming: used; selected systemic shared-config merge repair instead
+  of a one-off Desktop settings restore
+- writing-plans: used; this OpenSpec ledger is the canonical implementation
+  plan for the repair
+- test-driven-development: used; regressions are added before production code
+- OpenSpec routing: existing `independent-profile-homes` change is updated
+  because profile switching persistence and compatibility behavior change
+
+**Target State**
+- Shared TOML config sync is bidirectional and non-destructive: the source
+  profile's present shared values can update the target profile, but source
+  omissions do not delete target-only shared Desktop, memories, apps, plugin,
+  skill, MCP, hook, or related shared settings.
+- Internal Desktop wrapper startup cannot narrow the official home when the
+  managed internal app home has a smaller shared config.
+- Switching back to `openai-official` from a narrowed internal runtime keeps
+  official-only shared settings while applying new source shared values.
+- Plugin support snapshot refresh keeps existing richer plugin/skill/hook
+  support as missing defaults when the current runtime was narrowed.
+
+**Completion Contract**
+- [x] Focused regressions fail before implementation and pass after the fix.
+- [x] Existing plugin support, Desktop wrapper, and official contamination
+  regressions still pass.
+- [x] OpenSpec validates after the scenario update.
+- [x] Verification evidence and workflow state are updated.
+
+**Capability Slice**
+- [x] Add regression for internal Desktop wrapper startup preserving official
+  shared Desktop/apps/memories/plugin/skill settings while folding in new
+  internal shared values.
+- [x] Add regression for `internal -> openai-official` preserving target
+  shared settings when the internal source runtime is narrowed.
+- [x] Add regression for plugin support snapshot refresh refusing to shrink to
+  an empty runtime-derived snapshot.
+- [x] Change table merge semantics from whole-table replacement to
+  assignment-level overlay with missing-key preservation.
+- [x] Merge target runtime shared config as missing defaults during switch
+  config generation, not only plugin-support blocks.
+- [x] Refresh plugin support snapshots by unioning runtime-derived support with
+  existing snapshots as missing defaults.
+- [x] Run focused, broader, OpenSpec, and diff validation.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_internal_desktop_wrapper_does_not_narrow_official_shared_settings \
+  CodexProfileSwitchTests.test_official_switch_does_not_narrow_existing_shared_settings \
+  CodexProfileSwitchTests.test_plugin_support_snapshot_refresh_does_not_shrink_to_runtime_loss
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+openspec validate independent-profile-homes --strict --no-interactive
+git diff --check
+```
+
+**Verification Evidence**
+- Focused regressions failed before implementation because wrapper startup
+  narrowed official `[desktop]`, official switch generated a narrowed
+  official runtime config from the narrowed internal source, and plugin support
+  snapshot refresh overwrote a rich snapshot with an empty snapshot.
+- Focused repaired regressions passed, 3 tests.
+- Adjacent plugin support, app proxy config-write, official contamination, and
+  Desktop wrapper regressions passed, 14 tests.
+- Full `python3 scripts/test_codex_profile_switch.py` passed, 120 tests.
+- `python3 -m py_compile scripts/*.py` passed.
+- Shell syntax checks passed for `scripts/codex-switch`,
+  `scripts/codex_env_setup`, `install.sh`, and `run.sh`.
+- `openspec validate independent-profile-homes --strict --no-interactive`
+  passed, and `openspec validate --all --strict --no-interactive` passed 11
+  items.
+- `git diff --check` passed.
+- `scripts/package-release.sh` passed and wrote
+  `dist/codex-switch.tar.gz`.
+- `CODEX_SWITCH_SOURCE_DIR=/Users/cY/dev/codex-switch ./install.sh` passed and
+  refreshed the local installed `codex-switch` bundle.
+- Installed `codex-switch --skip-self-update status` passed; it reports the
+  existing current-shell `PATH codex` mismatch and recommends
+  `eval "$(codex-switch shim-env)"` for shell alignment.
+- Evidence recorded in
+  `.planning/verification/20260703215156-bidirectional-shared-settings-shrink-prevention.md`.
 
 ### Profile-local Plugin Support Snapshot Repair
 
@@ -761,6 +852,186 @@ openspec validate independent-profile-homes --strict --no-interactive
   `20260630T025400Z-switch-internal-to-openai-official`, verified a real
   `official` switch generated official `gpt-5.5` config without internal
   Azure provider settings, then switched back to `internal`.
+
+### Desktop Global Settings State Sync Repair
+
+**Status:** verified
+
+**Skill Routing Ledger**
+- request kind: bug repair after internal switch; settings state missing
+- systematic-debugging: used; root cause was traced to Desktop settings stored
+  in `.codex-global-state.json`, while TOML settings were already syncing
+- writing-plans / ai-native-tech-plan: used; canonical plan is recorded in this
+  OpenSpec task ledger instead of a second Superpowers plan file
+- test-driven-development: used; write failing regressions before production
+  changes
+- capability-research: skipped; evidence is from local installed homes,
+  Desktop state file contents, and repository code/tests
+- OpenSpec routing: update existing `independent-profile-homes` compatibility
+  change
+- archive gate: closed; do not archive, record verification and state only
+
+**Target State**
+- Switching to `internal` and launching its Desktop wrapper keeps user-facing
+  Desktop settings continuous when those settings live in
+  `.codex-global-state.json`.
+- `.codex-global-state.json` is not copied, linked, or treated as generic
+  shared support. Only a safe Desktop settings subset is merged.
+- Prompt history, thread permissions, queued follow-ups, remote thread
+  summaries, credentials, and remote routing identifiers stay profile-local.
+
+**Completion Contract**
+- [x] Regression test fails before implementation and passes after the fix.
+- [x] Switch-time sync covers official -> internal and internal -> official.
+- [x] Internal Desktop wrapper startup covers live official -> managed internal.
+- [x] Existing runtime-state isolation tests still prove disallowed state is not
+  linked or copied wholesale.
+- [x] Verification evidence is recorded and `.planning/STATE.md` is updated.
+
+**Capability Slice**
+- [x] Add failing tests for sanitized Desktop global settings state merge and
+  wrapper startup behavior.
+- [x] Add a JSON merge helper that allowlists top-level Desktop settings and
+  filters session/runtime keys from `electron-persisted-atom-state`.
+- [x] Call the helper from independent switch flows and the generated internal
+  Desktop wrapper.
+- [x] Run focused regressions, broader profile-switch tests, syntax checks,
+  OpenSpec validation, and release packaging.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_desktop_global_settings_state_sync_merges_safe_settings_only \
+  CodexProfileSwitchTests.test_switch_syncs_desktop_global_settings_state_between_independent_homes \
+  CodexProfileSwitchTests.test_internal_desktop_wrapper_syncs_desktop_global_settings_state
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate independent-profile-homes --strict --no-interactive
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+```
+
+**Verification Evidence**
+- The new focused regressions failed before implementation:
+  `merge_desktop_global_state_settings` was missing, internal switch did not
+  create `.codex-global-state.json`, and wrapper startup left stale internal
+  Desktop settings unchanged.
+- Focused new regressions passed, 3 tests.
+- Adjacent shared-state and wrapper isolation regressions passed, 9 tests.
+- Full `python3 scripts/test_codex_profile_switch.py` passed, 107 tests.
+- `python3 -m py_compile scripts/*.py` passed.
+- Shell syntax checks passed for `scripts/codex-switch`,
+  `scripts/codex_env_setup`, `install.sh`, and `run.sh`.
+- `openspec validate independent-profile-homes --strict --no-interactive`
+  passed, and `openspec validate --all --strict --no-interactive` passed 11
+  items.
+- `scripts/package-release.sh` passed and wrote `dist/codex-switch.tar.gz`.
+- `git diff --check` passed.
+- Installed bundle refreshed through `./install.sh`.
+- Current workstation internal home was repaired by merging the sanitized
+  Desktop global settings subset from `/Users/cY/.codex` into
+  `/Users/cY/.codex-switch/homes/internal/.codex-global-state.json`; key-only
+  verification showed no copied prompt-history, thread permission, draft,
+  unread-thread, remote-summary, or thread-client-id atom keys.
+
+### Settings Panel Pets Support Sync Repair
+
+**Status:** verified
+
+**Skill Routing Ledger**
+- request kind: follow-up bug repair for Desktop Settings panel parity and
+  Plugins/Skills sync audit
+- plugin-project-migration: used sync-only; report is `migration_pending` due
+  to legacy `.codex/skills` duplicates and conflicts with `.agents/skills`; no
+  apply was run
+- systematic-debugging: used; evidence shows TOML config, global Desktop
+  settings, Plugins/Skills config, hooks, and MCP entries are synced, while
+  `pets/` remains excluded from shared support
+- writing-plans / OpenSpec routing: use existing `independent-profile-homes`
+  change and this task ledger
+- test-driven-development: used; add failing `pets/` shared-support regression
+  before production changes
+- archive gate: closed; do not archive, record verification and state only
+
+**Target State**
+- The Desktop Settings sidebar categories remain continuous when switching to
+  `internal`: General/Appearance/Configuration/Personalization use the existing
+  TOML and sanitized global-state sync, while Pets gets its `pets/` support
+  directory through shared support sync.
+- Plugins, Skills, marketplaces, hooks, and MCP config continue to sync through
+  TOML/plugin-support snapshots and profile-local plugin repair/materialized
+  caches; `plugins/` cache directories are not copied or symlinked wholesale.
+- Credentials, secrets, browser/process state, sqlite state, sessions,
+  histories, and model catalogs remain profile-local or excluded.
+
+**Completion Contract**
+- [x] Regression test fails before implementation and passes after the fix.
+- [x] `pets/` is included in shared support targets and can be linked/copied
+  like other stable support directories.
+- [x] Existing bulky-state exclusion tests still prove `plugins/`, credentials,
+  caches, and runtime state are excluded.
+- [x] Local audit confirms current Plugins/Skills config parity.
+- [x] Verification evidence is recorded and `.planning/STATE.md` is updated.
+
+**Capability Slice**
+- [x] Add a failing shared-support test for `pets/` during internal switch.
+- [x] Remove `pets` from the Python and generated-shell non-shareable lists.
+- [x] Update README wording for Settings support versus bulky/runtime state.
+- [x] Run focused regressions, full tests, syntax checks, OpenSpec validation,
+  package generation, and diff check.
+
+**Validation Commands**
+```bash
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_internal_switch_syncs_pets_settings_support \
+  CodexProfileSwitchTests.test_internal_desktop_wrapper_syncs_pets_settings_support
+python3 scripts/test_codex_profile_switch.py \
+  CodexProfileSwitchTests.test_official_switch_excludes_bulky_support_state_from_sync_plan \
+  CodexProfileSwitchTests.test_internal_switch_syncs_pets_settings_support \
+  CodexProfileSwitchTests.test_internal_desktop_wrapper_syncs_pets_settings_support \
+  CodexProfileSwitchTests.test_desktop_global_settings_state_sync_merges_safe_settings_only \
+  CodexProfileSwitchTests.test_switch_syncs_desktop_global_settings_state_between_independent_homes \
+  CodexProfileSwitchTests.test_internal_desktop_wrapper_syncs_desktop_global_settings_state \
+  CodexProfileSwitchTests.test_internal_desktop_wrapper_isolates_response_runtime_state \
+  CodexProfileSwitchTests.test_internal_switch_refreshes_desktop_wrapper_with_shared_config \
+  CodexProfileSwitchTests.test_internal_desktop_wrapper_persists_app_home_plugin_state \
+  CodexProfileSwitchTests.test_doctor_accepts_active_profile_enabled_plugin_cache \
+  CodexProfileSwitchTests.test_repair_plugins_installs_missing_profile_plugins
+python3 scripts/test_codex_profile_switch.py
+python3 -m py_compile scripts/*.py
+bash -n scripts/codex-switch && bash -n scripts/codex_env_setup && bash -n install.sh && bash -n run.sh
+openspec validate independent-profile-homes --strict --no-interactive
+openspec validate --all --strict --no-interactive
+scripts/package-release.sh
+git diff --check
+codex-switch --skip-self-update repair-plugins internal --dry-run
+```
+
+**Verification Evidence**
+- The new `pets/` regressions failed before implementation because internal
+  switch and the generated Desktop wrapper did not materialize `pets/`.
+- Focused `pets/` regressions passed, 2 tests.
+- Adjacent settings/shared-support/wrapper/plugin regressions passed, 11 tests.
+- Full `python3 scripts/test_codex_profile_switch.py` passed, 109 tests.
+- `python3 -m py_compile scripts/*.py` passed.
+- Shell syntax checks passed for `scripts/codex-switch`,
+  `scripts/codex_env_setup`, `install.sh`, and `run.sh`.
+- `openspec validate independent-profile-homes --strict --no-interactive`
+  passed, and `openspec validate --all --strict --no-interactive` passed 11
+  items.
+- `scripts/package-release.sh` passed and wrote `dist/codex-switch.tar.gz`.
+- `git diff --check` passed.
+- Installed bundle refreshed through `./install.sh`.
+- Current workstation internal home now has
+  `/Users/cY/.codex-switch/homes/internal/pets -> /Users/cY/.codex/pets`.
+- Current workstation `repair-plugins internal --dry-run` reports no missing
+  enabled plugins. Internal `skills` is a symlink to `/Users/cY/.codex/skills`,
+  and internal `plugins` remains a profile-local directory.
+- `verify internal --runtime-smoke --report` passed runtime smoke but failed
+  profile-active assertions because the active profile intentionally remained
+  `openai-official`; this is recorded as context mismatch, not plugin failure.
 
 ## Acceptance Criteria
 

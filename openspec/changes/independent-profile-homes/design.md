@@ -26,6 +26,8 @@ an explicit command with dry-run/apply modes.
 | Official home is the source of truth for official mode | Matches upstream Codex behavior and keeps official auth/runtime state out of the profile store activation path. | Continue rewriting the live home for both profiles |
 | Internal uses a managed home under the store | Keeps internal auth/config/runtime isolated and easy to back up. | Keep using the old app-home only for Desktop |
 | Sync only classified shared state | Prevents auth/session/model leakage while preserving plugin and preference continuity. | Full home copy; config-only sync |
+| Merge Desktop global settings as a sanitized subset | Keeps Electron/UI settings continuous across independent homes without copying prompt history, thread permissions, credentials, queued follow-ups, or remote routing state. | Share `.codex-global-state.json` wholesale; keep all Desktop settings isolated |
+| Treat `pets/` as Settings support, not runtime state | The Desktop Settings sidebar exposes Pets as user-facing configuration; syncing the small support directory keeps the panel continuous while still excluding plugin caches, credentials, and session data. | Keep `pets/` profile-local; copy all Desktop home state |
 | Backup gate wraps all switch mutations | Ensures no planned write happens unless original state has been captured. | Best-effort backups after mutation |
 | Restore uses post-switch state checks | Allows normal restore after a completed switch while refusing unrelated user edits unless `--force` is used. | Always overwrite; always require force |
 
@@ -98,13 +100,15 @@ delegate stateful logic to Python.
 
 Internal switch:
 official home -> classify shared state -> backup mutation targets -> prepare
-managed internal home -> write internal config layer -> update shim/Desktop ->
-write active record -> finalize backup post-state.
+managed internal home -> merge sanitized Desktop global settings -> write
+internal config layer -> update shim/Desktop -> write active record -> finalize
+backup post-state.
 
 Official switch:
 internal home -> classify shared state -> backup official mutation targets ->
-sync shared config/support into official home -> update shim/Desktop -> write
-active record -> finalize backup post-state.
+sync shared config/support into official home -> merge sanitized Desktop global
+settings -> update shim/Desktop -> write active record -> finalize backup
+post-state.
 
 Internal Desktop runtime config write:
 Desktop JSON-RPC request -> `codex_switch_app_proxy.py` snapshots the current
@@ -112,6 +116,12 @@ managed internal `config.toml` for `config/value/write` and
 `config/batchWrite` -> backend applies the requested write -> proxy restores
 missing unrelated shared settings from the snapshot without overwriting the new
 Desktop value -> response is forwarded to Desktop.
+
+Internal Desktop wrapper startup:
+wrapper removes stale links for non-shareable state -> links stable support
+entries only -> merges sanitized Desktop global settings from the live official
+home into the managed internal home -> folds shared TOML config overlay back
+through the existing Python helper -> launches the internal backend.
 
 ## Compatibility
 

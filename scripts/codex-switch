@@ -77,8 +77,10 @@ Switch options for internal/official:
   --skip-update-check          Do not check for updates or auto-update internal.
   --skip-plugin-repair         Do not install missing enabled plugins after switch.
   --skip-verify                Do not verify the target profile after switch.
+  --app-server-smoke           During verify, run target app-server startup smoke.
   --runtime-smoke              During verify, run target codex local runtime smoke.
   --exec-smoke <prompt>        During verify, run explicit codex exec --json smoke.
+  --responses-tool-smoke       During verify, run deterministic Responses tool-follow-up smoke.
   --verification-report        Write a JSON verification report during verify.
   --no-status                  Do not print status after a real switch.
   --skip-doctor                Do not run doctor after a real switch.
@@ -148,6 +150,55 @@ bundle_version() {
   if [[ -f "$root/VERSION" ]]; then
     sed -n '1p' "$root/VERSION"
   fi
+}
+
+version_core() {
+  local version="${1#v}"
+  version="${version%%+*}"
+  version="${version%%-*}"
+  printf '%s\n' "$version"
+}
+
+version_prerelease() {
+  local version="${1#v}"
+  version="${version%%+*}"
+  if [[ "$version" == *-* ]]; then
+    printf '%s\n' "${version#*-}"
+  fi
+}
+
+version_is_newer() {
+  local current="$1"
+  local candidate="$2"
+  local current_core candidate_core current_pre candidate_pre
+  local current_part candidate_part i
+  current_core="$(version_core "$current")"
+  candidate_core="$(version_core "$candidate")"
+  current_pre="$(version_prerelease "$current")"
+  candidate_pre="$(version_prerelease "$candidate")"
+
+  IFS=. read -r -a current_parts <<< "$current_core"
+  IFS=. read -r -a candidate_parts <<< "$candidate_core"
+  for i in 0 1 2; do
+    current_part="${current_parts[$i]:-0}"
+    candidate_part="${candidate_parts[$i]:-0}"
+    [[ "$current_part" =~ ^[0-9]+$ ]] || return 0
+    [[ "$candidate_part" =~ ^[0-9]+$ ]] || return 0
+    if ((10#$candidate_part > 10#$current_part)); then
+      return 0
+    fi
+    if ((10#$candidate_part < 10#$current_part)); then
+      return 1
+    fi
+  done
+
+  if [[ -n "$current_pre" && -z "$candidate_pre" ]]; then
+    return 0
+  fi
+  if [[ -z "$current_pre" && -n "$candidate_pre" ]]; then
+    return 1
+  fi
+  [[ -n "$current_pre" && -n "$candidate_pre" && "$candidate_pre" > "$current_pre" ]]
 }
 
 stage_self_update_from_source() {
@@ -261,10 +312,12 @@ sync_self_update() {
 
   current_version="$(bundle_version "$target")"
   next_version="$(bundle_version "$staged")"
-  if [[ -n "$current_version" && -n "$next_version" && "$current_version" == "$next_version" ]]; then
-    rm -rf "$staged"
-    echo "codex-switch self-update: already up to date $current_version" >&2
-    return 3
+  if [[ -n "$current_version" && -n "$next_version" ]]; then
+    if [[ "$current_version" == "$next_version" ]] || ! version_is_newer "$current_version" "$next_version"; then
+      rm -rf "$staged"
+      echo "codex-switch self-update: already up to date $current_version" >&2
+      return 3
+    fi
   fi
 
   rm -rf "$backup"
@@ -483,7 +536,9 @@ switch_profile() {
   local run_doctor=1
   local run_plugin_repair=1
   local run_verify=1
+  local app_server_smoke=0
   local runtime_smoke=0
+  local responses_tool_smoke=0
   local verification_report=0
   local exec_smoke=""
   local update_check=1
@@ -511,8 +566,14 @@ switch_profile() {
       --skip-verify|--no-verify)
         run_verify=0
         ;;
+      --app-server-smoke)
+        app_server_smoke=1
+        ;;
       --runtime-smoke)
         runtime_smoke=1
+        ;;
+      --responses-tool-smoke)
+        responses_tool_smoke=1
         ;;
       --verification-report)
         verification_report=1
@@ -628,11 +689,18 @@ switch_profile() {
   if [[ "$run_verify" == 1 ]]; then
     print_section "Verification"
     local verify_args=("$profile")
+    if [[ "$app_server_smoke" == 1 ]] \
+      || [[ "$profile" == "internal" && "$INTERNAL_AUTO_UPDATED" == 1 ]]; then
+      verify_args+=(--app-server-smoke)
+    fi
     if [[ "$runtime_smoke" == 1 ]]; then
       verify_args+=(--runtime-smoke)
     fi
     if [[ -n "$exec_smoke" ]]; then
       verify_args+=(--exec-smoke "$exec_smoke")
+    fi
+    if [[ "$responses_tool_smoke" == 1 ]]; then
+      verify_args+=(--responses-tool-smoke)
     fi
     if [[ "$verification_report" == 1 ]]; then
       verify_args+=(--report)
@@ -792,7 +860,44 @@ env_setup_command() {
 run_env_setup() {
   local env_setup
   env_setup="$(env_setup_command)"
+  if [[ "${1:-}" == "update-internal" ]]; then
+    shift
+    run_update_internal_env_setup "$env_setup" "$@"
+    return
+  fi
   "$env_setup" "$@"
+}
+
+update_internal_args_have_version() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --version|--codex-install-version|--version=*|--codex-install-version=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+run_update_internal_env_setup() {
+  local env_setup="$1"
+  shift
+  local latest_url latest_tag latest_version fallback_version
+  if ! update_internal_args_have_version "$@"; then
+    latest_url="${CODEX_SWITCH_INTERNAL_LATEST_URL:-${CODEX_INTERNAL_LATEST_URL:-https://github.com/SDGLBL/codex/releases/latest}}"
+    fallback_version="$(internal_fallback_version)"
+    if latest_tag="$(latest_internal_tag_from_url "$latest_url")"; then
+      latest_version="$(printf '%s\n' "$latest_tag" | extract_version)"
+      if internal_version_blocked "$latest_version" && [[ -n "$fallback_version" ]]; then
+        echo "update-internal: latest internal release $latest_version is blocked; pinning install to $fallback_version."
+        echo "update-internal: pass --version explicitly to override this codex-switch policy."
+        "$env_setup" update-internal --version "$fallback_version" "$@"
+        return
+      fi
+    fi
+  fi
+  "$env_setup" update-internal "$@"
 }
 
 print_version() {
@@ -810,12 +915,52 @@ print_version() {
 INTERNAL_PROFILE_CODEX_BIN=""
 INTERNAL_UPDATE_NEEDED=0
 INTERNAL_UPDATE_UNCERTAIN=0
+INTERNAL_AUTO_UPDATED=0
+INTERNAL_UPDATE_TARGET_VERSION=""
+
+internal_blocked_versions() {
+  printf '%s\n' "${CODEX_SWITCH_INTERNAL_BLOCKED_VERSIONS-0.142.5}"
+}
+
+internal_fallback_version() {
+  printf '%s\n' "${CODEX_SWITCH_INTERNAL_FALLBACK_VERSION-0.142.4}"
+}
+
+version_in_list() {
+  local needle="$1"
+  local list="${2//,/ }"
+  local item
+  for item in $list; do
+    if [[ "$item" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+internal_version_blocked() {
+  local version="$1"
+  local blocked
+  blocked="$(internal_blocked_versions)"
+  [[ -n "$version" && -n "$blocked" ]] || return 1
+  version_in_list "$version" "$blocked"
+}
+
+latest_internal_tag_from_url() {
+  local latest_url="$1"
+  local headers location
+  headers="$(curl -fsSLI --max-time 20 "$latest_url" 2>/dev/null)" || return 1
+  location="$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" { print $2 }' | tail -n 1 | tr -d '\r')"
+  printf '%s\n' "${location##*/}"
+}
 
 check_internal_update() {
   local codex_bin
   INTERNAL_PROFILE_CODEX_BIN=""
   INTERNAL_UPDATE_NEEDED=0
   INTERNAL_UPDATE_UNCERTAIN=0
+  INTERNAL_AUTO_UPDATED=0
+  INTERNAL_UPDATE_TARGET_VERSION=""
   codex_bin="$(profile_codex_bin internal)"
   INTERNAL_PROFILE_CODEX_BIN="$codex_bin"
   if [[ -z "$codex_bin" || ! -x "$codex_bin" ]]; then
@@ -823,14 +968,16 @@ check_internal_update() {
     exit 2
   fi
 
-  local current current_version latest_url headers location latest_tag latest_version
+  local current current_version latest_url latest_tag latest_version fallback_version blocked_versions
   current="$("$codex_bin" --version 2>/dev/null || true)"
   current_version="$(printf '%s\n' "$current" | extract_version)"
   latest_url="${CODEX_SWITCH_INTERNAL_LATEST_URL:-https://github.com/SDGLBL/codex/releases/latest}"
+  fallback_version="$(internal_fallback_version)"
+  blocked_versions="$(internal_blocked_versions)"
 
   echo "Internal profile codex: $codex_bin"
   echo "Current: ${current:-<unavailable>}"
-  if ! headers="$(curl -fsSLI --max-time 20 "$latest_url" 2>/dev/null)"; then
+  if ! latest_tag="$(latest_internal_tag_from_url "$latest_url")"; then
     echo "Latest release: <unavailable from $latest_url>"
     echo "Update: unable to compare versions"
     echo "Run a dry-run update check with:"
@@ -838,12 +985,27 @@ check_internal_update() {
     return 1
   fi
 
-  location="$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" { print $2 }' | tail -n 1 | tr -d '\r')"
-  latest_tag="${location##*/}"
   latest_version="$(printf '%s\n' "$latest_tag" | extract_version)"
   echo "Latest release tag: ${latest_tag:-<unknown>}"
 
-  if [[ -z "$current_version" || -z "$latest_version" ]]; then
+  if internal_version_blocked "$latest_version"; then
+    echo "Latest release status: blocked by codex-switch policy"
+    echo "Blocked internal releases: ${blocked_versions:-<none>}"
+    if [[ -n "$fallback_version" ]]; then
+      echo "Pinned fallback version: $fallback_version"
+    fi
+    if [[ -n "$fallback_version" && "$current_version" != "$fallback_version" ]]; then
+      INTERNAL_UPDATE_NEEDED=1
+      INTERNAL_UPDATE_TARGET_VERSION="$fallback_version"
+      echo "Update: available (pinned fallback)"
+      echo "Preview:"
+      echo "  codex-switch update-internal --version $fallback_version --dry-run"
+      echo "Install:"
+      echo "  codex-switch update-internal --version $fallback_version"
+    else
+      echo "Update: skipped (latest $latest_version is blocked; keeping ${current_version:-current binary})"
+    fi
+  elif [[ -z "$current_version" || -z "$latest_version" ]]; then
     INTERNAL_UPDATE_UNCERTAIN=1
     echo "Update: available or unable to compare versions"
     echo "Preview:"
@@ -929,13 +1091,19 @@ run_update_check_for_switch() {
 run_internal_auto_update() {
   local codex_bin="$1"
   local env_setup install_dir after
+  local update_args=()
   env_setup="$(env_setup_command)"
   install_dir="$(dirname "$codex_bin")"
+  if [[ -n "$INTERNAL_UPDATE_TARGET_VERSION" ]]; then
+    update_args+=(--version "$INTERNAL_UPDATE_TARGET_VERSION")
+  fi
+  update_args+=(--install-dir "$install_dir")
 
   echo "Auto-update: internal Codex update detected."
-  echo "Auto-update: running codex-switch update-internal --install-dir $install_dir"
-  "$env_setup" update-internal --install-dir "$install_dir"
+  echo "Auto-update: running codex-switch update-internal ${update_args[*]}"
+  "$env_setup" update-internal "${update_args[@]}"
   after="$("$codex_bin" --version 2>/dev/null || true)"
+  INTERNAL_AUTO_UPDATED=1
   echo "Auto-update: completed. Internal Codex is now ${after:-<unavailable>}."
 }
 

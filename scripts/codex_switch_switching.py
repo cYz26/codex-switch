@@ -30,12 +30,14 @@ from codex_switch_app_wrapper import (
 from codex_switch_home_sync import (
     build_internal_home_config,
     build_official_home_config_from_internal,
+    desktop_global_state_path,
     plugin_support_snapshot_name,
     refresh_profile_canonical_config,
     refresh_profile_plugin_support_snapshot,
     remove_stale_runtime_links,
     shared_support_targets,
     stale_runtime_links,
+    sync_desktop_global_state_settings,
     sync_shared_support,
 )
 from codex_switch_home_select import (
@@ -48,6 +50,7 @@ from codex_switch_plan import resolve_base_config_path, switch_plan_actions
 from codex_switch_record import active_record
 from codex_switch_restore import create_switch_backup, finalize_backup
 from codex_switch_shim import write_codex_shim
+from codex_switch_shell import ensure_shell_cli_bootstrap, shell_cli_bootstrap_path
 
 
 def switch_profile(
@@ -141,8 +144,10 @@ def switch_profile(
             target.unlink()
 
     shim_path = None
+    shell_bootstrap_path = None
     if not skip_shim:
         shim_path = write_codex_shim(store, str(manifest.get("codex_bin", "")))
+        shell_bootstrap_path = ensure_shell_cli_bootstrap(store)
 
     launch_agent_path = None
     if not skip_app_cli:
@@ -178,6 +183,8 @@ def switch_profile(
     print(f"Backup: {backup_dir}")
     if shim_path:
         print(f"Shim: {shim_path}")
+    if shell_bootstrap_path:
+        print(f"Shell CLI bootstrap: {shell_bootstrap_path}")
     if launch_agent_path:
         print(f"App CLI: {app_cli_path}")
         print(f"LaunchAgent: {launch_agent_path}")
@@ -246,6 +253,7 @@ def independent_switch_paths(
                 internal_home / "auth.json",
                 store.profile_dir("internal") / "config.toml",
                 store.profile_dir("internal") / plugin_support_snapshot_name("internal"),
+                desktop_global_state_path(internal_home),
                 *shared_support_targets(official_home, internal_home),
                 *stale_runtime_links(internal_home, official_home),
             ]
@@ -253,6 +261,7 @@ def independent_switch_paths(
         actions.extend(
             [
                 f"sync shared state from {official_home} to {internal_home}",
+                f"merge Desktop global settings state from {official_home} to {internal_home}",
                 f"write managed internal config: {internal_home / 'config.toml'}",
                 f"remove managed internal auth: {internal_home / 'auth.json'}",
             ]
@@ -266,6 +275,7 @@ def independent_switch_paths(
                 store.profile_dir("openai-official") / "config.toml",
                 store.profile_dir("openai-official")
                 / plugin_support_snapshot_name("openai-official"),
+                desktop_global_state_path(official_home),
                 *shared_support_targets(internal_home, official_home),
             ]
         )
@@ -274,10 +284,17 @@ def independent_switch_paths(
             backup_paths.append(restored_auth)
             actions.append(f"restore legacy official auth into {restored_auth}")
         actions.append(f"sync shared state from {internal_home} to {official_home}")
+        actions.append(
+            f"merge Desktop global settings state from {internal_home} to {official_home}"
+        )
 
     if not skip_shim:
         backup_paths.append(shim_path)
         actions.append(f"update shell shim: {shim_path}")
+        shell_bootstrap = shell_cli_bootstrap_path()
+        if shell_bootstrap is not None:
+            backup_paths.append(shell_bootstrap)
+            actions.append(f"ensure command-line codex PATH bootstrap: {shell_bootstrap}")
     if not skip_app_cli:
         backup_paths.append(store.launch_agent_path)
         if name == "internal":
@@ -365,6 +382,7 @@ def switch_independent_profile(
         home_mode = homes.internal.mode
         ensure_private_dir(target_home)
         sync_shared_support(official_home, target_home, prefer_link=True)
+        sync_desktop_global_state_settings(official_home, target_home)
         remove_stale_runtime_links(target_home, official_home)
         shared_source_home = official_home
         if (
@@ -436,6 +454,7 @@ def switch_independent_profile(
                 ],
             )
         sync_shared_support(internal_home, official_home, prefer_link=False)
+        sync_desktop_global_state_settings(internal_home, official_home)
         restored_auth = official_auth_restore_path(store, official_home)
         if restored_auth:
             copy_file_atomic(store.profile_dir(name) / "auth.json", restored_auth, mode=0o600)
@@ -444,8 +463,10 @@ def switch_independent_profile(
         sync_target = official_home
 
     shim_path = None
+    shell_bootstrap_path = None
     if not skip_shim:
         shim_path = write_codex_shim(store, codex_bin, codex_home=target_home)
+        shell_bootstrap_path = ensure_shell_cli_bootstrap(store)
 
     launch_agent_path = None
     if not skip_app_cli:
@@ -486,6 +507,8 @@ def switch_independent_profile(
     print(f"CODEX_HOME: {target_home}")
     if shim_path:
         print(f"Shim: {shim_path}")
+    if shell_bootstrap_path:
+        print(f"Shell CLI bootstrap: {shell_bootstrap_path}")
     if launch_agent_path:
         print(f"App CLI: {app_cli_path}")
         print(f"LaunchAgent: {launch_agent_path}")

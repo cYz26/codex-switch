@@ -7,6 +7,8 @@ log/
 # Local workflow diagnostics
 .planning/context-health/
 .planning/verification/local/
+repair-plan.md
+workflow-diagnosis.md
 
 # Build output
 dist/

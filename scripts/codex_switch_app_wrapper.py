@@ -90,7 +90,7 @@ is_non_shareable_home_entry_name() {{
     chrome-native-hosts-v2.json|chrome-native-hosts.json|installation_id)
       return 0
       ;;
-    model-catalogs|models_cache.json|pets|update-backups|vendor_imports|version.json)
+    model-catalogs|models_cache.json|update-backups|vendor_imports|version.json)
       return 0
       ;;
   esac
@@ -156,12 +156,15 @@ from codex_switch_home_sync import (
     build_internal_home_config,
     plugin_support_snapshot_name,
     refresh_profile_plugin_support_snapshot,
+    sync_desktop_global_state_settings,
 )
 
 base = Path(sys.argv[1])
 profile = Path(sys.argv[2])
 target = Path(sys.argv[3])
 profile_name = sys.argv[4]
+sync_desktop_global_state_settings(target.parent, base.parent)
+sync_desktop_global_state_settings(base.parent, target.parent)
 if target.exists():
     shared_text = merge_shared_config_overlay(
         base.read_text(),

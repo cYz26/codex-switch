@@ -48,6 +48,15 @@ The system SHALL activate `official` using the official Codex home and activate
 - AND those paths are not copied, linked, or otherwise synced into the target
   profile home.
 
+#### Scenario: Pets settings support is shared
+
+- GIVEN a source home contains a `pets/` support directory used by the Desktop
+  Settings Pets panel
+- WHEN a switch syncs shared support into the target home
+- THEN the target home receives `pets/` as shared support
+- AND plugin caches, credentials, browser/process state, and session runtime
+  state remain excluded.
+
 #### Scenario: Shared support symlinks do not self-reference target homes
 
 - GIVEN a shareable support entry in the source home is a symlink that points to
@@ -233,6 +242,17 @@ profile config only as fallback.
 - AND profile-specific canonical config still excludes shared plugin support
   settings.
 
+#### Scenario: Plugin support snapshot refresh does not shrink on runtime loss
+
+- GIVEN a profile-local plugin support snapshot contains marketplace, plugin,
+  skill, or hook trust settings
+- AND the current runtime `config.toml` has been narrowed and no longer
+  contains those plugin support settings
+- WHEN codex-switch refreshes that profile's plugin support snapshot
+- THEN the refreshed snapshot keeps existing plugin support settings as
+  missing defaults
+- AND missing runtime blocks do not delete the richer existing snapshot state.
+
 #### Scenario: Source profile plugin support snapshot is used as shared fallback
 
 - GIVEN the source profile has a profile-local plugin support snapshot with
@@ -385,6 +405,50 @@ profile config only as fallback.
 - THEN shared settings from the internal app home are folded into the official
   home
 - AND official profile-specific settings remain in the official home.
+
+#### Scenario: Internal Desktop wrapper syncs shared config without narrowing official settings
+
+- GIVEN the official home runtime `config.toml` contains shared Desktop,
+  memories, apps, plugin, and skill settings
+- AND the managed internal app home runtime `config.toml` has been narrowed to
+  only a subset of those shared settings plus a new shared Desktop or plugin
+  value
+- WHEN the internal Desktop wrapper starts Codex
+- THEN the official home receives the new shared values from the internal app
+  home
+- AND existing official shared settings that are absent from the internal app
+  home remain in the official home
+- AND profile-specific internal model/provider settings are not copied into the
+  official home.
+
+#### Scenario: Switching with a narrowed source preserves target shared settings
+
+- GIVEN the target profile runtime `config.toml` contains shared Desktop,
+  memories, apps, plugin, or skill settings
+- AND the source profile runtime `config.toml` has been narrowed and lacks
+  some of those target shared settings
+- WHEN codex-switch builds the target profile runtime config during a switch
+- THEN shared values present in the source profile are applied to the target
+  runtime config
+- AND target shared settings missing from the source profile are preserved as
+  defaults
+- AND missing source blocks do not delete target settings unless a future
+  explicit deletion mechanism records that intent.
+
+#### Scenario: Desktop global settings are synced without session state
+
+- GIVEN the source profile home has `.codex-global-state.json` containing
+  Desktop window/settings values such as `electron-main-window-bounds`,
+  `appshotHotkey`, or `electron-persisted-atom-state`
+- AND that state file also contains session/runtime values such as prompt
+  history, thread permissions, queued follow-ups, remote thread summaries, or
+  remote routing identifiers
+- WHEN `codex-switch` syncs shared state from one independent profile home to
+  the other during a switch or internal Desktop wrapper startup
+- THEN the target profile home receives the safe Desktop settings values
+- AND session/runtime values from the source profile home are not copied
+- AND existing session/runtime values in the target profile home remain
+  profile-local.
 
 #### Scenario: Internal Desktop config writes preserve existing shared settings
 

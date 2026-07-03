@@ -15,7 +15,7 @@ The system SHALL check for self-updates on every ordinary persistent local
 - WHEN the user invokes a local `codex-switch` command
 - THEN the wrapper checks the stable implementation directory against the
   release bundle
-- AND syncs from the release bundle when the release bundle version differs
+- AND syncs from the release bundle when the release bundle version is newer
 - AND re-execs the original command once against the synced wrapper.
 
 #### Scenario: Source checkout does not self-modify
@@ -24,6 +24,27 @@ The system SHALL check for self-updates on every ordinary persistent local
   release implementation directory
 - WHEN the user invokes a local `codex-switch` command
 - THEN the wrapper does not rewrite the source checkout.
+
+#### Scenario: Older release bundle does not replace current implementation
+
+- GIVEN the wrapper is running from the configured release implementation
+  directory
+- AND the installed implementation has a version newer than the configured
+  release bundle
+- WHEN the user invokes a local `codex-switch` command
+- THEN the wrapper reports the current implementation as up to date
+- AND the installed implementation remains unchanged.
+
+#### Scenario: Formal release replaces same-core development build
+
+- GIVEN the wrapper is running from the configured release implementation
+  directory
+- AND the installed implementation is a prerelease build such as `0.1.13-dev`
+- AND the configured release bundle version is the corresponding formal release
+  such as `0.1.13`
+- WHEN the user invokes a local `codex-switch` command
+- THEN the wrapper syncs from the formal release bundle
+- AND re-execs the original command once against the synced wrapper.
 
 #### Scenario: Self-update can be skipped
 

@@ -33,7 +33,11 @@ from codex_switch_config import (
     build_profile_v2_config_text,
     merge_missing_shared_config_defaults,
 )
-from codex_switch_home_sync import refresh_profile_canonical_config, sync_shared_support
+from codex_switch_home_sync import (
+    refresh_profile_canonical_config,
+    refresh_profile_plugin_support_snapshot,
+    sync_shared_support,
+)
 from codex_switch_store import Store
 
 
@@ -69,6 +73,45 @@ def write_fake_codex(path: Path, label: str) -> None:
 def write_fake_script(path: Path, body: str) -> None:
     path.write_text(body)
     path.chmod(0o755)
+
+
+def desktop_global_state_payload(
+    *,
+    bounds_width: int,
+    hotkey: str,
+    auto_context: bool,
+    prompt_history_label: str,
+) -> dict[str, object]:
+    return {
+        "electron-main-window-bounds": {
+            "x": 10,
+            "y": 20,
+            "width": bounds_width,
+            "height": 800,
+        },
+        "appshotHotkey": hotkey,
+        "queued-follow-ups": [{"thread": f"{prompt_history_label}-queued"}],
+        "selected-remote-host-id": f"{prompt_history_label}-remote-host",
+        "electron-local-remote-control-environment-id": f"{prompt_history_label}-env",
+        "electron-persisted-atom-state": {
+            "composer-auto-context-enabled": auto_context,
+            "sidebar-width": 312,
+            "diff-filter": {"mode": "all"},
+            "prompt-history": {"entries": [f"{prompt_history_label}-prompt"]},
+            "heartbeat-thread-permissions-by-id": {
+                f"{prompt_history_label}-thread": "full"
+            },
+            "composer-prompt-drafts-v1": {
+                f"{prompt_history_label}-thread": "draft"
+            },
+            "unread-thread-ids-by-host-v1": {
+                f"{prompt_history_label}-host": [f"{prompt_history_label}-thread"]
+            },
+            "remote-thread-summaries:remote": {
+                "title": f"{prompt_history_label}-remote-summary"
+            },
+        },
+    }
 
 
 def write_fake_plugin_catalog_codex(path: Path) -> None:
@@ -122,6 +165,94 @@ def write_fake_runtime_smoke_codex(path: Path) -> None:
     )
 
 
+def write_fake_responses_tool_smoke_codex(path: Path, *, fail_resource_mismatch: bool = False) -> None:
+    mismatch_body = ""
+    if fail_resource_mismatch:
+        mismatch_body = (
+            "  echo 'x-account-deployment: deployment-gpt-5.5-2026-04-24-platform-global'\n"
+            "  echo 'x-account-id: globalttswedencentral010'\n"
+            "  echo 'x-model-request-id: b1ce23f9-e838-47c5-a705-afa2564e4409'\n"
+            "  echo 'x-tt-logid: 20260703112009D6B58AAAD12F032ED7AB'\n"
+            "  echo 'The requested item was created under a different Azure OpenAI resource. Use the same resource that created the item to access it.'\n"
+            "  echo 'x-account-id: globalttswedencentral053'\n"
+            "  echo 'x-model-request-id: 741c1f3e-fad4-48be-abe0-d0c2e99b3506'\n"
+            "  echo 'x-tt-logid: 202607031120158DCF6A7C87F2A6AF4908'\n"
+            "  echo 'api-key: should-not-leak'\n"
+            "  exit 1\n"
+        )
+    else:
+        mismatch_body = "  printf '{\"type\":\"turn.completed\"}\\n'\n  exit 0\n"
+    write_fake_script(
+        path,
+        "#!/usr/bin/env sh\n"
+        "set -eu\n"
+        "mkdir -p \"$CODEX_HOME\"\n"
+        "printf '%s|%s\\n' \"$CODEX_HOME\" \"$*\" >> \"$CODEX_HOME/responses-tool-smoke.log\"\n"
+        "if [ \"${1:-}\" = \"--version\" ]; then\n"
+        "  echo codex-cli 9.9.9\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--json\" ]; then\n"
+        "  printf '{\"plugins\":[]}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"exec\" ] && [ \"${2:-}\" = \"--json\" ]; then\n"
+        + mismatch_body +
+        "fi\n"
+        "echo fake-responses-tool-smoke-codex\n",
+    )
+
+
+def write_fake_app_server_smoke_codex(
+    path: Path,
+    *,
+    version: str = "codex-cli 9.9.9",
+    exit_241_after_plugin_list: bool = False,
+) -> None:
+    plugin_list_branch = (
+        "      printf '%s\\n' "
+        "'{\"id\":\"plugin-list-smoke\",\"error\":{\"code\":-32600,\"message\":\"chatgpt authentication required for remote plugin catalog\"}}'\n"
+    )
+    if exit_241_after_plugin_list:
+        plugin_list_branch = (
+            "      printf '%s\\n' "
+            "'{\"id\":\"plugin-list-smoke\",\"result\":{\"marketplaces\":[]}}'\n"
+            "      echo '{\"timestamp\":\"2026-07-03T03:52:12.432642Z\",\"level\":\"WARN\",\"fields\":{\"message\":\"plugin/list featured plugin fetch failed; returning empty featured ids\"},\"target\":\"codex_app_server::request_processors::plugins\"}' >&2\n"
+            "      exit 241\n"
+        )
+    write_fake_script(
+        path,
+        "#!/usr/bin/env sh\n"
+        "set -eu\n"
+        "if [ \"${1:-}\" = \"--version\" ]; then\n"
+        f"  echo {version}\n"
+        "  exit 0\n"
+        "fi\n"
+        "mkdir -p \"$CODEX_HOME\"\n"
+        "printf '%s|%s\\n' \"$CODEX_HOME\" \"$*\" >> \"$CODEX_HOME/app-server-smoke.log\"\n"
+        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--json\" ]; then\n"
+        "  printf '{\"plugins\":[]}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"app-server\" ]; then\n"
+        "  while IFS= read -r line; do\n"
+        "    printf 'stdin:%s\\n' \"$line\" >> \"$CODEX_HOME/app-server-smoke.log\"\n"
+        "    case \"$line\" in\n"
+        "      *'\"method\":\"initialize\"'*)\n"
+        "        printf '%s\\n' "
+        "'{\"id\":\"__codex_initialize__\",\"result\":{\"userAgent\":\"Codex Desktop/9.9.9 (codex-switch-smoke)\",\"codexHome\":\"/tmp/fake\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\"}}'\n"
+        "        ;;\n"
+        "      *'\"method\":\"plugin/list\"'*)\n"
+        + plugin_list_branch +
+        "        ;;\n"
+        "    esac\n"
+        "  done\n"
+        "  exit 0\n"
+        "fi\n"
+        "echo fake-app-server-smoke-codex\n",
+    )
+
+
 class CodexProfileSwitchTests(unittest.TestCase):
     def make_workspace(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp_dir = tempfile.TemporaryDirectory()
@@ -139,6 +270,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
         env: dict[str, str] | None = None,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        clean_env = dict(env or os.environ)
+        if (
+            "CODEX_SWITCH_SHELL_PROFILE" not in clean_env
+            and "CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP" not in clean_env
+        ):
+            clean_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
         command = [
             sys.executable,
             str(SCRIPT),
@@ -156,7 +293,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env,
+            env=clean_env,
         )
 
     def run_wrapper(
@@ -180,6 +317,11 @@ class CodexProfileSwitchTests(unittest.TestCase):
         clean_env.pop("CODEX_CLI_PATH", None)
         clean_env.pop("CODEX_SWITCH_SCRIPT", None)
         clean_env.pop("CODEX_SWITCH_HOME", None)
+        if (
+            "CODEX_SWITCH_SHELL_PROFILE" not in clean_env
+            and "CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP" not in clean_env
+        ):
+            clean_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
         return subprocess.run(
             command,
             check=check,
@@ -389,6 +531,36 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertEqual("9.9.9\n", (lib_dir / "current" / "VERSION").read_text())
             self.assertTrue((install_dir / "codex-switch").exists())
 
+    def test_installer_preserves_local_source_version(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            source_root = root / "source"
+            scripts_dir = source_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            fake_wrapper = scripts_dir / "codex-switch"
+            fake_wrapper.write_text("#!/usr/bin/env sh\nprintf 'source-wrapper\\n'\n")
+            fake_wrapper.chmod(0o755)
+            (source_root / "VERSION").write_text("0.1.13-dev\n")
+
+            install_dir = root / "bin"
+            lib_dir = root / "lib"
+            env = os.environ.copy()
+            env["CODEX_SWITCH_SOURCE_DIR"] = str(source_root)
+            env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
+            env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+
+            subprocess.run(
+                [str(INSTALLER)],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertEqual("0.1.13-dev\n", (lib_dir / "current" / "VERSION").read_text())
+            self.assertTrue((install_dir / "codex-switch").exists())
+
     def test_remote_runner_falls_back_to_source_archive_and_execs_command(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -517,6 +689,54 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn("self-update", result.stderr)
             self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
 
+    def test_local_wrapper_does_not_self_update_to_older_release(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root, version="0.1.13-dev")
+            tarball = self.make_remote_wrapper_tarball(root, version="0.1.12")
+            env = self.self_update_env(root, tarball)
+
+            result = subprocess.run(
+                [str(local_wrapper), "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("old-switcher:status", result.stdout)
+            self.assertIn("codex-switch self-update: checking latest release", result.stderr)
+            self.assertIn(
+                "codex-switch self-update: already up to date 0.1.13-dev",
+                result.stderr,
+            )
+            self.assertNotIn("synced implementation", result.stderr)
+            self.assertEqual("0.1.13-dev\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_local_wrapper_self_updates_prerelease_to_formal_release(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root, version="0.1.13-dev")
+            tarball = self.make_remote_wrapper_tarball(root, version="0.1.13")
+            env = self.self_update_env(root, tarball)
+
+            result = subprocess.run(
+                [str(local_wrapper), "status"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("synced-wrapper:status", result.stdout)
+            self.assertIn(
+                "codex-switch self-update: synced implementation 0.1.13-dev -> 0.1.13",
+                result.stderr,
+            )
+            self.assertEqual("0.1.13\n", (root / "lib" / "current" / "VERSION").read_text())
+
     def test_source_checkout_wrapper_does_not_self_update(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -593,6 +813,33 @@ class CodexProfileSwitchTests(unittest.TestCase):
         self.assertIn("install.sh", workflow)
         self.assertIn("dist/run.sh", workflow)
         self.assertIn("dist/codex-switch.tar.gz", workflow)
+
+    def test_package_release_includes_troubleshooting_docs(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            dist = root / "dist"
+            env = os.environ.copy()
+            env["CODEX_SWITCH_DIST_DIR"] = str(dist)
+
+            subprocess.run(
+                [str(Path("scripts/package-release.sh"))],
+                cwd=Path(__file__).parents[1],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertTrue(
+                (
+                    dist
+                    / "codex-switch"
+                    / "docs"
+                    / "troubleshooting"
+                    / "internal-azure-responses-resource-stickiness.md"
+                ).exists()
+            )
 
     def test_auto_release_plan_detects_runtime_change_and_next_patch_tag(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
@@ -719,6 +966,135 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertEqual(active["app_cli_path"], str(internal_app))
             agent = plistlib.loads((root / "agent.plist").read_bytes())
             self.assertEqual(agent["ProgramArguments"][-1], str(internal_app))
+
+    def test_status_reports_shell_codex_alignment(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl", env=env)
+
+            mismatch = self.run_switcher(root, "status", env=env)
+            mismatch_output = mismatch.stdout + mismatch.stderr
+            self.assertIn("PATH codex alignment: mismatch", mismatch_output)
+            self.assertIn('eval "$(codex-switch shim-env)"', mismatch_output)
+
+            shim_dir = root / "store" / "bin"
+            aligned_env = dict(env)
+            aligned_env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
+            aligned = self.run_switcher(root, "status", env=aligned_env)
+            self.assertIn("PATH codex alignment: ok", aligned.stdout + aligned.stderr)
+
+            shim_env = self.run_switcher(root, "shim-env")
+            self.assertIn(f'export PATH="{shim_dir}:$PATH"', shim_env.stdout)
+            self.assertIn("hash -r", shim_env.stdout)
+
+    def test_switch_installs_shell_bootstrap_for_cli_alignment(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            shell_profile = root / "home" / ".zshrc"
+            shell_profile.parent.mkdir()
+            shell_profile.write_text("# user shell config\nexport OTHER=1\n")
+            switch_env = dict(env)
+            switch_env["CODEX_SWITCH_SHELL_PROFILE"] = str(shell_profile)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=switch_env,
+            )
+
+            result = self.run_switcher(
+                root,
+                "switch",
+                "internal",
+                "--skip-launchctl",
+                env=switch_env,
+            )
+
+            output = result.stdout + result.stderr
+            shim_dir = root / "store" / "bin"
+            content = shell_profile.read_text()
+            self.assertIn("Shell CLI bootstrap:", output)
+            self.assertIn("# user shell config", content)
+            self.assertIn("export OTHER=1", content)
+            self.assertIn("# >>> codex-switch shell cli >>>", content)
+            self.assertIn(f'export PATH="{shim_dir}:$PATH"', content)
+            self.assertIn("hash -r", content)
+            self.assertIn("# <<< codex-switch shell cli <<<", content)
+            active = json.loads((root / "store" / "active.json").read_text())
+            backup = json.loads((root / "store" / "backups" / active["backup_id"] / "backup.json").read_text())
+            self.assertIn(str(shell_profile), [entry["path"] for entry in backup["entries"]])
+
+    def test_switch_replaces_existing_shell_bootstrap_without_duplication(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            shell_profile = root / "home" / ".zshrc"
+            shell_profile.parent.mkdir()
+            shell_profile.write_text(
+                "before\n"
+                "# >>> codex-switch shell cli >>>\n"
+                'export PATH="/old/codex-switch/bin:$PATH"\n'
+                "# <<< codex-switch shell cli <<<\n"
+                "after\n"
+            )
+            switch_env = dict(env)
+            switch_env["CODEX_SWITCH_SHELL_PROFILE"] = str(shell_profile)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=switch_env,
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl", env=switch_env)
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl", env=switch_env)
+
+            content = shell_profile.read_text()
+            self.assertEqual(1, content.count("# >>> codex-switch shell cli >>>"))
+            self.assertEqual(1, content.count("# <<< codex-switch shell cli <<<"))
+            self.assertNotIn("/old/codex-switch/bin", content)
+            self.assertIn(f'export PATH="{root / "store" / "bin"}:$PATH"', content)
+            self.assertIn("before", content)
+            self.assertIn("after", content)
+
+    def test_switch_can_skip_shell_bootstrap(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            shell_profile = root / "home" / ".zshrc"
+            switch_env = dict(env)
+            switch_env["CODEX_SWITCH_SHELL_PROFILE"] = str(shell_profile)
+            switch_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=switch_env,
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl", env=switch_env)
+
+            self.assertFalse(shell_profile.exists())
 
     def test_internal_switch_uses_managed_home_and_backup_plan(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -951,6 +1327,205 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertFalse((target_tool / "nested-loop").exists())
             self.assertFalse((target_tool / "nested-loop").is_symlink())
 
+    def test_desktop_global_settings_state_sync_merges_safe_settings_only(self) -> None:
+        from codex_switch_home_sync import merge_desktop_global_state_settings
+
+        source = desktop_global_state_payload(
+            bounds_width=1440,
+            hotkey="cmd+shift+5",
+            auto_context=True,
+            prompt_history_label="source",
+        )
+        target = desktop_global_state_payload(
+            bounds_width=1024,
+            hotkey="cmd+shift+4",
+            auto_context=False,
+            prompt_history_label="target",
+        )
+        target["target-only-runtime"] = "keep"
+        target_atom = target["electron-persisted-atom-state"]
+        self.assertIsInstance(target_atom, dict)
+        target_atom["target-only-ui-setting"] = "keep"
+
+        merged = merge_desktop_global_state_settings(source, target)
+
+        self.assertEqual(
+            1440,
+            merged["electron-main-window-bounds"]["width"],
+        )
+        self.assertEqual("cmd+shift+5", merged["appshotHotkey"])
+        self.assertEqual(
+            True,
+            merged["electron-persisted-atom-state"][
+                "composer-auto-context-enabled"
+            ],
+        )
+        self.assertEqual(
+            {"entries": ["target-prompt"]},
+            merged["electron-persisted-atom-state"]["prompt-history"],
+        )
+        self.assertNotIn(
+            "source-thread",
+            merged["electron-persisted-atom-state"][
+                "heartbeat-thread-permissions-by-id"
+            ],
+        )
+        self.assertEqual(
+            "target-remote-host",
+            merged["selected-remote-host-id"],
+        )
+        self.assertEqual(
+            [{"thread": "target-queued"}],
+            merged["queued-follow-ups"],
+        )
+        self.assertEqual("keep", merged["target-only-runtime"])
+        self.assertEqual(
+            "keep",
+            merged["electron-persisted-atom-state"]["target-only-ui-setting"],
+        )
+
+    def test_switch_syncs_desktop_global_settings_state_between_independent_homes(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            (live_home / ".codex-global-state.json").write_text(
+                json.dumps(
+                    desktop_global_state_payload(
+                        bounds_width=1400,
+                        hotkey="cmd+shift+5",
+                        auto_context=True,
+                        prompt_history_label="official",
+                    )
+                )
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            self.run_switcher(
+                root,
+                "switch",
+                "internal",
+                "--skip-launchctl",
+                "--skip-app-cli",
+                "--skip-shim",
+            )
+
+            internal_home = root / "store" / "homes" / "internal"
+            internal_state = json.loads(
+                (internal_home / ".codex-global-state.json").read_text()
+            )
+            self.assertEqual(
+                1400,
+                internal_state["electron-main-window-bounds"]["width"],
+            )
+            self.assertEqual("cmd+shift+5", internal_state["appshotHotkey"])
+            self.assertNotIn(
+                "prompt-history",
+                internal_state.get("electron-persisted-atom-state", {}),
+            )
+            self.assertNotIn("queued-follow-ups", internal_state)
+            self.assertNotIn("selected-remote-host-id", internal_state)
+            self.assertFalse((internal_home / ".credentials.json").exists())
+
+            (internal_home / ".codex-global-state.json").write_text(
+                json.dumps(
+                    desktop_global_state_payload(
+                        bounds_width=1680,
+                        hotkey="cmd+shift+6",
+                        auto_context=False,
+                        prompt_history_label="internal",
+                    )
+                )
+            )
+            (live_home / ".codex-global-state.json").write_text(
+                json.dumps(
+                    desktop_global_state_payload(
+                        bounds_width=1200,
+                        hotkey="cmd+shift+4",
+                        auto_context=True,
+                        prompt_history_label="official-target",
+                    )
+                )
+            )
+
+            self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--skip-launchctl",
+                "--skip-app-cli",
+                "--skip-shim",
+            )
+
+            official_state = json.loads(
+                (live_home / ".codex-global-state.json").read_text()
+            )
+            self.assertEqual(
+                1680,
+                official_state["electron-main-window-bounds"]["width"],
+            )
+            self.assertEqual("cmd+shift+6", official_state["appshotHotkey"])
+            self.assertEqual(
+                {"entries": ["official-target-prompt"]},
+                official_state["electron-persisted-atom-state"]["prompt-history"],
+            )
+            self.assertEqual(
+                [{"thread": "official-target-queued"}],
+                official_state["queued-follow-ups"],
+            )
+            self.assertEqual(
+                "official-target-remote-host",
+                official_state["selected-remote-host-id"],
+            )
+
+    def test_internal_switch_syncs_pets_settings_support(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            pets = live_home / "pets"
+            pets.mkdir()
+            (pets / "settings.json").write_text('{"enabled":true}\n')
+            plugins = live_home / "plugins"
+            plugins.mkdir()
+            (plugins / "cache-marker").write_text("do not sync\n")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            self.run_switcher(
+                root,
+                "switch",
+                "internal",
+                "--skip-launchctl",
+                "--skip-app-cli",
+                "--skip-shim",
+            )
+
+            internal_home = root / "store" / "homes" / "internal"
+            self.assertTrue((internal_home / "pets" / "settings.json").exists())
+            self.assertEqual(
+                '{"enabled":true}\n',
+                (internal_home / "pets" / "settings.json").read_text(),
+            )
+            self.assertFalse((internal_home / "plugins" / "cache-marker").exists())
+
     def test_official_switch_excludes_bulky_support_state_from_sync_plan(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -1009,7 +1584,6 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "model-catalogs",
                 "sqlite",
                 ".credentials.json",
-                ".codex-global-state.json",
                 "models_cache.json",
                 "version.json",
             ):
@@ -1017,6 +1591,16 @@ class CodexProfileSwitchTests(unittest.TestCase):
                     str(root / "store" / "homes" / "openai-official" / name),
                     dry_output,
                 )
+            self.assertIn(
+                str(
+                    root
+                    / "store"
+                    / "homes"
+                    / "openai-official"
+                    / ".codex-global-state.json"
+                ),
+                dry_output,
+            )
 
             self.run_switcher(
                 root,
@@ -1059,7 +1643,6 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "model-catalogs",
                 "sqlite",
                 ".credentials.json",
-                ".codex-global-state.json",
                 "models_cache.json",
                 "version.json",
             ):
@@ -2154,6 +2737,115 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn('[plugins."lark-feishu-ops@cy-codex-skills"]', internal_config)
             self.assertIn("[[skills.config]]", internal_config)
 
+    def test_official_switch_does_not_narrow_existing_shared_settings(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_config_path = live_home / "config.toml"
+            live_config_path.write_text(
+                'model = "official-runtime"\n'
+                "\n"
+                "[desktop]\n"
+                "preventSleepWhileRunning = true\n"
+                'appearanceTheme = "dark"\n'
+                'followUpQueueMode = "off"\n'
+                "\n"
+                "[memories]\n"
+                "enabled = true\n"
+                "\n"
+                "[apps.connector_test]\n"
+                'command = "connector-test"\n'
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/official-skill/SKILL.md"\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_home = root / "store" / "homes" / "internal"
+            (internal_home / "config.toml").write_text(
+                "# codex-switch: managed runtime config for profile internal\n"
+                "\n"
+                'model = "internal-runtime"\n'
+                "\n"
+                "[desktop]\n"
+                'followUpQueueMode = "queue"\n'
+            )
+            live_config_path.write_text(
+                'model = "official-runtime"\n'
+                "\n"
+                "[desktop]\n"
+                "preventSleepWhileRunning = true\n"
+                'appearanceTheme = "dark"\n'
+                'followUpQueueMode = "off"\n'
+                "\n"
+                "[memories]\n"
+                "enabled = true\n"
+                "\n"
+                "[apps.connector_test]\n"
+                'command = "connector-test"\n'
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/official-skill/SKILL.md"\n'
+                "enabled = true\n"
+            )
+
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            live_config = live_config_path.read_text()
+            self.assertIn('model = "official-runtime"', live_config)
+            self.assertIn("preventSleepWhileRunning = true", live_config)
+            self.assertIn('appearanceTheme = "dark"', live_config)
+            self.assertIn('followUpQueueMode = "queue"', live_config)
+            self.assertIn("[memories]", live_config)
+            self.assertIn("[apps.connector_test]", live_config)
+            self.assertIn("[[skills.config]]", live_config)
+            self.assertNotIn('model = "internal-runtime"', live_config)
+
+    def test_plugin_support_snapshot_refresh_does_not_shrink_to_runtime_loss(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            runtime_config = root / "runtime.toml"
+            runtime_config.write_text(
+                "[desktop]\n"
+                'followUpQueueMode = "queue"\n'
+            )
+            home_snapshot = root / "home.plugin-support.config.toml"
+            profile_snapshot = root / "profile.plugin-support.config.toml"
+            home_snapshot.write_text(
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."agent-kb@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/agent-kb/SKILL.md"\n'
+                "enabled = true\n"
+            )
+
+            refresh_profile_plugin_support_snapshot(
+                "internal",
+                runtime_config,
+                [home_snapshot, profile_snapshot],
+            )
+
+            for snapshot_path in (home_snapshot, profile_snapshot):
+                snapshot = snapshot_path.read_text()
+                self.assertIn("[marketplaces.cy-codex-skills]", snapshot)
+                self.assertIn('[plugins."agent-kb@cy-codex-skills"]', snapshot)
+                self.assertIn("[[skills.config]]", snapshot)
+
     def test_doctor_reports_missing_active_profile_enabled_plugin_cache(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -2355,6 +3047,233 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 ],
                 log_lines,
             )
+
+    def test_verify_app_server_smoke_accepts_plugin_auth_error_response(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(internal_codex)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            result = self.run_switcher(root, "verify", "internal", "--app-server-smoke")
+
+            self.assertIn("App-server smoke: passed", result.stdout)
+            log_lines = (
+                root / "store" / "homes" / "internal" / "app-server-smoke.log"
+            ).read_text().splitlines()
+            self.assertIn(
+                f"{root / 'store' / 'homes' / 'internal'}|app-server --analytics-default-enabled",
+                log_lines,
+            )
+            self.assertTrue(any('"method":"initialize"' in line for line in log_lines))
+            self.assertTrue(any('"method":"plugin/list"' in line for line in log_lines))
+
+    def test_verify_app_server_smoke_reports_early_241_exit(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                exit_241_after_plugin_list=True,
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "internal",
+                "--app-server-smoke",
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("app-server smoke failed", output)
+            self.assertIn("exit 241", output)
+            self.assertIn("plugin/list featured plugin fetch failed", output)
+
+    def test_verify_responses_tool_smoke_runs_profile_codex_with_target_home(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_responses_tool_smoke_codex(official_codex)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                "--responses-tool-smoke",
+            )
+
+            self.assertIn("Responses tool smoke: passed", result.stdout)
+            log_lines = (root / "live" / "responses-tool-smoke.log").read_text().splitlines()
+            self.assertEqual(1, len(log_lines))
+            home, args = log_lines[0].split("|", 1)
+            self.assertEqual(str(root / "live"), home)
+            self.assertIn("exec --json --ephemeral --ignore-rules", args)
+            self.assertIn("-c approval_policy=\"never\"", args)
+            self.assertIn("-s read-only", args)
+            self.assertIn(f"-C {Path.cwd()}", args)
+            self.assertIn("codex_switch_responses_tool_smoke", args)
+
+    def test_verify_responses_tool_smoke_reports_azure_resource_mismatch(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_responses_tool_smoke_codex(
+                official_codex,
+                fail_resource_mismatch=True,
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                "--responses-tool-smoke",
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("internal Responses resource-stickiness failure", output)
+            self.assertIn("globalttswedencentral010 -> globalttswedencentral053", output)
+            self.assertIn("deployment-gpt-5.5-2026-04-24-platform-global", output)
+            self.assertIn("741c1f3e-fad4-48be-abe0-d0c2e99b3506", output)
+            self.assertIn("202607031120158DCF6A7C87F2A6AF4908", output)
+            self.assertNotIn("should-not-leak", output)
+
+    def test_verify_report_includes_sanitized_responses_tool_smoke_diagnostics(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_responses_tool_smoke_codex(
+                official_codex,
+                fail_resource_mismatch=True,
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                "--responses-tool-smoke",
+                "--report",
+                check=False,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            reports = sorted((root / "store" / "verification").glob("*-openai-official.json"))
+            self.assertEqual(1, len(reports))
+            report = json.loads(reports[0].read_text())
+            self.assertFalse(report["ok"])
+            self.assertTrue(report["responses_tool_smoke"])
+            self.assertEqual(
+                [
+                    {
+                        "kind": "azure_responses_resource_mismatch",
+                        "message": (
+                            "Responses context follow-up must stay on the same "
+                            "Azure OpenAI resource"
+                        ),
+                        "accounts": [
+                            "globalttswedencentral010",
+                            "globalttswedencentral053",
+                        ],
+                        "deployments": [
+                            "deployment-gpt-5.5-2026-04-24-platform-global",
+                        ],
+                        "model_request_ids": [
+                            "b1ce23f9-e838-47c5-a705-afa2564e4409",
+                            "741c1f3e-fad4-48be-abe0-d0c2e99b3506",
+                        ],
+                        "tt_log_ids": [
+                            "20260703112009D6B58AAAD12F032ED7AB",
+                            "202607031120158DCF6A7C87F2A6AF4908",
+                        ],
+                    }
+                ],
+                report["smoke_diagnostics"],
+            )
+            self.assertNotIn("should-not-leak", json.dumps(report))
+
+    def test_one_key_switch_forwards_responses_tool_smoke_to_verify(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_responses_tool_smoke_codex(official_codex)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = self.run_wrapper(
+                root,
+                "official",
+                "--skip-login",
+                "--skip-update-check",
+                "--skip-launchctl",
+                "--skip-doctor",
+                "--no-status",
+                "--responses-tool-smoke",
+                env=env,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("Responses tool smoke: passed", output)
+            self.assertIn("Verify: passed", output)
+            self.assertTrue((root / "live" / "responses-tool-smoke.log").exists())
 
     def test_doctor_accepts_active_profile_enabled_plugin_cache(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -3784,6 +4703,94 @@ class CodexProfileSwitchTests(unittest.TestCase):
                     snapshot,
                 )
 
+    def test_internal_desktop_wrapper_does_not_narrow_official_shared_settings(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_config_path = live_home / "config.toml"
+            live_config_path.write_text(
+                'model = "official-runtime"\n'
+                'personality = "friendly"\n'
+                "\n"
+                "[desktop]\n"
+                "preventSleepWhileRunning = true\n"
+                'appearanceTheme = "dark"\n'
+                'followUpQueueMode = "off"\n'
+                "\n"
+                "[desktop.appearanceDarkChromeTheme]\n"
+                'background = "#101010"\n'
+                "\n"
+                "[memories]\n"
+                "enabled = true\n"
+                "\n"
+                "[apps.connector_test]\n"
+                'command = "connector-test"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."agent-kb@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/agent-kb/SKILL.md"\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["app_cli_path"] = str(root / "store" / "bin" / "codex-internal-app")
+            manifest_path.write_text(json.dumps(manifest))
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            app_home_config_path = root / "store" / "homes" / "internal" / "config.toml"
+            app_home_config_path.write_text(
+                "# codex-switch: managed runtime config for profile internal\n"
+                "\n"
+                'model = "internal-runtime"\n'
+                "\n"
+                "[desktop]\n"
+                'followUpQueueMode = "queue"\n'
+                "\n"
+                '[plugins."github@openai-curated"]\n'
+                "enabled = true\n"
+            )
+
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            live_config = live_config_path.read_text()
+            self.assertIn('model = "official-runtime"', live_config)
+            self.assertIn('personality = "friendly"', live_config)
+            self.assertIn("preventSleepWhileRunning = true", live_config)
+            self.assertIn('appearanceTheme = "dark"', live_config)
+            self.assertIn('followUpQueueMode = "queue"', live_config)
+            self.assertIn("[desktop.appearanceDarkChromeTheme]", live_config)
+            self.assertIn("[memories]", live_config)
+            self.assertIn("[apps.connector_test]", live_config)
+            self.assertIn("[marketplaces.cy-codex-skills]", live_config)
+            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', live_config)
+            self.assertIn("[[skills.config]]", live_config)
+            self.assertIn('[plugins."github@openai-curated"]', live_config)
+            self.assertNotIn('model = "internal-runtime"', live_config)
+
     def test_internal_desktop_wrapper_preserves_official_personality(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -3834,6 +4841,162 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn('model = "official-runtime"', live_config)
             self.assertIn('personality = "friendly"', live_config)
             self.assertIn("[mcp_servers.local-test]", live_config)
+
+    def test_internal_desktop_wrapper_syncs_desktop_global_settings_state(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_home_config = live_home / "config.toml"
+            live_home_config.write_text("[features]\nmemory = true\n")
+            (live_home / ".codex-global-state.json").write_text(
+                json.dumps(
+                    desktop_global_state_payload(
+                        bounds_width=1300,
+                        hotkey="cmd+shift+4",
+                        auto_context=True,
+                        prompt_history_label="official-before-switch",
+                    )
+                )
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["app_cli_path"] = str(root / "store" / "bin" / "codex-internal-app")
+            manifest_path.write_text(json.dumps(manifest))
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            app_home = root / "store" / "homes" / "internal"
+            (live_home / ".codex-global-state.json").write_text(
+                json.dumps(
+                    desktop_global_state_payload(
+                        bounds_width=1550,
+                        hotkey="cmd+shift+5",
+                        auto_context=False,
+                        prompt_history_label="official-after-switch",
+                    )
+                )
+            )
+            (app_home / ".codex-global-state.json").write_text(
+                json.dumps(
+                    {
+                        "queued-follow-ups": [
+                            {"thread": "internal-target-queued"}
+                        ],
+                        "selected-remote-host-id": "internal-target-remote-host",
+                        "electron-persisted-atom-state": {
+                            "prompt-history": {
+                                "entries": ["internal-target-prompt"]
+                            },
+                            "heartbeat-thread-permissions-by-id": {
+                                "internal-target-thread": "full"
+                            },
+                            "composer-prompt-drafts-v1": {
+                                "internal-target-thread": "draft"
+                            },
+                            "unread-thread-ids-by-host-v1": {
+                                "internal-target-host": [
+                                    "internal-target-thread"
+                                ]
+                            },
+                            "remote-thread-summaries:remote": {
+                                "title": "internal-target-summary"
+                            },
+                        },
+                    }
+                )
+            )
+
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            app_state = json.loads((app_home / ".codex-global-state.json").read_text())
+            self.assertEqual(1550, app_state["electron-main-window-bounds"]["width"])
+            self.assertEqual("cmd+shift+5", app_state["appshotHotkey"])
+            self.assertEqual(
+                False,
+                app_state["electron-persisted-atom-state"][
+                    "composer-auto-context-enabled"
+                ],
+            )
+            self.assertEqual(
+                {"entries": ["internal-target-prompt"]},
+                app_state["electron-persisted-atom-state"]["prompt-history"],
+            )
+            self.assertEqual(
+                [{"thread": "internal-target-queued"}],
+                app_state["queued-follow-ups"],
+            )
+            self.assertEqual(
+                "internal-target-remote-host",
+                app_state["selected-remote-host-id"],
+            )
+            self.assertFalse((app_home / ".credentials.json").exists())
+
+    def test_internal_desktop_wrapper_syncs_pets_settings_support(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_home_config = live_home / "config.toml"
+            live_home_config.write_text("[features]\nmemory = true\n")
+            pets = live_home / "pets"
+            pets.mkdir()
+            (pets / "settings.json").write_text('{"enabled":true}\n')
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["app_cli_path"] = str(root / "store" / "bin" / "codex-internal-app")
+            manifest_path.write_text(json.dumps(manifest))
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            app_home = root / "store" / "homes" / "internal"
+            if (app_home / "pets").exists() or (app_home / "pets").is_symlink():
+                if (app_home / "pets").is_symlink():
+                    (app_home / "pets").unlink()
+                else:
+                    shutil.rmtree(app_home / "pets")
+            (pets / "settings.json").write_text('{"enabled":false}\n')
+
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertTrue((app_home / "pets").is_symlink())
+            self.assertEqual(
+                '{"enabled":false}\n',
+                (app_home / "pets" / "settings.json").read_text(),
+            )
 
     def test_internal_desktop_wrapper_isolates_response_runtime_state(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -4150,11 +5313,199 @@ class CodexProfileSwitchTests(unittest.TestCase):
             active = json.loads((root / "store" / "active.json").read_text())
             self.assertEqual(active["profile"], "internal")
 
-    def test_wrapper_internal_auto_updates_when_latest_differs(self) -> None:
+    def test_internal_update_check_skips_blocked_latest_on_fallback(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-codex",
+                version="codex-cli 0.142.4",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.5\n"
+                "EOF\n",
+            )
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"printf '%s\\n' \"$*\" > {update_args}\n"
+                "exit 0\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = self.run_wrapper(root, "check-update", "internal", env=env)
+
+            output = result.stdout + result.stderr
+            self.assertIn("Latest release tag: internal-rust-v0.142.5", output)
+            self.assertIn("blocked", output)
+            self.assertIn("Update: skipped", output)
+            self.assertIn("0.142.4", output)
+            self.assertFalse(update_args.exists())
+
+    def test_one_key_internal_auto_update_pins_blocked_current_to_fallback(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             internal_codex, official_codex, env = self.prepare_profiles(root)
-            write_fake_codex(root / "internal-codex", "codex-cli 1.0.0")
+            write_fake_app_server_smoke_codex(
+                root / "internal-codex",
+                version="codex-cli 0.142.5",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.5\n"
+                "EOF\n",
+            )
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"printf '%s\\n' \"$*\" > {update_args}\n"
+                "exit 0\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("Latest release tag: internal-rust-v0.142.5", output)
+            self.assertIn("blocked", output)
+            self.assertIn("Auto-update: running codex-switch update-internal", output)
+            self.assertEqual(
+                update_args.read_text().strip(),
+                f"update-internal --version 0.142.4 --install-dir {internal_codex.parent}",
+            )
+
+    def test_one_key_internal_auto_update_resumes_for_successor_latest(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-codex",
+                version="codex-cli 0.142.4",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.6\n"
+                "EOF\n",
+            )
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"printf '%s\\n' \"$*\" > {update_args}\n"
+                "exit 0\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+            )
+
+            self.assertEqual(
+                update_args.read_text().strip(),
+                f"update-internal --install-dir {internal_codex.parent}",
+            )
+
+    def test_update_internal_command_pins_blocked_latest_without_explicit_version(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, _, env = self.prepare_profiles(root)
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.5\n"
+                "EOF\n",
+            )
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"printf '%s\\n' \"$*\" > {update_args}\n"
+                "exit 0\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+
+            result = self.run_wrapper(root, "update-internal", "--dry-run", env=env)
+
+            output = result.stdout + result.stderr
+            self.assertIn("latest internal release 0.142.5 is blocked", output)
+            self.assertEqual(
+                update_args.read_text().strip(),
+                "update-internal --version 0.142.4 --dry-run",
+            )
+
+    def test_one_key_internal_auto_update_runs_app_server_smoke(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-codex",
+                version="codex-cli 1.0.0",
+            )
             fake_tools = root / "fake-tools"
             fake_tools.mkdir()
             update_args = root / "update-args.txt"
@@ -4201,10 +5552,13 @@ class CodexProfileSwitchTests(unittest.TestCase):
             output = result.stdout + result.stderr
             self.assertIn("Auto-update: internal Codex update detected.", output)
             self.assertIn("Auto-update: running codex-switch update-internal", output)
+            self.assertIn("App-server smoke: passed", output)
             self.assertEqual(
                 update_args.read_text().strip(),
                 f"update-internal --install-dir {internal_codex.parent}",
             )
+            smoke_log = root / "store" / "homes" / "internal" / "app-server-smoke.log"
+            self.assertTrue(smoke_log.exists())
             active = json.loads((root / "store" / "active.json").read_text())
             self.assertEqual(active["profile"], "internal")
 

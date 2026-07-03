@@ -232,8 +232,24 @@ def add_simple_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         help="Run target codex --version and plugin list smoke with profile CODEX_HOME.",
     )
     verify.add_argument(
+        "--app-server-smoke",
+        action="store_true",
+        help=(
+            "Run a Desktop-like app-server startup smoke with profile "
+            "CODEX_HOME."
+        ),
+    )
+    verify.add_argument(
         "--exec-smoke",
         help="Run explicit `codex exec --json <prompt>` smoke with profile CODEX_HOME.",
+    )
+    verify.add_argument(
+        "--responses-tool-smoke",
+        action="store_true",
+        help=(
+            "Run a deterministic Responses API tool-call follow-up smoke with "
+            "profile CODEX_HOME."
+        ),
     )
     verify.add_argument(
         "--report",

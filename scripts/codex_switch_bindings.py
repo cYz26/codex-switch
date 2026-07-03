@@ -110,3 +110,4 @@ def cmd_set_app_bin(args: argparse.Namespace) -> None:
 def cmd_shim_env(args: argparse.Namespace) -> None:
     store = make_store(args)
     print(f'export PATH="{store.bin_dir}:$PATH"')
+    print("hash -r 2>/dev/null || true")

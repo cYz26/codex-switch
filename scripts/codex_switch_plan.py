@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from codex_switch_constants import APP_CLI_ENV, CONFIG_MODE_SHARED, CONFIG_MODE_SNAPSHOT, SwitchError
+from codex_switch_shell import shell_cli_bootstrap_path
 from codex_switch_store import Store
 from codex_switch_toml_validate import validate_toml
 
@@ -70,6 +71,9 @@ def switch_plan_actions(
         actions.append("remove live auth.json")
     if not skip_shim:
         actions.append(f"update codex shim using {manifest.get('codex_bin') or '<missing>'}")
+        shell_bootstrap = shell_cli_bootstrap_path()
+        if shell_bootstrap is not None:
+            actions.append(f"ensure command-line codex PATH bootstrap: {shell_bootstrap}")
     if not skip_app_cli:
         actions.append(f"set Codex Desktop {APP_CLI_ENV} to {app_cli_path or '<missing>'}")
         actions.append(f"write LaunchAgent {store.launch_agent_path}")

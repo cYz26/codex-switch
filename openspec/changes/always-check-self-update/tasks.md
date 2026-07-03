@@ -4,7 +4,8 @@
 
 Every ordinary release-installed `codex-switch` command checks whether the
 local implementation needs to self-update before command execution. Explicit
-skip controls and source checkout safety remain unchanged.
+skip controls and source checkout safety remain unchanged. Release bundles only
+replace the local implementation when the release bundle version is newer.
 
 ## Completion Contract
 
@@ -102,6 +103,45 @@ openspec validate always-check-self-update --strict --no-interactive
 openspec validate --all --strict --no-interactive
 ```
 
+### Slice 4: Version-ordered self-update
+
+**Status:** done
+
+**Goal**
+- Prevent self-update from downgrading or overwriting a newer local
+  implementation with an older published release bundle.
+
+**Files / Modules**
+- `install.sh`
+- `scripts/codex-switch`
+- `scripts/test_codex_profile_switch.py`
+- `openspec/changes/always-check-self-update/specs/codex-switch/spec.md`
+- `.planning/verification/`
+- `.planning/STATE.md`
+
+**Implementation**
+- [x] Add a regression showing a newer local implementation is not replaced by
+      an older release bundle.
+- [x] Keep normal sync behavior when the release bundle version is newer.
+- [x] Preserve same-version already-current behavior.
+- [x] Bump the local source `VERSION` above the latest published release using
+      a development suffix.
+- [x] Reinstall the local checkout and verify ordinary commands do not
+      downgrade it.
+- [x] Record verification evidence and update workflow state.
+
+**Validation Commands**
+```bash
+PYTHONPATH=scripts python3 -m unittest \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_local_wrapper_does_not_self_update_to_older_release \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_local_wrapper_self_updates_prerelease_to_formal_release \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_installer_preserves_local_source_version \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_local_wrapper_self_updates_release_install_before_command \
+  scripts.test_codex_profile_switch.CodexProfileSwitchTests.test_local_wrapper_self_update_reports_already_up_to_date -v
+bash -n install.sh
+bash -n scripts/codex-switch
+```
+
 ## Execution Ledger
 
 | Slice | Status | Evidence |
@@ -109,15 +149,17 @@ openspec validate --all --strict --no-interactive
 | Repeated-check regression | done | Focused RED failed before implementation; focused GREEN passed after implementation |
 | Wrapper cooldown removal | done | Focused GREEN passed after implementation |
 | Docs, specs, and state | done | `.planning/verification/20260622145941-always-check-self-update.md` |
+| Version-ordered self-update | done | `.planning/verification/20260703221616-version-ordered-self-update.md` |
 
 ## Acceptance Criteria
 
 - [x] Consecutive eligible release-installed wrapper invocations both print
       self-update check status.
 - [x] Same-version checks still report already up to date.
-- [x] Sync-needed checks still sync and re-exec once.
+- [x] Newer release checks still sync and re-exec once.
 - [x] Explicit skips remain quiet.
 - [x] Source checkout usage remains non-mutating.
+- [x] Older release bundles do not replace newer local implementations.
 
 ## Final Verification
 
@@ -125,3 +167,4 @@ openspec validate --all --strict --no-interactive
 - [x] Full Python regression passes.
 - [x] Shell syntax, package, diff, and OpenSpec checks pass.
 - [x] Verification evidence is recorded.
+- [x] Version-ordered self-update verification evidence is recorded.
