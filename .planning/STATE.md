@@ -52,6 +52,12 @@ context_management:
     - risks_recorded
     - validation_recorded_if_applicable
 
+goal_gate:
+  required: false
+  status: not_required
+  reason: none
+  suggested_goal: none
+
 context_health:
   last_report: .planning/context-health/reports/20260629130742-context-health.json
   last_risk: medium
