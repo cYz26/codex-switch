@@ -27,6 +27,16 @@ internal Azure Responses shell-tool call followed by the tool-result follow-up.
 - AND the output explains that the Responses context follow-up must stay on the
   same Azure OpenAI resource.
 
+#### Scenario: Missing reasoning item is diagnosed
+
+- GIVEN a Responses continuation fails with `Item with id 'rs_…' not found`
+- WHEN verification reports the failure
+- THEN the output identifies an internal Responses reasoning continuity failure
+- AND the JSON report records only the unavailable reasoning item ID and known
+  safe routing headers
+- AND the output explains that stateless continuation requires encrypted
+  reasoning content or stable upstream item routing.
+
 #### Scenario: Resource mismatch diagnostics are sanitized in reports
 
 - GIVEN a Responses tool-follow-up smoke output includes safe routing headers

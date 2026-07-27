@@ -27,8 +27,8 @@ CODEX_SWITCH_DRY_RUN=1
 ```
 
 If the release bundle asset is unavailable, the installer can fall back to a
-source archive. When the source archive contains `scripts/package-release.sh`,
-the installer packages it locally before installing the implementation.
+source archive. The trusted installer copies only the fixed release allowlist
+from that archive and does not execute archive-owned scripts while staging it.
 
 ## Usage
 
@@ -45,6 +45,15 @@ codex-switch env check-internal
 `codex-switch internal` checks the internal profile's bound Codex CLI and
 automatically delegates to `codex-switch update-internal` when a newer internal
 release is detected.
+
+Normal `check-update`, `internal`, and `official` flows also compare the
+selected profile CLI with the latest stable `openai/codex` release. The output
+labels the stable baseline and reports whether the selected CLI is behind,
+matching, or ahead. Prereleases are not used as the default baseline, and
+lookup or version-parsing failures are advisory only. This comparison never
+selects an internal install target: internal updates remain governed by the
+internal release source. `--skip-update-check` skips both the profile-specific
+check and the upstream stable advisory.
 
 Persistent local commands installed by `install.sh` also check for a
 codex-switch implementation self-update before every ordinary command execution.
@@ -70,7 +79,9 @@ CODEX_SWITCH_SOURCE_TARBALL_URL="https://github.com/cYz26/codex-switch/archive/r
 Self-update failures are warnings for ordinary commands; the current local
 implementation continues to run. If the configured release bundle is missing
 and a source archive fallback is available, self-update stages from the source
-archive instead.
+archive through the fixed release allowlist. The downloaded
+`scripts/package-release.sh` is copied as inert data and is not executed to
+build the staged implementation.
 
 Run without installing a PATH command:
 
@@ -84,7 +95,10 @@ The remote runner downloads the release bundle to
 `~/.local/share/codex-switch/current` and executes the bundled
 `scripts/codex-switch`. It does not create `~/.local/bin/codex-switch`; use the
 installer when you want a persistent PATH command. Like the installer, it can
-fall back to a source archive when the release bundle asset is unavailable.
+fall back to a source archive when the release bundle asset is unavailable,
+using the same trusted allowlist copy without executing archive-owned staging
+helpers. It then runs the copied `scripts/codex-switch` as the requested
+command.
 
 Release assets are published by GitHub Actions. When release-relevant changes
 land on `main`, the automatic release workflow verifies the repository, bumps
@@ -99,10 +113,11 @@ verification, and docs-only changes do not create a release. A manually pushed
 Profile switching uses independent Codex homes.
 
 `codex-switch official` keeps official mode on the official Codex home,
-defaulting to `~/.codex`, and uses the official Codex.app CLI path when it is
-available. `codex-switch internal` prepares and activates a managed internal
-home at `~/.codex-switch/homes/internal` by default. The shell shim and Codex
-Desktop binding are switched to the target profile's effective home.
+defaulting to `~/.codex`, and uses the current verified ChatGPT Desktop bundled
+CLI when it is available. `codex-switch internal` prepares and activates a
+managed internal home at `~/.codex-switch/homes/internal` by default. The shell
+shim and Codex Desktop binding are switched to the target profile's effective
+home.
 
 Only shareable non-auth configuration and stable support files move between the
 official and internal homes. Auth files, sessions, history, logs, sqlite state,
@@ -131,6 +146,55 @@ codex-switch internal --skip-update-check
 codex-switch --skip-self-update verify internal --responses-tool-smoke --report
 ```
 
+### Internal parity and staged updates
+
+Internal parity uses the current verified ChatGPT Desktop bundled CLI resolved
+by the canonical Runtime Binding as its official reference. A Codex binary on
+PATH, the latest network release, cached release metadata, and the stable
+release advisory are observations only; none can replace that bundled
+reference. The internal binary, model, endpoint, provider, and auth remain the
+only allowed identity differences.
+
+`status`, `doctor`, and `verify internal --repair=none` consume the same
+profile-local parity receipt without repairing it. Missing, stale, malformed,
+core-drift, probe-failed, or unclassified evidence reports
+`Parity health: unhealthy` with stable finding codes. Known optional drift stays
+healthy unless its policy escalates it and appears separately as a
+deterministically ordered `Parity sync:` queue.
+
+Receipt schema v2 binds sorted direction/method coverage, the exact adapter
+rule used for transformed paths, deterministic optional-extension identifiers,
+and the versioned official Desktop acceptance trace. Schema-v1 receipts cannot
+imply that coverage and are regenerated through staged repair rather than
+patched. Preparation first determines probe eligibility, then requires both
+`core_protocol` and `typed_subagent_v2` to pass, revalidates every mutable
+fingerprint, and only then constructs the final receipt. Unknown or uncovered
+drift stops before probes; missing or failed required probe evidence cannot
+produce a healthy receipt.
+
+Internal multi-agent v2 has no silent v1 fallback. Failed or unknown v2 evidence
+leaves the previous runtime generation effective and reports unhealthy. After
+reviewing the findings, an explicit
+`codex-switch --skip-self-update verify internal --repair=safe` routes repair
+through the same staged `set-bin internal <current-backend>` rebind; it does not
+patch the receipt, overlay, config, launcher, or manifest in place.
+
+`update-internal` installs and probes a candidate in a private sibling directory
+while the bound binary remains available. It validates parity before replacing
+the bound path, promotes the binary and runtime bundle through one recoverable
+journal, and retains the old binary backup until version, binding, app-server,
+capability-receipt, and parity-receipt postconditions all pass. Failure restores
+or preserves the last-known-good generation and prints neither verified success
+nor `Restart required`. Durable success retires the backup first and then prints
+one restart notice. `update-internal --dry-run` performs none of these
+mutations.
+
+Source tests, a successful update, or a successful rebind do not satisfy the
+live Desktop acceptance contract. Fully quitting and reopening ChatGPT,
+creating a real provider-backed typed `explorer` Subagent task, and attesting
+launcher, proxy, backend, receipt, overlay, and config ownership require
+explicit authorization at the Human Gate before they run.
+
 For each internal binary upgrade, verify the actual Desktop App bundle binary,
 the internal `codex_bin`, the generated app wrapper, and the running
 app-server path. Re-compare Desktop bundle and internal app-server schemas when
@@ -140,13 +204,14 @@ kind filtering, model alias handling, and app-server flag routing as needed.
 Finish with a real internal Desktop switch test and the focused regression
 tests that cover the affected compatibility path.
 
-If internal mode fails only after a tool call with an Azure message saying the
-requested item was created under a different Azure OpenAI resource, use the
-Responses tool-follow-up smoke and the troubleshooting note in
+If internal mode fails after a tool call with either an Azure resource mismatch
+or `Item with id 'rs_…' not found`, use the Responses tool-follow-up smoke and
+the troubleshooting note in
 `docs/troubleshooting/internal-azure-responses-resource-stickiness.md`. That
-scenario usually means AIDP routed one Responses context across different Azure
-resources; codex-switch records sanitized routing evidence, while the durable
-fix belongs in AIDP/internal backend resource stickiness.
+scenario means AIDP either routed one Responses context across different Azure
+resources or did not return portable encrypted reasoning content for
+`store=false` continuation. Codex-switch records sanitized evidence and can
+degrade old Desktop history safely; full-fidelity repair belongs upstream.
 
 As of 2026-07-03, internal release `0.142.5` is treated as a known-bad default
 upgrade target for this workstation flow. `codex-switch internal` keeps or
@@ -192,8 +257,9 @@ plugins, skill config, and hook trust into the target `config.toml`, but it
 does not copy or symlink another profile's `plugins/` cache. One-key switches
 (`codex-switch internal` and `codex-switch official`) run plugin repair after a
 successful switch, before doctor, by refreshing the target profile's
-marketplace/catalog view and installing missing enabled plugins into the target
-profile home. Use `--skip-plugin-repair` to skip that repair step.
+marketplace/catalog view, installing missing enabled plugins, and refreshing
+only local plugin caches that are provably stale. Use `--skip-plugin-repair` to
+skip that repair step.
 
 The explicit repair command is:
 
@@ -201,22 +267,36 @@ The explicit repair command is:
 codex-switch repair-plugins <profile>
 ```
 
-That command runs the profile's configured Codex binary with `CODEX_HOME` set
-to the profile home. It first refreshes configured plugin marketplaces with
+For `internal` and `openai-official`, that command resolves the target profile's
+canonical backend CLI independently of the currently running App, sets the
+target `CODEX_HOME` explicitly, and verifies the selected CLI with `--version`.
+It then refreshes configured plugin marketplaces with
 `codex plugin marketplace upgrade --json`, primes the available plugin catalog
-with `codex plugin list --available --json`, and then installs missing enabled
-plugins through `codex plugin add` only when they are present in the refreshed
-available plugin catalog. Enabled plugins that are no longer available from the
-configured marketplaces are skipped by repair and remain visible to
-`codex-switch doctor` as active-profile materialization issues. This keeps
-uninstalled official plugins visible in the target profile without copying
-another profile's `plugins/` directory. `codex-switch doctor` still checks the
-active profile's plugin materialization state and reports this command if
-enabled plugins are missing, including after low-level
+with `codex plugin list --available --json`, and invokes `codex plugin add` only
+for missing available plugins or installed local plugins whose source tree
+provably differs from the matching versioned cache. Matching caches are no-ops;
+remote, incomplete, or otherwise uninspectable catalog sources are reported and
+left unchanged.
+
+If a confirmed stale cache belongs to a target profile whose app-server is
+already running, repair fails closed instead of replacing files underneath the
+active session. Quit ChatGPT completely, rerun
+`codex-switch repair-plugins <profile>`, and then reopen ChatGPT. Enabled
+plugins that are no longer available from configured marketplaces are skipped
+by repair and remain visible to `codex-switch doctor` as active-profile
+materialization issues. This keeps uninstalled official plugins visible in the
+target profile without copying another profile's `plugins/` directory.
+`codex-switch doctor` still checks the active profile's plugin materialization
+state and reports this command if enabled plugins are missing, including after
+low-level
 `codex-switch switch <profile>` invocations that bypass the one-key
 post-switch flow. `codex-switch internal --help` and
 `codex-switch official --help` are pure help paths and do not run update,
 switch, plugin repair, doctor, or status steps.
+
+Profile-level plugin repair does not refresh project-local DevFlow/OpenSpec
+configuration, generated guidance, or skill links. Run project refresh
+separately from the target project when it is explicitly required.
 
 For legacy users who have always used the internal profile in `~/.codex`,
 `internal` can adopt that existing home:

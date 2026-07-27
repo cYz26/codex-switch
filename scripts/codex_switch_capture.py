@@ -3,11 +3,22 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from codex_switch_constants import MANAGED_FILES, SwitchError
-from codex_switch_io import copy_file_atomic, ensure_private_dir, now_stamp, write_json
-from codex_switch_paths import resolve_codex_bin, resolve_path
-from codex_switch_store import Store, make_store, validate_profile_name
-from codex_switch_toml_validate import validate_toml
+from codex_switch_constants import SwitchError
+from codex_switch_paths import (
+    resolve_codex_bin,
+    resolve_internal_codex_bin,
+    resolve_path,
+)
+from codex_switch_store import Store, make_store
+from codex_switch_runtime_binding import (
+    internal_managed_launcher_path,
+)
+from codex_switch_transaction import (
+    LockedStoreMutation,
+    TransactionReceipt,
+    TransactionRequest,
+    execute_transaction,
+)
 
 
 def capture_profile(
@@ -18,49 +29,38 @@ def capture_profile(
     app_cli_path: str,
     allow_missing_auth: bool,
     overwrite: bool,
-) -> None:
-    validate_profile_name(name)
-    store.ensure()
-    profile_dir = store.profile_dir(name)
-    if profile_dir.exists() and not overwrite and (profile_dir / "manifest.json").exists():
-        raise SwitchError(f"Profile already exists: {name}. Use --overwrite to replace files.")
-
-    ensure_private_dir(profile_dir)
-    copied: list[str] = []
-    if not (source_home / "config.toml").exists():
-        raise SwitchError(
-            f"Missing {source_home / 'config.toml'}; cannot capture a switchable profile."
-        )
-
-    for file_name in MANAGED_FILES:
-        src = source_home / file_name
-        dst = profile_dir / file_name
-        if src.exists():
-            copy_file_atomic(src, dst, mode=0o600)
-            copied.append(file_name)
-        elif file_name == "auth.json" and not allow_missing_auth:
-            raise SwitchError(
-                f"Missing {src}. Re-run with --allow-missing-auth when this profile has no auth yet."
-            )
-
-    config_path = profile_dir / "config.toml"
-    if config_path.exists():
-        validate_toml(config_path)
-
-    write_json(
-        profile_dir / "manifest.json",
-        {
-            "name": name,
-            "description": f"Captured from {source_home}",
+    locked_store: LockedStoreMutation | None = None,
+) -> TransactionReceipt:
+    if name == "internal":
+        codex_bin = resolve_internal_codex_bin(codex_bin)
+        app_cli_path = str(internal_managed_launcher_path(store))
+    request = TransactionRequest(
+        operation="capture",
+        profile=name,
+        options={
+            "source_home": source_home,
             "codex_bin": codex_bin,
-            "app_cli_path": app_cli_path or codex_bin,
-            "app_cli_binding": "launchagent",
-            "captured_at": now_stamp(),
-            "managed_files": list(MANAGED_FILES),
+            "app_cli_path": app_cli_path,
+            "allow_missing_auth": allow_missing_auth,
+            "overwrite": overwrite,
         },
     )
-    captured = ", ".join(copied) if copied else "manifest only"
-    print(f"Captured profile {name}: {captured}")
+    receipt = (
+        locked_store.execute_transaction(request)
+        if locked_store is not None
+        else execute_transaction(store, request)
+    )
+    if receipt.outcome != "committed":
+        outcome_lines = (
+            receipt.preview_lines[1:]
+            if len(receipt.preview_lines) > 1
+            else receipt.preview_lines
+        )
+        detail = "; ".join(outcome_lines) if outcome_lines else receipt.outcome
+        raise SwitchError(f"Capture transaction did not commit: {detail}")
+    for line in receipt.preview_lines:
+        print(line)
+    return receipt
 
 
 def cmd_capture(args: argparse.Namespace) -> None:

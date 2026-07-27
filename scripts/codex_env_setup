@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 DEFAULT_INTERNAL_BIN="$HOME/.local/bin/codex"
-DEFAULT_OFFICIAL_BIN="/Applications/Codex.app/Contents/Resources/codex"
+DEFAULT_OFFICIAL_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 DEFAULT_INSTALLER_URL="https://github.com/SDGLBL/codex/releases/latest/download/install.sh"
 DEFAULT_LATEST_URL="https://github.com/SDGLBL/codex/releases/latest"
 DEFAULT_MODEL="gpt-5.5-2026-04-24"
@@ -15,6 +17,8 @@ OFFICIAL_BIN="${CODEX_OFFICIAL_BIN:-$DEFAULT_OFFICIAL_BIN}"
 INSTALLER_URL="${CODEX_INSTALLER_URL:-$DEFAULT_INSTALLER_URL}"
 LATEST_URL="${CODEX_INTERNAL_LATEST_URL:-$DEFAULT_LATEST_URL}"
 INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR_EXPLICIT=0
+[[ -n "${CODEX_INSTALL_DIR+x}" ]] && INSTALL_DIR_EXPLICIT=1
 INSTALL_VERSION="${CODEX_INSTALL_VERSION:-}"
 INSTALL_MODEL="${CODEX_INSTALL_MODEL:-$DEFAULT_MODEL}"
 INSTALL_AZURE_BASE_URL="${CODEX_INSTALL_AZURE_BASE_URL:-$DEFAULT_AZURE_BASE_URL}"
@@ -22,6 +26,7 @@ INSTALL_PROXY_URL="${CODEX_INSTALL_PROXY_URL:-$DEFAULT_PROXY_URL}"
 SKIP_SOURCE_CHECK=0
 SKIP_PROXY=0
 DRY_RUN=0
+PYTHON_BIN="${CODEX_SWITCH_PYTHON:-python3}"
 
 usage() {
   cat <<'USAGE'
@@ -32,12 +37,12 @@ Usage:
 Commands:
   check-internal           Read-only check for the internal Codex CLI version.
   update-internal          Install or update the internal Codex CLI.
-  check-official           Read-only check for Codex.app bundled CLI.
-  desktop-guidance         Print Codex Desktop setup guidance.
+  check-official           Read-only check for ChatGPT.app bundled CLI.
+  desktop-guidance         Print ChatGPT Desktop setup guidance.
 
 Global options:
   --internal-bin <path>        Internal codex binary. Default: ~/.local/bin/codex.
-  --official-bin <path>        Official Codex.app binary.
+  --official-bin <path>        Official ChatGPT.app bundled Codex binary.
   --install-dir <path>         Internal install directory. Default: ~/.local/bin.
   --installer-url <url>        Internal install.sh URL.
   --latest-url <url>           Internal latest release URL.
@@ -76,35 +81,288 @@ latest_internal_tag() {
   printf '%s\n' "${location##*/}"
 }
 
-codex_install_target_exists() {
-  local target_path="$1"
-  [[ -e "$target_path" || -L "$target_path" ]]
+internal_update_decision() {
+  local current_version="$1"
+  local latest_version="$2"
+  "$PYTHON_BIN" -I -B -c '
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from codex_switch_update_policy import decide_internal_update
+
+decision = decide_internal_update(
+    current_version=sys.argv[2] or None,
+    latest_version=sys.argv[3] or None,
+)
+print(
+    "\t".join(
+        (
+            decision.outcome,
+            decision.target_version or "",
+            decision.reason,
+        )
+    )
+)
+' "$SCRIPT_DIR" "$current_version" "$latest_version"
 }
 
-codex_install_target_ready() {
-  local target_path="$1"
-  [[ -f "$target_path" && -x "$target_path" ]]
+strict_semantic_version_from_output() {
+  "$PYTHON_BIN" -I -B -c '
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from codex_switch_update_policy import extract_semantic_version
+
+version = extract_semantic_version(sys.stdin.read())
+if version is None:
+    raise SystemExit(1)
+print(version)
+' "$SCRIPT_DIR"
 }
 
-restore_codex_cli_backup() {
-  local target_path="$1"
-  local backup_path="$2"
-  local failed_target_path=""
+internal_install_version_is_valid() {
+  "$PYTHON_BIN" -I -B -c '
+import sys
 
-  if [[ -z "$backup_path" || ! ( -e "$backup_path" || -L "$backup_path" ) ]]; then
+sys.path.insert(0, sys.argv[1])
+from codex_switch_update_policy import parse_semantic_version
+
+value = sys.argv[2]
+raise SystemExit(
+    0
+    if value == value.strip() and parse_semantic_version(value) is not None
+    else 1
+)
+' "$SCRIPT_DIR" "$1"
+}
+
+validate_staged_candidate_request() {
+  "$PYTHON_BIN" -I -B - \
+    "$INTERNAL_BIN" \
+    "$INSTALL_DIR" \
+    "$INSTALL_DIR_EXPLICIT" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+
+def fail(detail: str) -> None:
+    print(
+        "Internal candidate directory must be a private sibling of the "
+        f"bound codex binary: {detail}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+bound = Path(os.path.expandvars(sys.argv[1])).expanduser()
+candidate = Path(os.path.expandvars(sys.argv[2])).expanduser()
+if sys.argv[3] != "1":
+    fail("an explicit --install-dir or CODEX_INSTALL_DIR is required")
+if not bound.is_absolute() or not candidate.is_absolute():
+    fail("bound and candidate paths must be absolute")
+if bound.name != "codex":
+    fail(f"bound binary basename must be codex: {bound}")
+try:
+    bound_state = os.lstat(bound)
+except OSError as error:
+    fail(f"bound binary is unavailable: {error}")
+if (
+    stat.S_ISLNK(bound_state.st_mode)
+    or not stat.S_ISREG(bound_state.st_mode)
+    or bound_state.st_mode & 0o111 == 0
+):
+    fail(f"bound binary must be a regular executable: {bound}")
+if not candidate.name.startswith(".codex-internal-update-"):
+    fail(
+        "candidate basename must start with .codex-internal-update-: "
+        f"{candidate}"
+    )
+if os.path.lexists(candidate):
+    fail(f"candidate path must not already exist: {candidate}")
+try:
+    bound_parent = bound.parent.resolve(strict=True)
+    candidate_parent = candidate.parent.resolve(strict=True)
+except OSError as error:
+    fail(f"candidate parent is unavailable: {error}")
+if candidate_parent != bound_parent:
+    fail(
+        f"candidate parent {candidate_parent} does not match bound parent "
+        f"{bound_parent}"
+    )
+print(candidate)
+PY
+}
+
+staged_candidate_directory_identity() {
+  "$PYTHON_BIN" -I -B - "$1" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    state = os.lstat(path)
+except OSError as error:
+    print(f"Internal candidate directory is unavailable: {error}", file=sys.stderr)
+    raise SystemExit(2)
+if (
+    stat.S_ISLNK(state.st_mode)
+    or not stat.S_ISDIR(state.st_mode)
+    or stat.S_IMODE(state.st_mode) != 0o700
+):
+    print(
+        f"Internal candidate directory is not a private mode-0700 directory: {path}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+print(f"{state.st_dev}:{state.st_ino}")
+PY
+}
+
+validate_staged_candidate_executable() {
+  "$PYTHON_BIN" -I -B - "$1" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    state = os.lstat(path)
+except OSError as error:
+    print(f"Internal candidate executable is unavailable: {error}", file=sys.stderr)
+    raise SystemExit(1)
+if (
+    stat.S_ISLNK(state.st_mode)
+    or not stat.S_ISREG(state.st_mode)
+    or state.st_mode & 0o111 == 0
+    or state.st_size <= 0
+):
+    print(
+        f"Internal candidate must be a non-empty regular executable: {path}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
+bound_binary_identity() {
+  "$PYTHON_BIN" -I -B - "$1" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+
+def fail(detail: str) -> None:
+    print(
+        f"Bound internal binary identity is unavailable: {detail}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def identity_fields(state: os.stat_result) -> tuple[int, ...]:
+    return (
+        state.st_dev,
+        state.st_ino,
+        state.st_mode,
+        state.st_size,
+        state.st_mtime_ns,
+        state.st_ctime_ns,
+    )
+
+
+path = Path(sys.argv[1])
+if not hasattr(os, "O_NOFOLLOW"):
+    fail("no-follow file open is unsupported")
+flags = os.O_RDONLY | os.O_NOFOLLOW
+if hasattr(os, "O_CLOEXEC"):
+    flags |= os.O_CLOEXEC
+try:
+    descriptor = os.open(path, flags)
+except OSError as error:
+    fail(f"{path}: {error}")
+try:
+    before = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_mode & 0o111 == 0
+        or before.st_size <= 0
+    ):
+        fail(f"{path} is not a non-empty regular executable")
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+    after = os.fstat(descriptor)
+    try:
+        linked = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        fail(f"{path}: {error}")
+    if (
+        identity_fields(before) != identity_fields(after)
+        or identity_fields(after) != identity_fields(linked)
+    ):
+        fail(f"{path} changed while its identity was read")
+    print(
+        json.dumps(
+            {
+                "ctime_ns": after.st_ctime_ns,
+                "device": after.st_dev,
+                "inode": after.st_ino,
+                "mode": after.st_mode,
+                "mtime_ns": after.st_mtime_ns,
+                "sha256": digest.hexdigest(),
+                "size": after.st_size,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+finally:
+    os.close(descriptor)
+PY
+}
+
+assert_bound_binary_identity() {
+  local expected_identity="$1"
+  local phase="$2"
+  local observed_identity status
+
+  if observed_identity="$(bound_binary_identity "$INTERNAL_BIN")"; then
+    true
+  else
+    status=$?
+    echo "Bound internal binary identity check failed $phase: $INTERNAL_BIN" >&2
+    return "$status"
+  fi
+  if [[ "$observed_identity" != "$expected_identity" ]]; then
+    echo "Bound internal binary changed $phase: $INTERNAL_BIN" >&2
     return 1
   fi
+}
 
-  if codex_install_target_exists "$target_path"; then
-    failed_target_path="${target_path}.failed-install.$(date +%Y%m%d%H%M%S).$$"
-    if mv "$target_path" "$failed_target_path"; then
-      echo "Failed install artifact kept: $failed_target_path" >&2
-    else
-      rm -f "$target_path" || return 1
-    fi
-  fi
-
-  mv "$backup_path" "$target_path"
+run_trusted_internal_installer() {
+  local install_ak="$1"
+  local status
+  set +e
+  curl -fsSL "$INSTALLER_URL" |
+    CODEX_INSTALL_DIR="$INSTALL_DIR" \
+    CODEX_INSTALL_MODEL="$INSTALL_MODEL" \
+    CODEX_INSTALL_AK="$install_ak" \
+    CODEX_INSTALL_AZURE_BASE_URL="$INSTALL_AZURE_BASE_URL" \
+    bash -s -- "$INSTALL_VERSION"
+  status=$?
+  set -e
+  return "$status"
 }
 
 check_internal() {
@@ -124,6 +382,7 @@ check_internal() {
   fi
 
   local tag latest_version current_version current
+  local decision_payload decision target_version decision_reason
   if ! tag="$(latest_internal_tag)"; then
     echo "Latest release: <unavailable from $LATEST_URL>"
     return 1
@@ -132,11 +391,28 @@ check_internal() {
   current="$("$INTERNAL_BIN" --version 2>/dev/null || true)"
   current_version="$(printf '%s\n' "$current" | extract_version)"
   echo "Latest release tag: ${tag:-<unknown>}"
-  if [[ -z "$current_version" || -z "$latest_version" || "$current_version" != "$latest_version" ]]; then
-    echo "Update: available or unable to compare versions"
-  else
-    echo "Update: not needed"
+  if ! decision_payload="$(
+    internal_update_decision "$current_version" "$latest_version"
+  )"; then
+    echo "Update: unable to compare versions (ordered policy unavailable)" >&2
+    return 1
   fi
+  IFS=$'\t' read -r decision target_version decision_reason <<<"$decision_payload"
+  case "$decision" in
+    upgrade)
+      echo "Update: available (ordered upgrade to $target_version)"
+      ;;
+    newer_current)
+      echo "Update: not needed (healthy current $current_version is newer than reported latest $latest_version)"
+      ;;
+    up_to_date)
+      echo "Update: not needed"
+      ;;
+    *)
+      echo "Update: unable to compare versions ($decision_reason)" >&2
+      return 1
+      ;;
+  esac
 }
 
 verify_lark_install_source() {
@@ -185,35 +461,68 @@ verify_lark_install_source() {
 }
 
 update_internal() {
-  local install_bin="$INSTALL_DIR/codex"
+  local install_bin
   local install_ak="${CODEX_INSTALL_AK:-${K_CODEX:-}}"
-  local backup_codex_path=""
+  local bound_identity candidate_identity observed_identity
+  local candidate_output candidate_version candidate_status
+  local installer_status codesign_status
+  local old_https_proxy="${https_proxy-}" old_http_proxy="${http_proxy-}"
+  local had_https_proxy=0 had_http_proxy=0
+
+  if [[ -z "$INSTALL_VERSION" ]]; then
+    echo "Internal staged update requires an explicit intended --version." >&2
+    return 2
+  fi
+  if ! internal_install_version_is_valid "$INSTALL_VERSION"; then
+    echo "Internal staged update version must be a semantic version: $INSTALL_VERSION" >&2
+    return 2
+  fi
+  if INSTALL_DIR="$(validate_staged_candidate_request)"; then
+    true
+  else
+    return $?
+  fi
+  install_bin="$INSTALL_DIR/codex"
 
   if [[ "$DRY_RUN" == 1 ]]; then
     echo "[DRY-RUN] would verify Lark install source: $TEAM_DOC_URL"
-    echo "[DRY-RUN] would install internal Codex CLI into: $INSTALL_DIR"
+    echo "[DRY-RUN] Target version: $INSTALL_VERSION"
+    echo "[DRY-RUN] Candidate path class: private sibling"
+    echo "[DRY-RUN] Candidate install directory: $INSTALL_DIR"
+    echo "[DRY-RUN] Bound binary remains unchanged: $INTERNAL_BIN"
     echo "[DRY-RUN] installer: $INSTALLER_URL"
     echo "[DRY-RUN] model: $INSTALL_MODEL"
     echo "[DRY-RUN] azure base URL: $INSTALL_AZURE_BASE_URL"
     echo "[DRY-RUN] CODEX_INSTALL_AK: <hidden>"
-    echo "[DRY-RUN] would move existing $install_bin to a temporary preinstall backup before running install.sh"
-    if [[ -n "$INSTALL_VERSION" ]]; then
-      echo "[DRY-RUN] pinned version: $INSTALL_VERSION"
-    fi
+    echo "[DRY-RUN] would create the candidate directory with mode 0700"
+    echo "[DRY-RUN] would code-sign the candidate before exact version validation"
     return
   fi
 
   if [[ -z "$install_ak" ]]; then
     echo "CODEX_INSTALL_AK or K_CODEX is required for internal Codex updates." >&2
-    exit 1
+    return 1
   fi
-
-  mkdir -p "$INSTALL_DIR"
 
   verify_lark_install_source
 
-  local old_https_proxy="${https_proxy-}" old_http_proxy="${http_proxy-}"
-  local had_https_proxy=0 had_http_proxy=0
+  if ! mkdir -m 700 "$INSTALL_DIR"; then
+    echo "Failed to create private internal candidate directory: $INSTALL_DIR" >&2
+    return 1
+  fi
+  chmod 700 "$INSTALL_DIR"
+  if candidate_identity="$(staged_candidate_directory_identity "$INSTALL_DIR")"; then
+    true
+  else
+    return $?
+  fi
+
+  if bound_identity="$(bound_binary_identity "$INTERNAL_BIN")"; then
+    true
+  else
+    return $?
+  fi
+
   if [[ -n "${https_proxy+x}" ]]; then
     had_https_proxy=1
   fi
@@ -225,38 +534,11 @@ update_internal() {
     export http_proxy="${http_proxy:-$INSTALL_PROXY_URL}"
   fi
 
-  echo "Updating internal Codex CLI via $INSTALLER_URL"
-  if codex_install_target_exists "$install_bin"; then
-    backup_codex_path="${install_bin}.preinstall.$(date +%Y%m%d%H%M%S).$$"
-    echo "Moving existing Codex CLI to temporary backup: $backup_codex_path"
-    if ! mv "$install_bin" "$backup_codex_path"; then
-      echo "Failed to move existing Codex CLI: $install_bin. Quit Codex App and running codex processes, then retry." >&2
-      exit 1
-    fi
-  fi
-
-  if [[ -n "$INSTALL_VERSION" ]]; then
-    if ! curl -fsSL "$INSTALLER_URL" |
-      CODEX_INSTALL_DIR="$INSTALL_DIR" \
-      CODEX_INSTALL_MODEL="$INSTALL_MODEL" \
-      CODEX_INSTALL_AK="$install_ak" \
-      CODEX_INSTALL_AZURE_BASE_URL="$INSTALL_AZURE_BASE_URL" \
-      bash -s -- "$INSTALL_VERSION"; then
-      restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
-      echo "Codex install.sh failed; restored previous binary when possible." >&2
-      exit 1
-    fi
+  echo "Staging internal Codex CLI via $INSTALLER_URL"
+  if run_trusted_internal_installer "$install_ak"; then
+    installer_status=0
   else
-    if ! curl -fsSL "$INSTALLER_URL" |
-      CODEX_INSTALL_DIR="$INSTALL_DIR" \
-      CODEX_INSTALL_MODEL="$INSTALL_MODEL" \
-      CODEX_INSTALL_AK="$install_ak" \
-      CODEX_INSTALL_AZURE_BASE_URL="$INSTALL_AZURE_BASE_URL" \
-      bash -s; then
-      restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
-      echo "Codex install.sh failed; restored previous binary when possible." >&2
-      exit 1
-    fi
+    installer_status=$?
   fi
 
   if [[ $had_https_proxy -eq 1 ]]; then
@@ -270,36 +552,92 @@ update_internal() {
     unset http_proxy
   fi
 
-  if ! codex_install_target_ready "$install_bin"; then
-    restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
-    echo "Codex install.sh succeeded but did not produce an executable: $install_bin" >&2
-    exit 1
+  if assert_bound_binary_identity "$bound_identity" "during candidate install"; then
+    true
+  else
+    return $?
   fi
-  if ! "$install_bin" --version >/dev/null 2>&1; then
-    restore_codex_cli_backup "$install_bin" "$backup_codex_path" || true
-    echo "Installed Codex CLI cannot execute --version: $install_bin" >&2
-    exit 1
-  fi
-  if [[ -n "$backup_codex_path" && ( -e "$backup_codex_path" || -L "$backup_codex_path" ) ]]; then
-    rm -f "$backup_codex_path" || echo "Failed to remove old Codex CLI backup: $backup_codex_path" >&2
+  if [[ "$installer_status" != 0 ]]; then
+    echo "Codex install.sh failed with exit $installer_status; bound binary was not modified." >&2
+    return "$installer_status"
   fi
 
-  if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1 && [[ -x "$install_bin" ]]; then
-    codesign --force --sign - "$install_bin" >/dev/null
+  if observed_identity="$(staged_candidate_directory_identity "$INSTALL_DIR")"; then
+    true
+  else
+    return $?
   fi
-  echo "Internal Codex after update: $("$install_bin" --version 2>/dev/null || true)"
-  echo "If this binary should back the internal profile, run:"
-  echo "  codex-switch set-bin internal \"$install_bin\""
+  if [[ "$observed_identity" != "$candidate_identity" ]]; then
+    echo "Internal candidate directory identity changed during install: $INSTALL_DIR" >&2
+    return 1
+  fi
+  validate_staged_candidate_executable "$install_bin"
+
+  codesign_status=0
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1 && [[ -x "$install_bin" ]]; then
+    if codesign --force --sign - "$install_bin" >/dev/null; then
+      true
+    else
+      codesign_status=$?
+    fi
+  fi
+  if assert_bound_binary_identity "$bound_identity" "during candidate code-sign"; then
+    true
+  else
+    return $?
+  fi
+  if [[ "$codesign_status" != 0 ]]; then
+    echo "Internal candidate code-sign failed with exit $codesign_status: $install_bin" >&2
+    return "$codesign_status"
+  fi
+  if observed_identity="$(staged_candidate_directory_identity "$INSTALL_DIR")"; then
+    true
+  else
+    return $?
+  fi
+  if [[ "$observed_identity" != "$candidate_identity" ]]; then
+    echo "Internal candidate directory identity changed before validation: $INSTALL_DIR" >&2
+    return 1
+  fi
+  validate_staged_candidate_executable "$install_bin"
+
+  if candidate_output="$("$install_bin" --version 2>&1)"; then
+    candidate_status=0
+  else
+    candidate_status=$?
+  fi
+  if assert_bound_binary_identity "$bound_identity" "during candidate version probe"; then
+    true
+  else
+    return $?
+  fi
+  if [[ "$candidate_status" != 0 ]]; then
+    echo "Internal candidate version probe failed with exit $candidate_status: $install_bin" >&2
+    return "$candidate_status"
+  fi
+  if candidate_version="$(
+    printf '%s\n' "$candidate_output" | strict_semantic_version_from_output
+  )"; then
+    true
+  else
+    candidate_version=""
+  fi
+  if [[ "$candidate_version" != "$INSTALL_VERSION" ]]; then
+    echo "Internal candidate version mismatch: expected $INSTALL_VERSION but observed ${candidate_version:-<unparseable>}." >&2
+    return 1
+  fi
+  echo "Internal Codex candidate ready: $install_bin"
+  echo "Bound internal Codex remains unchanged: $INTERNAL_BIN"
 }
 
 check_official() {
-  echo "Official Codex.app binary: $OFFICIAL_BIN"
+  echo "Official ChatGPT.app Codex binary: $OFFICIAL_BIN"
   if [[ ! -x "$OFFICIAL_BIN" ]]; then
     echo "Current: <missing or not executable>"
     return 1
   fi
   echo "Current: $("$OFFICIAL_BIN" --version 2>/dev/null || echo "<unavailable>")"
-  echo "Update: managed by Codex Desktop / Codex.app."
+  echo "Update: managed by ChatGPT.app."
 }
 
 desktop_guidance() {
@@ -320,12 +658,12 @@ desktop_guidance() {
   fi
   cat <<'GUIDANCE'
 
-Codex Desktop guidance:
+ChatGPT Desktop guidance:
 - Install or update the Codex CLI first.
-- Codex Desktop App still requires OpenAI account login.
-- Do not modify /Applications/Codex.app manually.
+- ChatGPT still requires OpenAI account login.
+- Do not modify /Applications/ChatGPT.app manually.
 - Use codex-switch set-app-bin <profile> <path> to persist CODEX_CLI_PATH.
-- Restart Codex Desktop after changing CODEX_CLI_PATH.
+- Restart ChatGPT after changing CODEX_CLI_PATH.
 - Remote connection setup is out of scope unless explicitly requested.
 GUIDANCE
 }
@@ -350,6 +688,7 @@ parse_common_option() {
     --install-dir)
       [[ $# -ge 2 ]] || { echo "--install-dir requires a value" >&2; exit 2; }
       INSTALL_DIR="$(expand_shell_path "$2")"
+      INSTALL_DIR_EXPLICIT=1
       return 2
       ;;
     --installer-url)

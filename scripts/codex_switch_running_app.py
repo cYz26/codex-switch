@@ -1,21 +1,58 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Sequence
 
 from codex_switch_constants import APP_CLI_ENV, DEFAULT_LAUNCH_AGENT_LABEL
 from codex_switch_io import run_quiet
 from codex_switch_paths import equivalent_paths
+from codex_switch_runtime_binding import (
+    DesktopInventory,
+    RuntimeBinding,
+    RuntimeObservation,
+    attest_runtime_binding,
+    discover_desktop_hosts,
+)
 from codex_switch_store import Store
 
 
-DESKTOP_APP_MARKER = "/Applications/Codex.app/Contents/MacOS/Codex"
 APP_PROXY_MARKER = "codex_switch_app_proxy.py"
 LISTEN_ARG = "--listen"
 PRIMARY_APP_SERVER_ARG = "--analytics-default-enabled"
-APP_SERVER_COMMAND = re.compile(
-    r"^(?P<command>(?:\S*/)?codex(?:-[^\s/]*)?)\s+app-server(?:\s|$)"
+GLOBAL_OPTIONS_WITH_VALUE = frozenset(
+    {
+        "-a",
+        "--ask-for-approval",
+        "-C",
+        "--cd",
+        "-c",
+        "--config",
+        "--disable",
+        "--enable",
+        "-i",
+        "--image",
+        "--local-provider",
+        "-m",
+        "--model",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "--add-dir",
+    }
+)
+GLOBAL_FLAG_OPTIONS = frozenset(
+    {
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--full-auto",
+        "--no-alt-screen",
+        "--oss",
+        "--search",
+    }
 )
 
 
@@ -27,6 +64,7 @@ class RunningCodexProcess:
     app_cli_env: str
     ppid: int = 0
     parent_command: str = ""
+    host_kind: str = ""
 
 
 def is_default_desktop_context(store: Store) -> bool:
@@ -71,11 +109,46 @@ def parse_env_app_cli_path(output: str) -> str:
     return match.group(1) if match else ""
 
 
+def argv_invokes_app_server(args: Sequence[str]) -> bool:
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "app-server":
+            return True
+        if token == "--":
+            return False
+        if token in GLOBAL_FLAG_OPTIONS:
+            index += 1
+            continue
+        if token in GLOBAL_OPTIONS_WITH_VALUE:
+            if index + 1 >= len(args):
+                return False
+            index += 2
+            continue
+        if token.startswith("--") and "=" in token:
+            option = token.split("=", 1)[0]
+            if option in GLOBAL_OPTIONS_WITH_VALUE:
+                index += 1
+                continue
+        if token.startswith("-c") and token != "-c":
+            index += 1
+            continue
+        return False
+    return False
+
+
 def app_server_command_path(args: str) -> str:
-    match = APP_SERVER_COMMAND.search(args)
-    if not match:
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
         return ""
-    return match.group("command")
+    if len(tokens) < 2:
+        return ""
+    command = tokens[0]
+    command_name = Path(command).name
+    if command_name != "codex" and not command_name.startswith("codex-"):
+        return ""
+    return command if argv_invokes_app_server(tokens[1:]) else ""
 
 
 def process_app_cli_env(pid: int) -> str:
@@ -85,24 +158,61 @@ def process_app_cli_env(pid: int) -> str:
     return parse_env_app_cli_path(output)
 
 
-def running_codex_processes() -> list[RunningCodexProcess]:
-    code, output = run_quiet(["/bin/ps", "-axo", "pid=,ppid=,args="])
-    if code != 0:
-        return []
+def _first_command_token(args: str) -> str:
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        return ""
+    return tokens[0] if tokens else ""
+
+
+def _desktop_host_for_command(
+    args: str,
+    inventory: DesktopInventory,
+) -> tuple[str, str]:
+    command = _first_command_token(args)
+    if not command:
+        return ("", "")
+    hosts = []
+    if inventory.current is not None:
+        hosts.append(inventory.current)
+    hosts.extend(inventory.legacy)
+    for host in hosts:
+        if equivalent_paths(command, str(host.main_executable)):
+            return (str(host.main_executable), host.kind)
+    return ("", "")
+
+
+def running_codex_processes(
+    inventory: DesktopInventory | None = None,
+    process_output: str | None = None,
+    env_reader: Callable[[int], str] | None = None,
+) -> list[RunningCodexProcess]:
+    if inventory is None:
+        inventory = discover_desktop_hosts()
+    if process_output is None:
+        code, output = run_quiet(["/bin/ps", "-axo", "pid=,ppid=,args="])
+        if code != 0:
+            return []
+    else:
+        output = process_output
+    read_env = env_reader or process_app_cli_env
 
     observations: list[RunningCodexProcess] = []
     processes = parse_ps_process_tree(output)
     command_by_pid = {pid: args for pid, _ppid, args in processes}
     for pid, ppid, args in processes:
-        if DESKTOP_APP_MARKER in args:
+        desktop_path, host_kind = _desktop_host_for_command(args, inventory)
+        if desktop_path:
             observations.append(
                 RunningCodexProcess(
                     pid=pid,
                     kind="desktop",
-                    command_path=DESKTOP_APP_MARKER,
-                    app_cli_env=process_app_cli_env(pid),
+                    command_path=desktop_path,
+                    app_cli_env=read_env(pid),
                     ppid=ppid,
                     parent_command=command_by_pid.get(ppid, ""),
+                    host_kind=host_kind,
                 )
             )
             continue
@@ -110,19 +220,91 @@ def running_codex_processes() -> list[RunningCodexProcess]:
         command_path = app_server_command_path(args)
         if not command_path:
             continue
-        if LISTEN_ARG in args and PRIMARY_APP_SERVER_ARG not in args:
+        try:
+            parsed_args = shlex.split(args)
+        except ValueError:
+            continue
+        if LISTEN_ARG in parsed_args and PRIMARY_APP_SERVER_ARG not in parsed_args:
             continue
         observations.append(
             RunningCodexProcess(
                 pid=pid,
                 kind="app-server",
                 command_path=command_path,
-                app_cli_env=process_app_cli_env(pid),
+                app_cli_env=read_env(pid),
                 ppid=ppid,
                 parent_command=command_by_pid.get(ppid, ""),
             )
         )
     return observations
+
+
+def managed_launcher_fingerprint(path: Path) -> str:
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return ""
+    return hashlib.sha256(payload).hexdigest()
+
+
+def collect_runtime_observation(
+    *,
+    inventory: DesktopInventory | None = None,
+    process_output: str | None = None,
+    env_reader: Callable[[int], str] | None = None,
+    gui_app_cli: str = "",
+    launch_agent_cli: str = "",
+    managed_launcher: Path | None = None,
+) -> RuntimeObservation:
+    observed_inventory = inventory or discover_desktop_hosts()
+    return RuntimeObservation(
+        processes=tuple(
+            running_codex_processes(
+                inventory=observed_inventory,
+                process_output=process_output,
+                env_reader=env_reader,
+            )
+        ),
+        gui_app_cli=gui_app_cli,
+        launch_agent_cli=launch_agent_cli,
+        managed_launcher_fingerprint=(
+            managed_launcher_fingerprint(managed_launcher)
+            if managed_launcher is not None
+            else ""
+        ),
+    )
+
+
+def collect_store_runtime_observation(
+    store: Store,
+    binding: RuntimeBinding | None = None,
+) -> RuntimeObservation:
+    from codex_switch_launch import read_launch_agent_cli_path
+    from codex_switch_paths import detect_current_app_cli_path
+
+    default_context = is_default_desktop_context(store)
+    managed_launcher = (
+        binding.desktop_cli
+        if binding is not None and binding.requires_proxy
+        else None
+    )
+    return collect_runtime_observation(
+        process_output=None if default_context else "",
+        gui_app_cli=detect_current_app_cli_path() if default_context else "",
+        launch_agent_cli=read_launch_agent_cli_path(store.launch_agent_path),
+        managed_launcher=managed_launcher,
+    )
+
+
+def attestation_problem_messages(
+    binding: RuntimeBinding,
+    observation: RuntimeObservation,
+) -> list[str]:
+    return [
+        f"{finding.code}: {finding.message}"
+        for finding in attest_runtime_binding(binding, observation).findings
+        if finding.severity in {"error", "warning"}
+    ]
 
 
 def app_server_matches_expected_cli(process: RunningCodexProcess, expected_app_cli: str) -> bool:
@@ -143,6 +325,7 @@ def running_desktop_problems(
     expected_app_cli: str,
     observations: list[RunningCodexProcess] | None = None,
     enforce_default_context: bool = True,
+    runtime_observation: RuntimeObservation | None = None,
 ) -> list[str]:
     if not expected_app_cli:
         return []
@@ -150,34 +333,49 @@ def running_desktop_problems(
         return []
 
     problems: list[str] = []
-    for process in observations if observations is not None else running_codex_processes():
+    if runtime_observation is not None:
+        selected_observations = runtime_observation.processes
+    elif observations is not None:
+        selected_observations = observations
+    else:
+        selected_observations = running_codex_processes()
+    for process in selected_observations:
         if process.kind == "desktop":
             observed = process.app_cli_env
             if observed and not equivalent_paths(observed, expected_app_cli):
                 problems.append(
-                    f"running Codex Desktop pid {process.pid} has {APP_CLI_ENV}="
+                    f"running ChatGPT pid {process.pid} has {APP_CLI_ENV}="
                     f"{observed}, but active profile {active_profile} expects "
-                    f"{expected_app_cli}; quit Codex Desktop completely and reopen it"
+                    f"{expected_app_cli}; quit ChatGPT completely and reopen it"
                 )
         elif process.kind == "app-server":
             if not app_server_matches_expected_cli(process, expected_app_cli):
                 problems.append(
                     f"running Codex app-server pid {process.pid} uses "
                     f"{process.command_path}, but active profile {active_profile} "
-                    f"expects {expected_app_cli}; quit Codex Desktop completely "
+                    f"expects {expected_app_cli}; quit ChatGPT completely "
                     "and reopen it"
                 )
     return problems
 
 
-def print_running_desktop_status(store: Store, expected_app_cli: str) -> None:
-    if not is_default_desktop_context(store):
+def print_running_desktop_status(
+    store: Store,
+    expected_app_cli: str,
+    runtime_observation: RuntimeObservation | None = None,
+    enforce_default_context: bool = True,
+) -> None:
+    if enforce_default_context and not is_default_desktop_context(store):
         return
-    observations = running_codex_processes()
+    observations = (
+        runtime_observation.processes
+        if runtime_observation is not None
+        else running_codex_processes()
+    )
     for process in observations:
         if process.kind == "desktop":
             line = (
-                f"Running Codex Desktop pid {process.pid} {APP_CLI_ENV}: "
+                f"Running ChatGPT pid {process.pid} {APP_CLI_ENV}: "
                 f"{process.app_cli_env or '<unset>'}"
             )
             if (

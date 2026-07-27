@@ -1,16 +1,26 @@
 from __future__ import annotations
 
-import copy
+import hashlib
 import json
 import os
 import re
+import select
+import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
-from codex_switch_config import merge_missing_shared_config_defaults, string_assignment_value
+from codex_switch_config import string_assignment_value
 from codex_switch_io import atomic_write
+from codex_switch_protocol_adapter import (
+    BackendCapabilities,
+    CapabilityReceipt,
+    PendingRequestTracker,
+    ProtocolAdapter,
+)
+from codex_switch_running_app import argv_invokes_app_server
 from codex_switch_toml_edit import top_level_assignment
 
 
@@ -18,15 +28,18 @@ DATE_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 CODEX_CLI_VERSION = re.compile(r"\bcodex-cli\s+(\d+)\.(\d+)\.(\d+)")
 MIN_CANONICAL_DYNAMIC_TOOLS_VERSION = (0, 141, 0)
 CONFIG_WRITE_METHODS = {"config/value/write", "config/batchWrite"}
-MODEL_VALUE_KEYS = {
-    "model",
-    "latestModel",
-    "previousTurnModel",
-    "userSavedModelString",
-}
-UNSUPPORTED_OLDER_BACKEND_PLUGIN_MARKETPLACE_KINDS = {
-    "created-by-me-remote",
-}
+ORIGINAL_PYTHONPATH = "CODEX_SWITCH_PROXY_ORIGINAL_PYTHONPATH"
+PYTHONPATH_WAS_SET = "CODEX_SWITCH_PROXY_PYTHONPATH_WAS_SET"
+CAPABILITY_RECEIPT_ENV = "CODEX_SWITCH_CAPABILITY_RECEIPT"
+EXPECTED_SCHEMA_SHA256_ENV = "CODEX_SWITCH_EXPECTED_SCHEMA_SHA256"
+EXPECTED_RECEIPT_SHA256_ENV = "CODEX_SWITCH_EXPECTED_RECEIPT_SHA256"
+CONFIG_WRITE_UNPROVEN_ERROR_CODE = -32096
+CONFIG_WRITE_UNPROVEN_ERROR_MESSAGE = (
+    "codex-switch: config write blocked because backend capability receipt "
+    "is not proven"
+)
+BACKEND_STREAM_DRAIN_TIMEOUT_SECONDS = 2.0
+CLIENT_INPUT_POLL_SECONDS = 0.05
 
 
 def desktop_alias_for_model(model: str) -> str:
@@ -58,7 +71,24 @@ def codex_version_supports_canonical_dynamic_tools(version_text: str) -> bool:
     return version >= MIN_CANONICAL_DYNAMIC_TOOLS_VERSION
 
 
-def backend_supports_canonical_dynamic_tools(codex_bin: str) -> bool:
+def protocol_capabilities_for_version(
+    version_text: str,
+) -> BackendCapabilities:
+    match = CODEX_CLI_VERSION.search(version_text)
+    if not match:
+        return BackendCapabilities(None, None, None)
+    version = tuple(int(part) for part in match.groups())
+    supports_modern_protocol = version >= MIN_CANONICAL_DYNAMIC_TOOLS_VERSION
+    return BackendCapabilities(
+        canonical_dynamic_tools=supports_modern_protocol,
+        remote_marketplace_kind=(
+            False if not supports_modern_protocol else None
+        ),
+        versioned_config_write_preserves_unrelated=None,
+    )
+
+
+def backend_protocol_capabilities(codex_bin: str) -> BackendCapabilities:
     try:
         result = subprocess.run(
             [codex_bin, "--version"],
@@ -68,193 +98,104 @@ def backend_supports_canonical_dynamic_tools(codex_bin: str) -> bool:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
-    return codex_version_supports_canonical_dynamic_tools(
+        return BackendCapabilities(None, None, None)
+    return protocol_capabilities_for_version(
         f"{result.stdout}\n{result.stderr}"
     )
 
 
-def message_id(message: dict) -> str | int | None:
-    value = message.get("id")
-    if isinstance(value, (str, int)):
-        return value
-    return None
+def _valid_sha256(value: str) -> bool:
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
-def config_write_target_path(message: dict, default_config_path: Path) -> Path:
-    params = message.get("params")
-    if isinstance(params, dict):
-        file_path = params.get("filePath")
-        if isinstance(file_path, str) and file_path:
-            return Path(file_path)
-    return default_config_path
-
-
-def remember_config_write_request(
-    message: dict,
-    default_config_path: Path,
-    pending_config_writes: dict[str | int, tuple[Path, str]],
-) -> None:
-    if message.get("method") not in CONFIG_WRITE_METHODS:
-        return
-    request_id = message_id(message)
-    if request_id is None:
-        return
-    target_path = config_write_target_path(message, default_config_path)
-    if not target_path.exists():
-        return
+def _read_regular_file(path: Path) -> bytes | None:
     try:
-        defaults_text = target_path.read_text()
-    except OSError as exc:
-        print(
-            f"codex-switch app proxy: unable to snapshot config write target "
-            f"{target_path}: {exc}",
-            file=sys.stderr,
-        )
-        return
-    pending_config_writes[request_id] = (target_path, defaults_text)
-
-
-def restore_config_write_response(
-    message: dict,
-    pending_config_writes: dict[str | int, tuple[Path, str]],
-) -> None:
-    request_id = message_id(message)
-    if request_id is None:
-        return
-    pending = pending_config_writes.pop(request_id, None)
-    if pending is None or "error" in message:
-        return
-    target_path, defaults_text = pending
-    if not target_path.exists():
-        return
+        before = path.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        return None
     try:
-        current_text = target_path.read_text()
-        restored_text = merge_missing_shared_config_defaults(current_text, defaults_text)
-    except Exception as exc:
-        print(
-            f"codex-switch app proxy: unable to restore config write target "
-            f"{target_path}: {exc}",
-            file=sys.stderr,
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
         )
-        return
-    if restored_text == current_text:
-        return
-    mode = target_path.stat().st_mode & 0o777
-    atomic_write(target_path, restored_text.encode(), mode=mode)
-
-
-def replace_model_value(value, *, old: str, new: str):
-    if isinstance(value, dict):
-        replaced = {}
-        key_name = value.get("key")
-        path_name = value.get("path")
-        for key, item in value.items():
-            if key in MODEL_VALUE_KEYS and item == old:
-                replaced[key] = new
-            elif (
-                key == "value"
-                and item == old
-                and (key_name in MODEL_VALUE_KEYS or path_name in MODEL_VALUE_KEYS)
-            ):
-                replaced[key] = new
-            else:
-                replaced[key] = replace_model_value(item, old=old, new=new)
-        return replaced
-    if isinstance(value, list):
-        return [replace_model_value(item, old=old, new=new) for item in value]
-    return value
-
-
-def older_backend_function_dynamic_tool_spec(tool: dict, *, namespace: str | None = None) -> dict:
-    spec = {}
-    if namespace is not None:
-        spec["namespace"] = namespace
-    for key in ("type", "name", "description", "inputSchema", "deferLoading"):
-        if key in tool:
-            spec[key] = normalize_desktop_request_for_older_backend(tool[key])
-    return spec
-
-
-def flatten_namespace_dynamic_tool_spec(spec: dict) -> list[dict] | None:
-    if spec.get("type") != "namespace":
+    except OSError:
         return None
-    namespace = spec.get("name")
-    tools = spec.get("tools")
-    if not isinstance(namespace, str) or not isinstance(tools, list):
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+        ):
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 65536:
+                return None
+            chunks.append(chunk)
+        try:
+            after = path.lstat()
+        except OSError:
+            return None
+        if after.st_dev != opened.st_dev or after.st_ino != opened.st_ino:
+            return None
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _load_capability_receipt(
+    path: Path,
+    expected_sha256: str,
+) -> CapabilityReceipt | None:
+    if not _valid_sha256(expected_sha256):
         return None
-    flattened = []
-    for tool in tools:
-        if isinstance(tool, dict):
-            flattened.append(older_backend_function_dynamic_tool_spec(tool, namespace=namespace))
-        else:
-            flattened.append(normalize_desktop_request_for_older_backend(tool))
-    return flattened
+    payload = _read_regular_file(path)
+    if payload is None or hashlib.sha256(payload).hexdigest() != expected_sha256:
+        return None
+    try:
+        return CapabilityReceipt.from_dict(json.loads(payload))
+    except (json.JSONDecodeError, UnicodeDecodeError, RuntimeError):
+        return None
 
 
-def normalize_desktop_request_for_older_backend(value):
-    if isinstance(value, list):
-        normalized = []
-        for item in value:
-            flattened = flatten_namespace_dynamic_tool_spec(item) if isinstance(item, dict) else None
-            if flattened is None:
-                normalized.append(normalize_desktop_request_for_older_backend(item))
-            else:
-                normalized.extend(flattened)
-        return normalized
-    if isinstance(value, dict):
-        return {
-            key: normalize_desktop_request_for_older_backend(item)
-            for key, item in value.items()
-        }
-    return value
-
-
-def filter_plugin_list_marketplace_kinds_for_older_backend(message: dict) -> dict:
-    if message.get("method") != "plugin/list":
-        return message
-    params = message.get("params")
-    if not isinstance(params, dict):
-        return message
-    kinds = params.get("marketplaceKinds")
-    if not isinstance(kinds, list):
-        return message
-    params["marketplaceKinds"] = [
-        kind
-        for kind in kinds
-        if kind not in UNSUPPORTED_OLDER_BACKEND_PLUGIN_MARKETPLACE_KINDS
-    ]
-    return message
-
-
-def mask_model_list_response(message: dict, *, actual_model: str, desktop_model: str) -> dict:
-    masked = copy.deepcopy(message)
-    result = masked.get("result")
-    if not isinstance(result, dict):
-        return masked
-    for key in ("data", "models"):
-        models = result.get(key)
-        if not isinstance(models, list):
-            continue
-        for model in models:
-            if not isinstance(model, dict):
-                continue
-            if model.get("model") == actual_model:
-                model["model"] = desktop_model
-            if model.get("id") == actual_model:
-                model["id"] = desktop_model
-    return masked
-
-
-def mask_config_read_response(message: dict, *, actual_model: str, desktop_model: str) -> dict:
-    masked = copy.deepcopy(message)
-    result = masked.get("result")
-    if not isinstance(result, dict):
-        return masked
-    config = result.get("config")
-    if isinstance(config, dict) and config.get("model") == actual_model:
-        config["model"] = desktop_model
-    return masked
+def proxy_capabilities(
+    codex_bin: str,
+) -> tuple[BackendCapabilities, bool]:
+    fallback = backend_protocol_capabilities(codex_bin)
+    raw_path = os.environ.get(CAPABILITY_RECEIPT_ENV, "")
+    expected_schema = os.environ.get(EXPECTED_SCHEMA_SHA256_ENV, "")
+    expected_receipt = os.environ.get(EXPECTED_RECEIPT_SHA256_ENV, "")
+    if not raw_path or not expected_schema or not expected_receipt:
+        return fallback, False
+    receipt = _load_capability_receipt(
+        Path(raw_path).expanduser(),
+        expected_receipt,
+    )
+    backend_path = Path(codex_bin).expanduser()
+    if (
+        receipt is None
+        or not receipt.matches_backend_and_schema_digest(
+            backend_path,
+            expected_schema,
+        )
+    ):
+        return fallback, False
+    return (
+        receipt.capabilities,
+        receipt.schema_version == 2
+        and receipt.capabilities.versioned_config_write_preserves_unrelated
+        is True,
+    )
 
 
 def mask_backend_message_for_desktop(
@@ -264,20 +205,15 @@ def mask_backend_message_for_desktop(
     actual_model: str,
     desktop_model: str,
 ) -> dict:
-    masked = message
-    if method == "model/list":
-        masked = mask_model_list_response(
-            message,
-            actual_model=actual_model,
-            desktop_model=desktop_model,
-        )
-    elif method == "config/read":
-        masked = mask_config_read_response(
-            message,
-            actual_model=actual_model,
-            desktop_model=desktop_model,
-        )
-    return replace_model_value(masked, old=actual_model, new=desktop_model)
+    adapter = ProtocolAdapter(
+        actual_model=actual_model,
+        desktop_model=desktop_model,
+        capabilities=BackendCapabilities(None, None, None),
+    )
+    return adapter.server_message(
+        message,
+        pending_method=method,
+    ).message
 
 
 def translate_desktop_message_for_backend(
@@ -286,162 +222,310 @@ def translate_desktop_message_for_backend(
     actual_model: str,
     desktop_model: str,
     supports_canonical_dynamic_tools: bool = False,
+    supports_remote_marketplace_kind: bool | None = None,
 ) -> dict:
-    translated = replace_model_value(message, old=desktop_model, new=actual_model)
-    if not supports_canonical_dynamic_tools:
-        translated = normalize_desktop_request_for_older_backend(translated)
-    if isinstance(translated, dict):
-        translated = filter_plugin_list_marketplace_kinds_for_older_backend(translated)
-    return translated
+    if supports_remote_marketplace_kind is None:
+        supports_remote_marketplace_kind = supports_canonical_dynamic_tools
+    adapter = ProtocolAdapter(
+        actual_model=actual_model,
+        desktop_model=desktop_model,
+        capabilities=BackendCapabilities(
+            canonical_dynamic_tools=supports_canonical_dynamic_tools,
+            remote_marketplace_kind=supports_remote_marketplace_kind,
+            versioned_config_write_preserves_unrelated=None,
+        ),
+    )
+    return adapter.client_request(message).message
 
 
-def write_json_line(stream, message: dict) -> None:
-    stream.write(json.dumps(message, separators=(",", ":")) + "\n")
-    stream.flush()
+def adapt_client_json_line(
+    line: str | bytes,
+    adapter: ProtocolAdapter,
+    tracker: PendingRequestTracker,
+) -> tuple[str | bytes, dict | None]:
+    try:
+        message = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return line, None
+    if not isinstance(message, dict):
+        return line, None
+    tracker.observe_client(message)
+    result = adapter.client_request(message)
+    if not result.changed:
+        return line, message
+    output = json.dumps(result.message, separators=(",", ":")) + "\n"
+    return (output.encode() if isinstance(line, bytes) else output, message)
+
+
+def adapt_backend_json_line(
+    line: str | bytes,
+    adapter: ProtocolAdapter,
+    tracker: PendingRequestTracker,
+) -> tuple[str | bytes, dict | None, str | None]:
+    try:
+        message = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return line, None, None
+    if not isinstance(message, dict):
+        return line, None, None
+    pending_method = tracker.consume_backend_response(message)
+    result = adapter.server_message(
+        message,
+        pending_method=pending_method,
+    )
+    if not result.changed:
+        return line, message, pending_method
+    output = json.dumps(result.message, separators=(",", ":")) + "\n"
+    return (
+        output.encode() if isinstance(line, bytes) else output,
+        message,
+        pending_method,
+    )
+
+
+def _config_write_rejection(message: dict) -> bytes:
+    request_id = message.get("id")
+    if not (type(request_id) is int or isinstance(request_id, str)):
+        request_id = None
+    return (
+        json.dumps(
+            {
+                "id": request_id,
+                "error": {
+                    "code": CONFIG_WRITE_UNPROVEN_ERROR_CODE,
+                    "message": CONFIG_WRITE_UNPROVEN_ERROR_MESSAGE,
+                },
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
+
+
+def _write_client_output(
+    payload: bytes,
+    output_lock: threading.Lock,
+) -> None:
+    with output_lock:
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
 
 
 def forward_client_to_backend(
-    backend: subprocess.Popen[str],
-    pending_methods: dict[str | int, str],
-    pending_config_writes: dict[str | int, tuple[Path, str]],
-    config_path: Path,
-    actual_model: str,
-    desktop_model: str,
-    supports_canonical_dynamic_tools: bool,
+    backend: subprocess.Popen[bytes],
+    adapter: ProtocolAdapter,
+    tracker: PendingRequestTracker,
+    config_write_proven: bool,
+    output_lock: threading.Lock,
+    stop_event: threading.Event,
 ) -> None:
     assert backend.stdin is not None
+    input_fd = sys.stdin.fileno()
+    buffered = bytearray()
     try:
-        for line in sys.stdin:
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                backend.stdin.write(line)
-                backend.stdin.flush()
+        while not stop_event.is_set():
+            readable, _, _ = select.select(
+                [input_fd],
+                [],
+                [],
+                CLIENT_INPUT_POLL_SECONDS,
+            )
+            if not readable:
                 continue
-            if isinstance(message, dict):
-                request_id = message_id(message)
-                method = message.get("method")
-                if request_id is not None and isinstance(method, str):
-                    pending_methods[request_id] = method
-                remember_config_write_request(
-                    message,
-                    config_path,
-                    pending_config_writes,
-                )
-                message = translate_desktop_message_for_backend(
-                    message,
-                    actual_model=actual_model,
-                    desktop_model=desktop_model,
-                    supports_canonical_dynamic_tools=supports_canonical_dynamic_tools,
-                )
-                write_json_line(backend.stdin, message)
+            chunk = os.read(input_fd, 64 * 1024)
+            if not chunk:
+                if buffered:
+                    lines = (bytes(buffered),)
+                    buffered.clear()
+                else:
+                    lines = tuple()
+                reached_eof = True
             else:
-                backend.stdin.write(line)
+                buffered.extend(chunk)
+                lines_list: list[bytes] = []
+                while True:
+                    newline_index = buffered.find(b"\n")
+                    if newline_index < 0:
+                        break
+                    lines_list.append(bytes(buffered[: newline_index + 1]))
+                    del buffered[: newline_index + 1]
+                lines = tuple(lines_list)
+                reached_eof = False
+            for line in lines:
+                if stop_event.is_set():
+                    return
+                try:
+                    request = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    request = None
+                if (
+                    isinstance(request, dict)
+                    and request.get("method") in CONFIG_WRITE_METHODS
+                    and not config_write_proven
+                ):
+                    _write_client_output(
+                        _config_write_rejection(request),
+                        output_lock,
+                    )
+                    continue
+                output_line, message = adapt_client_json_line(
+                    line,
+                    adapter,
+                    tracker,
+                )
+                backend.stdin.write(output_line)
                 backend.stdin.flush()
+            if reached_eof:
+                return
+    except (BrokenPipeError, OSError, ValueError, select.error):
+        return
     finally:
-        backend.stdin.close()
+        try:
+            backend.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
 
 
 def forward_backend_to_client(
-    backend: subprocess.Popen[str],
-    pending_methods: dict[str | int, str],
-    pending_config_writes: dict[str | int, tuple[Path, str]],
-    actual_model: str,
-    desktop_model: str,
+    backend: subprocess.Popen[bytes],
+    adapter: ProtocolAdapter,
+    tracker: PendingRequestTracker,
+    output_lock: threading.Lock,
 ) -> None:
     assert backend.stdout is not None
     for line in backend.stdout:
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            continue
-        if isinstance(message, dict):
-            request_id = message_id(message)
-            method = pending_methods.pop(request_id, None) if request_id is not None else None
-            restore_config_write_response(message, pending_config_writes)
-            message = mask_backend_message_for_desktop(
-                message,
-                method=method,
-                actual_model=actual_model,
-                desktop_model=desktop_model,
-            )
-            write_json_line(sys.stdout, message)
-        else:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+        output_line, _message, _pending_method = adapt_backend_json_line(
+            line,
+            adapter,
+            tracker,
+        )
+        assert isinstance(output_line, bytes)
+        _write_client_output(output_line, output_lock)
 
 
-def forward_backend_stderr(backend: subprocess.Popen[str]) -> None:
+def forward_backend_stderr(backend: subprocess.Popen[bytes]) -> None:
     assert backend.stderr is not None
     for line in backend.stderr:
-        sys.stderr.write(line)
-        sys.stderr.flush()
+        sys.stderr.buffer.write(line)
+        sys.stderr.buffer.flush()
+
+
+def wait_for_backend_stream_drain(
+    threads: tuple[threading.Thread, ...],
+    *,
+    timeout_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    return all(not thread.is_alive() for thread in threads)
+
+
+def backend_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    original_pythonpath = environment.pop(ORIGINAL_PYTHONPATH, "")
+    pythonpath_marker = environment.pop(PYTHONPATH_WAS_SET, None)
+    if pythonpath_marker is None:
+        return environment
+    pythonpath_was_set = pythonpath_marker == "1"
+    if pythonpath_was_set:
+        environment["PYTHONPATH"] = original_pythonpath
+    else:
+        environment.pop("PYTHONPATH", None)
+    return environment
 
 
 def run_proxy(codex_bin: str, config_path: Path, args: list[str]) -> int:
     actual_model, desktop_model = read_desktop_model_alias(config_path)
-    supports_canonical_dynamic_tools = backend_supports_canonical_dynamic_tools(codex_bin)
-    pending_methods: dict[str | int, str] = {}
-    pending_config_writes: dict[str | int, tuple[Path, str]] = {}
+    capabilities, config_write_proven = proxy_capabilities(codex_bin)
+    adapter = ProtocolAdapter(
+        actual_model=actual_model or "",
+        desktop_model=desktop_model or actual_model or "",
+        capabilities=capabilities,
+    )
+    tracker = PendingRequestTracker()
+    output_lock = threading.Lock()
+    stop_event = threading.Event()
     backend = subprocess.Popen(
         [codex_bin, *args],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        env=os.environ.copy(),
+        env=backend_environment(),
     )
-    if not actual_model or not desktop_model:
-        client_thread = threading.Thread(
-            target=forward_client_to_backend,
-            args=(
-                backend,
-                pending_methods,
-                pending_config_writes,
-                config_path,
-                "",
-                "",
-                supports_canonical_dynamic_tools,
-            ),
-            daemon=True,
+    child_receipt = os.environ.get("CODEX_SWITCH_PROXY_CHILD_RECEIPT", "")
+    if child_receipt:
+        atomic_write(
+            Path(child_receipt),
+            (
+                json.dumps(
+                    {
+                        "pid": backend.pid,
+                        "codex_bin": str(Path(codex_bin).expanduser().resolve()),
+                        "args": list(args),
+                        "codex_home": os.environ.get("CODEX_HOME", ""),
+                        "capability_receipt_path": os.environ.get(
+                            CAPABILITY_RECEIPT_ENV,
+                            "",
+                        ),
+                        "expected_schema_sha256": os.environ.get(
+                            EXPECTED_SCHEMA_SHA256_ENV,
+                            "",
+                        ),
+                        "expected_receipt_sha256": os.environ.get(
+                            EXPECTED_RECEIPT_SHA256_ENV,
+                            "",
+                        ),
+                        "config_write_proven": config_write_proven,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode(),
+            mode=0o600,
         )
-        stdout_thread = threading.Thread(
-            target=forward_backend_to_client,
-            args=(backend, pending_methods, pending_config_writes, "", ""),
-            daemon=True,
-        )
-    else:
-        client_thread = threading.Thread(
-            target=forward_client_to_backend,
-            args=(
-                backend,
-                pending_methods,
-                pending_config_writes,
-                config_path,
-                actual_model,
-                desktop_model,
-                supports_canonical_dynamic_tools,
-            ),
-            daemon=True,
-        )
-        stdout_thread = threading.Thread(
-            target=forward_backend_to_client,
-            args=(
-                backend,
-                pending_methods,
-                pending_config_writes,
-                actual_model,
-                desktop_model,
-            ),
-            daemon=True,
-        )
-    stderr_thread = threading.Thread(target=forward_backend_stderr, args=(backend,), daemon=True)
+    client_thread = threading.Thread(
+        target=forward_client_to_backend,
+        args=(
+            backend,
+            adapter,
+            tracker,
+            config_write_proven,
+            output_lock,
+            stop_event,
+        ),
+    )
+    stdout_thread = threading.Thread(
+        target=forward_backend_to_client,
+        args=(
+            backend,
+            adapter,
+            tracker,
+            output_lock,
+        ),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=forward_backend_stderr,
+        args=(backend,),
+        daemon=True,
+    )
     client_thread.start()
     stdout_thread.start()
     stderr_thread.start()
-    return backend.wait()
+    returncode = backend.wait()
+    stop_event.set()
+    if not wait_for_backend_stream_drain(
+        (client_thread, stdout_thread, stderr_thread),
+        timeout_seconds=BACKEND_STREAM_DRAIN_TIMEOUT_SECONDS,
+    ):
+        print(
+            "codex-switch app proxy: backend stream drain timed out; "
+            f"returning backend exit status {returncode}",
+            file=sys.stderr,
+            flush=True,
+        )
+    return returncode
 
 
 def main(argv: list[str]) -> int:
@@ -454,6 +538,8 @@ def main(argv: list[str]) -> int:
     codex_bin = argv[1]
     config_path = Path(argv[2])
     args = argv[3:]
+    if not argv_invokes_app_server(args):
+        os.execve(codex_bin, [codex_bin, *args], backend_environment())
     return run_proxy(codex_bin, config_path, args)
 
 

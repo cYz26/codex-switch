@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from codex_switch_constants import SwitchError
-from codex_switch_io import now_stamp, write_json
+from codex_switch_io import now_stamp
 from codex_switch_paths import equivalent_paths
 from codex_switch_store import Store
 
@@ -246,9 +246,6 @@ def resolve_active_home_conflict(
     if not path_matches(target.path, forbidden):
         return internal, official
 
-    if dry_run:
-        return internal, official
-
     if prompt_enabled(dry_run):
         print(
             f"{active_profile} currently uses {forbidden}; "
@@ -401,8 +398,3 @@ def resolve_independent_homes(
             official,
         )
     return IndependentHomes(internal=internal, official=official, manifest_updates=updates)
-
-
-def write_home_binding_updates(store: Store, homes: IndependentHomes) -> None:
-    for profile, manifest in homes.manifest_updates.items():
-        write_json(store.manifest_path(profile), manifest)

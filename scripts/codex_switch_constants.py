@@ -6,7 +6,9 @@ from pathlib import Path
 MANAGED_FILES = ("config.toml", "auth.json")
 APP_CLI_ENV = "CODEX_CLI_PATH"
 DEFAULT_LAUNCH_AGENT_LABEL = "com.openai.codex-cli-path"
-DEFAULT_APP_BUNDLE_CODEX = Path("/Applications/Codex.app/Contents/Resources/codex")
+DEFAULT_CHATGPT_BUNDLED_CODEX = Path(
+    "/Applications/ChatGPT.app/Contents/Resources/codex"
+)
 CONFIG_MODE_SHARED = "shared"
 CONFIG_MODE_SNAPSHOT = "snapshot"
 PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE = (

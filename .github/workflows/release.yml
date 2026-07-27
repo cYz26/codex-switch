@@ -14,23 +14,65 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: codex-switch-release
+  cancel-in-progress: false
+
 jobs:
   package:
     name: Verify and publish release assets
     runs-on: macos-latest
 
     steps:
-      - name: Check out tag
+      - name: Check out trusted release tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Stage trusted release tooling
+        run: |
+          install -d "$RUNNER_TEMP/codex-switch-release-tools"
+          install -m 0644 \
+            scripts/release_auto.py \
+            scripts/codex_switch_release_bundle.py \
+            "$RUNNER_TEMP/codex-switch-release-tools/"
+          echo "RELEASE_AUTO=$RUNNER_TEMP/codex-switch-release-tools/release_auto.py" \
+            >> "$GITHUB_ENV"
+
+      - name: Resolve exact remote release tag
+        id: resolve
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          python3 "$RELEASE_AUTO" resolve-tag \
+            --tag "$RELEASE_TAG" \
+            --remote origin \
+            --github-output "$GITHUB_OUTPUT" \
+            --json
+
+      - name: Check out resolved release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Install OpenSpec
         run: npm install -g @fission-ai/openspec@1.3.1
 
       - name: Verify scripts and specs
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/codex-switch-pycache
         run: |
           python3 scripts/test_codex_profile_switch.py
+          if [ -f scripts/test_codex_update_release.py ]; then
+            python3 scripts/test_codex_update_release.py
+          else
+            echo "::notice::Historical release source has no scripts/test_codex_update_release.py; trusted asset validation remains required."
+          fi
           python3 -m py_compile scripts/*.py
           bash -n scripts/codex-switch
           bash -n scripts/codex_env_setup
@@ -46,16 +88,30 @@ jobs:
           test -x dist/codex-switch/run.sh
           test -f dist/codex-switch.tar.gz
 
-      - name: Publish release assets
+      - name: Validate deterministic release assets
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          ASSET_MANIFEST: ${{ runner.temp }}/codex-switch-release-assets.json
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Release $RELEASE_TAG"
-          fi
-          gh release upload "$RELEASE_TAG" \
-            install.sh \
-            dist/run.sh \
-            dist/codex-switch.tar.gz \
-            --clobber
+          python3 "$RELEASE_AUTO" assets \
+            --tag "$RELEASE_TAG" \
+            --commit HEAD \
+            --manifest "$ASSET_MANIFEST" \
+            --require-tag \
+            --allow-legacy \
+            --json
+
+      - name: Reconcile and verify release assets
+        env:
+          ASSET_MANIFEST: ${{ runner.temp }}/codex-switch-release-assets.json
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          python3 "$RELEASE_AUTO" reconcile \
+            --tag "$RELEASE_TAG" \
+            --commit HEAD \
+            --remote origin \
+            --manifest "$ASSET_MANIFEST" \
+            --github-repo "$GITHUB_REPOSITORY" \
+            --json

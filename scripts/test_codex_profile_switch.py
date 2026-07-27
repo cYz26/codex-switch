@@ -2,18 +2,47 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
+import inspect
 import json
 import os
 import plistlib
+import shlex
 import shutil
 import tarfile
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
+from contextlib import redirect_stdout
+from unittest import mock
 from types import SimpleNamespace
 from pathlib import Path
 
+import codex_switch_bindings as bindings_module
+import codex_switch_doctor as doctor_module
+import codex_switch_status as status_module
+import codex_switch_verify as verify_module
+try:
+    import release_auto
+except ModuleNotFoundError:
+    from scripts import release_auto
+
+from codex_switch_bindings import cmd_set_bin
+from codex_switch_constants import SwitchError
+from codex_switch_plugins import (
+    apply_plugin_config_updates,
+    available_plugin_catalog,
+    build_plugin_config_updates,
+    disable_unavailable_plugin_requirements,
+    plugin_is_installed,
+    plugin_requirement,
+    plugin_tree_manifest,
+    profile_plugin_config_paths,
+    repair_profile_plugins,
+)
 from codex_switch_running_app import (
     RunningCodexProcess,
     app_server_command_path,
@@ -21,22 +50,47 @@ from codex_switch_running_app import (
     parse_ps_processes,
     running_desktop_problems,
 )
+from codex_switch_runtime_binding import (
+    CURRENT_CHATGPT_BUNDLE_ID,
+    ChatGPTDesktopHost,
+    DesktopInventory,
+    RuntimeObservation,
+)
 from codex_switch_app_proxy import (
+    adapt_backend_json_line,
+    adapt_client_json_line,
     codex_version_supports_canonical_dynamic_tools,
     mask_backend_message_for_desktop,
-    remember_config_write_request,
-    restore_config_write_response,
+    protocol_capabilities_for_version,
     translate_desktop_message_for_backend,
 )
+from codex_switch_protocol_adapter import (
+    BackendCapabilities,
+    PendingRequestTracker,
+    ProtocolAdapter,
+)
+from codex_switch_release_bundle import build_release_bundle
 from codex_switch_config import (
     build_base_config_text,
     build_profile_v2_config_text,
     merge_missing_shared_config_defaults,
 )
 from codex_switch_home_sync import (
+    build_internal_home_config,
     refresh_profile_canonical_config,
     refresh_profile_plugin_support_snapshot,
     sync_shared_support,
+)
+from codex_switch_parity import (
+    PARITY_POLICY_VERSION,
+    ConfigInputs,
+    ConfigProjection,
+    InternalFingerprint,
+    OfficialReference,
+    ParityFinding,
+    ParityPolicyVersion,
+    ParityQueueItem,
+    ParityReport,
 )
 from codex_switch_store import Store
 
@@ -50,6 +104,108 @@ AUTO_RELEASE_WORKFLOW = (
     Path(__file__).parents[1] / ".github" / "workflows" / "auto-release.yml"
 )
 RELEASE_AUTO = Path(__file__).with_name("release_auto.py")
+RELEASE_BUNDLE_MODULE = Path(__file__).with_name(
+    "codex_switch_release_bundle.py"
+)
+PROMOTION_MODULE = Path(__file__).with_name("codex_switch_promotion.py")
+UPDATE_POLICY_MODULE = Path(__file__).with_name(
+    "codex_switch_update_policy.py"
+)
+OFFICIAL_RELEASE_MODULE = Path(__file__).with_name(
+    "codex_switch_official_release.py"
+)
+
+
+class FakeGitHubReleaseAdapter:
+    def __init__(
+        self,
+        *,
+        exists: bool = True,
+        assets: dict[str, bytes] | None = None,
+        draft: bool = False,
+        fail_upload_once: str | None = None,
+        fail_publish_once: bool = False,
+        corrupt_after_publish: str | None = None,
+    ) -> None:
+        self.exists = exists
+        self.assets = dict(assets or {})
+        self.draft = draft
+        self.fail_upload_once = fail_upload_once
+        self.failed_upload = False
+        self.fail_publish_once = fail_publish_once
+        self.failed_publish = False
+        self.corrupt_after_publish = corrupt_after_publish
+        self.create_calls: list[str] = []
+        self.publish_calls: list[str] = []
+        self.download_calls: list[str] = []
+        self.upload_attempts: list[str] = []
+
+    def inspect_release(self, tag: str):
+        return release_auto.ReleaseSnapshot(
+            exists=self.exists,
+            assets=tuple(sorted(self.assets)),
+            draft=self.draft,
+        )
+
+    def create_release(self, tag: str) -> None:
+        if self.exists:
+            raise AssertionError(f"release already exists: {tag}")
+        self.exists = True
+        self.draft = True
+        self.create_calls.append(tag)
+
+    def download_asset(self, tag: str, name: str, destination: Path) -> None:
+        if not self.exists or name not in self.assets:
+            raise AssertionError(f"missing release asset: {tag}/{name}")
+        self.download_calls.append(name)
+        destination.write_bytes(self.assets[name])
+
+    def upload_asset(self, tag: str, path: Path) -> None:
+        name = path.name
+        self.upload_attempts.append(name)
+        if name in self.assets:
+            raise AssertionError(f"upload would clobber existing asset: {name}")
+        if self.fail_upload_once == name and not self.failed_upload:
+            self.failed_upload = True
+            raise release_auto.ReleaseError(f"injected upload failure: {name}")
+        self.assets[name] = path.read_bytes()
+
+    def publish_release(self, tag: str) -> None:
+        if not self.exists or not self.draft:
+            raise AssertionError(f"release is not a draft: {tag}")
+        self.publish_calls.append(tag)
+        if self.fail_publish_once and not self.failed_publish:
+            self.failed_publish = True
+            raise release_auto.ReleaseError(f"injected publish failure: {tag}")
+        self.draft = False
+        if self.corrupt_after_publish is not None:
+            self.assets[self.corrupt_after_publish] = b"corrupted after publish"
+
+
+def write_required_release_modules(scripts_dir: Path) -> None:
+    shutil.copy2(
+        RELEASE_BUNDLE_MODULE,
+        scripts_dir / RELEASE_BUNDLE_MODULE.name,
+    )
+    shutil.copy2(
+        PROMOTION_MODULE,
+        scripts_dir / PROMOTION_MODULE.name,
+    )
+    shutil.copy2(
+        UPDATE_POLICY_MODULE,
+        scripts_dir / UPDATE_POLICY_MODULE.name,
+    )
+    (scripts_dir / OFFICIAL_RELEASE_MODULE.name).write_text(
+        "VALUE = 1\n"
+    )
+    (scripts_dir / "codex_profile_switch.py").write_text("VALUE = 1\n")
+    for name in (
+        "codex_switch_parity.py",
+        "codex_switch_runtime_binding.py",
+        "codex_switch_app_proxy.py",
+        "codex_switch_home_sync.py",
+    ):
+        (scripts_dir / name).write_text("VALUE = 1\n")
 
 
 def write_fake_codex(path: Path, label: str) -> None:
@@ -73,6 +229,51 @@ def write_fake_codex(path: Path, label: str) -> None:
 def write_fake_script(path: Path, body: str) -> None:
     path.write_text(body)
     path.chmod(0o755)
+
+
+def write_fake_release_redirects(
+    path: Path,
+    redirects: dict[str, str | None],
+    *,
+    args_log: Path | None = None,
+) -> None:
+    lines = ["#!/usr/bin/env sh"]
+    if args_log is not None:
+        lines.append(f'printf \'%s\\n\' "$*" >> {shlex.quote(str(args_log))}')
+    lines.append('case "$*" in')
+    for needle, location in redirects.items():
+        lines.append(f'  *"{needle}"*)')
+        if location is None:
+            lines.append("    exit 22")
+        else:
+            lines.extend(
+                (
+                    "    cat <<'EOF'",
+                    "HTTP/2 302",
+                    f"location: {location}",
+                    "EOF",
+                )
+            )
+        lines.append("    ;;")
+    lines.extend(("  *) exit 23 ;;", "esac", ""))
+    write_fake_script(path, "\n".join(lines))
+
+
+def filesystem_snapshot(root: Path) -> list[tuple[str, str, bytes | str]]:
+    if not os.path.lexists(root):
+        return [(".", "missing", b"")]
+    entries: list[tuple[str, str, bytes | str]] = []
+    for path in [root, *sorted(root.rglob("*"))]:
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        if path.is_symlink():
+            entries.append((relative, "symlink", os.readlink(path)))
+        elif path.is_file():
+            entries.append((relative, "file", path.read_bytes()))
+        elif path.is_dir():
+            entries.append((relative, "dir", b""))
+        else:
+            entries.append((relative, "other", b""))
+    return entries
 
 
 def desktop_global_state_payload(
@@ -114,31 +315,97 @@ def desktop_global_state_payload(
     }
 
 
-def write_fake_plugin_catalog_codex(path: Path) -> None:
+def write_plugin_source(
+    root: Path,
+    *,
+    name: str,
+    version: str,
+    payload: str,
+) -> None:
+    manifest = root / ".codex-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"name": name, "version": version}, sort_keys=True) + "\n"
+    )
+    (root / "payload.txt").write_text(payload)
+    executable = root / "scripts" / "run.sh"
+    executable.parent.mkdir()
+    executable.write_text("#!/usr/bin/env sh\nexit 0\n")
+    executable.chmod(0o755)
+
+
+def write_fake_plugin_refresh_codex(
+    path: Path,
+    *,
+    catalog: dict[str, object],
+    sources: dict[str, Path] | None = None,
+    catalog_stdout: str | None = None,
+    catalog_stderr: str = "",
+    catalog_returncode: int = 0,
+) -> None:
+    catalog_json = json.dumps(catalog, sort_keys=True)
+    catalog_output = (
+        json.dumps(catalog, sort_keys=True) + "\n"
+        if catalog_stdout is None
+        else catalog_stdout
+    )
+    source_json = json.dumps(
+        {selector: str(source) for selector, source in (sources or {}).items()},
+        sort_keys=True,
+    )
     write_fake_script(
         path,
-        "#!/usr/bin/env sh\n"
-        "set -eu\n"
-        "printf '%s\\n' \"$*\" >> \"$CODEX_HOME/codex-calls.log\"\n"
-        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
-        "  printf '{\"upgraded\":[]}\\n'\n"
-        "  exit 0\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
-        "  mkdir -p \"$CODEX_HOME/.tmp/plugins/plugins/catalog-only\"\n"
-        "  printf '{\"installed\":[],\"available\":[{\"pluginId\":\"missing-plugin@local-test\"},{\"pluginId\":\"installed-plugin@local-test\"}]}\\n'\n"
-        "  exit 0\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
-        "  selector=\"$3\"\n"
-        "  plugin=\"${selector%@*}\"\n"
-        "  marketplace=\"${selector##*@}\"\n"
-        "  mkdir -p \"$CODEX_HOME/plugins/cache/$marketplace/$plugin/1.0.0\"\n"
-        "  printf '{}\\n' > \"$CODEX_HOME/plugins/cache/$marketplace/$plugin/1.0.0/.codex-plugin\"\n"
-        "  echo installed \"$selector\"\n"
-        "  exit 0\n"
-        "fi\n"
-        "echo fake-codex\n",
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "import shutil\n"
+        "import sys\n"
+        f"catalog = json.loads({catalog_json!r})\n"
+        f"catalog_stdout = {catalog_output!r}\n"
+        f"catalog_stderr = {catalog_stderr!r}\n"
+        f"catalog_returncode = {catalog_returncode!r}\n"
+        f"sources = json.loads({source_json!r})\n"
+        "home = Path(os.environ['CODEX_HOME'])\n"
+        "home.mkdir(parents=True, exist_ok=True)\n"
+        "args = sys.argv[1:]\n"
+        "with (home / 'codex-calls.log').open('a') as handle:\n"
+        "    handle.write(str(home) + '|' + ' '.join(args) + '\\n')\n"
+        "if args == ['--version']:\n"
+        "    print('codex-cli 9.9.9')\n"
+        "    raise SystemExit(0)\n"
+        "if args[:3] == ['plugin', 'marketplace', 'upgrade']:\n"
+        "    print(json.dumps({'upgraded': []}))\n"
+        "    raise SystemExit(0)\n"
+        "if args[:3] == ['plugin', 'list', '--available']:\n"
+        "    (home / '.tmp' / 'plugins' / 'plugins' / 'catalog-only').mkdir(\n"
+        "        parents=True, exist_ok=True\n"
+        "    )\n"
+        "    sys.stdout.write(catalog_stdout)\n"
+        "    sys.stderr.write(catalog_stderr)\n"
+        "    raise SystemExit(catalog_returncode)\n"
+        "if args[:2] == ['plugin', 'add']:\n"
+        "    selector = args[2]\n"
+        "    records = catalog.get('installed', []) + catalog.get('available', [])\n"
+        "    record = next(item for item in records if item.get('pluginId') == selector)\n"
+        "    plugin, marketplace = selector.rsplit('@', 1)\n"
+        "    destination = home / 'plugins' / 'cache' / marketplace / plugin / record['version']\n"
+        "    if destination.exists() or destination.is_symlink():\n"
+        "        if destination.is_dir() and not destination.is_symlink():\n"
+        "            shutil.rmtree(destination)\n"
+        "        else:\n"
+        "            destination.unlink()\n"
+        "    source = sources.get(selector)\n"
+        "    if source:\n"
+        "        shutil.copytree(source, destination, symlinks=True)\n"
+        "    else:\n"
+        "        (destination / '.codex-plugin').mkdir(parents=True)\n"
+        "        (destination / '.codex-plugin' / 'plugin.json').write_text(\n"
+        "            json.dumps({'name': plugin, 'version': record['version']}) + '\\n'\n"
+        "        )\n"
+        "    print(json.dumps({'pluginId': selector, 'installedPath': str(destination)}))\n"
+        "    raise SystemExit(0)\n"
+        "print('fake-plugin-refresh-codex')\n",
     )
 
 
@@ -165,7 +432,12 @@ def write_fake_runtime_smoke_codex(path: Path) -> None:
     )
 
 
-def write_fake_responses_tool_smoke_codex(path: Path, *, fail_resource_mismatch: bool = False) -> None:
+def write_fake_responses_tool_smoke_codex(
+    path: Path,
+    *,
+    fail_resource_mismatch: bool = False,
+    fail_reasoning_item_not_found: bool = False,
+) -> None:
     mismatch_body = ""
     if fail_resource_mismatch:
         mismatch_body = (
@@ -178,6 +450,13 @@ def write_fake_responses_tool_smoke_codex(path: Path, *, fail_resource_mismatch:
             "  echo 'x-model-request-id: 741c1f3e-fad4-48be-abe0-d0c2e99b3506'\n"
             "  echo 'x-tt-logid: 202607031120158DCF6A7C87F2A6AF4908'\n"
             "  echo 'api-key: should-not-leak'\n"
+            "  exit 1\n"
+        )
+    elif fail_reasoning_item_not_found:
+        mismatch_body = (
+            "  echo 'x-account-id: globalttswedencentral010'\n"
+            "  echo \"code: ; message: Item with id 'rs_08926f6eb84342d1006a61d1f955e081938793643ece5c1c56' not found.\"\n"
+            "  echo 'authorization: should-not-leak'\n"
             "  exit 1\n"
         )
     else:
@@ -203,53 +482,284 @@ def write_fake_responses_tool_smoke_codex(path: Path, *, fail_resource_mismatch:
     )
 
 
+def write_fake_secret_smoke_codex(path: Path) -> None:
+    write_fake_script(
+        path,
+        "#!/usr/bin/env sh\n"
+        "set -eu\n"
+        "if [ \"${1:-}\" = \"exec\" ]; then\n"
+        "  echo 'Authorization: Bearer auth-secret'\n"
+        "  echo 'Bearer standalone-secret'\n"
+        "  echo 'api-key: api-secret'\n"
+        "  echo 'Cookie: session=cookie-secret'\n"
+        "  echo 'https://example.test/path?sig=signed-secret&safe=value'\n"
+        "  echo 'x-account-id: safe-route-123'\n"
+        "  echo 'exception password=exception-secret' >&2\n"
+        "  exit 7\n"
+        "fi\n"
+        "echo fake-secret-smoke-codex\n",
+    )
+
+
 def write_fake_app_server_smoke_codex(
     path: Path,
     *,
     version: str = "codex-cli 9.9.9",
     exit_241_after_plugin_list: bool = False,
 ) -> None:
-    plugin_list_branch = (
-        "      printf '%s\\n' "
-        "'{\"id\":\"plugin-list-smoke\",\"error\":{\"code\":-32600,\"message\":\"chatgpt authentication required for remote plugin catalog\"}}'\n"
-    )
-    if exit_241_after_plugin_list:
-        plugin_list_branch = (
-            "      printf '%s\\n' "
-            "'{\"id\":\"plugin-list-smoke\",\"result\":{\"marketplaces\":[]}}'\n"
-            "      echo '{\"timestamp\":\"2026-07-03T03:52:12.432642Z\",\"level\":\"WARN\",\"fields\":{\"message\":\"plugin/list featured plugin fetch failed; returning empty featured ids\"},\"target\":\"codex_app_server::request_processors::plugins\"}' >&2\n"
-            "      exit 241\n"
-        )
     write_fake_script(
         path,
-        "#!/usr/bin/env sh\n"
-        "set -eu\n"
-        "if [ \"${1:-}\" = \"--version\" ]; then\n"
-        f"  echo {version}\n"
-        "  exit 0\n"
-        "fi\n"
-        "mkdir -p \"$CODEX_HOME\"\n"
-        "printf '%s|%s\\n' \"$CODEX_HOME\" \"$*\" >> \"$CODEX_HOME/app-server-smoke.log\"\n"
-        "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--json\" ]; then\n"
-        "  printf '{\"plugins\":[]}\\n'\n"
-        "  exit 0\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"app-server\" ]; then\n"
-        "  while IFS= read -r line; do\n"
-        "    printf 'stdin:%s\\n' \"$line\" >> \"$CODEX_HOME/app-server-smoke.log\"\n"
-        "    case \"$line\" in\n"
-        "      *'\"method\":\"initialize\"'*)\n"
-        "        printf '%s\\n' "
-        "'{\"id\":\"__codex_initialize__\",\"result\":{\"userAgent\":\"Codex Desktop/9.9.9 (codex-switch-smoke)\",\"codexHome\":\"/tmp/fake\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\"}}'\n"
-        "        ;;\n"
-        "      *'\"method\":\"plugin/list\"'*)\n"
-        + plugin_list_branch +
-        "        ;;\n"
-        "    esac\n"
-        "  done\n"
-        "  exit 0\n"
-        "fi\n"
-        "echo fake-app-server-smoke-codex\n",
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        f"VERSION = {version!r}\n"
+        f"EXIT_241 = {exit_241_after_plugin_list!r}\n"
+        "if '--version' in sys.argv:\n"
+        "    print(VERSION)\n"
+        "    raise SystemExit(0)\n"
+        "if 'generate-json-schema' in sys.argv:\n"
+        "    output = Path(sys.argv[sys.argv.index('--out') + 1])\n"
+        "    output.mkdir(parents=True, exist_ok=True)\n"
+        "    (output / 'protocol.json').write_text(json.dumps({\n"
+        "        '$defs': {\n"
+        "            'ThreadStartParams': {'type': 'object', 'properties': {'dynamicTools': {'type': 'array'}}},\n"
+        "            'PluginListMarketplaceKind': {'enum': ['local', 'created-by-me-remote']},\n"
+        "        }\n"
+        "    }, sort_keys=True))\n"
+        "    raise SystemExit(0)\n"
+        "home = Path(os.environ['CODEX_HOME'])\n"
+        "home.mkdir(parents=True, exist_ok=True)\n"
+        "log_paths = [home / 'app-server-smoke.log']\n"
+        "explicit_log = os.environ.get('CODEX_SWITCH_TEST_APP_SERVER_LOG')\n"
+        "if explicit_log:\n"
+        "    explicit_log_path = Path(explicit_log)\n"
+        "    explicit_log_path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    log_paths.append(explicit_log_path)\n"
+        "def append_log(text):\n"
+        "    for log_path in log_paths:\n"
+        "        with log_path.open('a') as log:\n"
+        "            log.write(text + '\\n')\n"
+        "append_log(f\"{home}|{' '.join(sys.argv[1:])}\")\n"
+        "if sys.argv[1:4] == ['plugin', 'list', '--json']:\n"
+        "    print(json.dumps({'plugins': []}))\n"
+        "    raise SystemExit(0)\n"
+        "if 'app-server' in sys.argv[1:]:\n"
+        "    for raw in sys.stdin:\n"
+        "        append_log(f\"stdin:{raw.rstrip()}\")\n"
+        "        message = json.loads(raw)\n"
+        "        method = message.get('method')\n"
+        "        if method == 'initialize':\n"
+        "            print(json.dumps({\n"
+        "                'id': message['id'],\n"
+        "                'result': {\n"
+        "                    'userAgent': 'Codex Desktop/9.9.9 (codex-switch-smoke)',\n"
+        "                    'codexHome': '/tmp/fake',\n"
+        "                    'platformFamily': 'unix',\n"
+        "                    'platformOs': 'macos',\n"
+        "                },\n"
+        "            }), flush=True)\n"
+        "        elif method == 'plugin/list':\n"
+        "            if EXIT_241:\n"
+        "                print(json.dumps({'id': message['id'], 'result': {'marketplaces': []}}), flush=True)\n"
+        "                print(json.dumps({\n"
+        "                    'timestamp': '2026-07-03T03:52:12.432642Z',\n"
+        "                    'level': 'WARN',\n"
+        "                    'fields': {'message': 'plugin/list featured plugin fetch failed; returning empty featured ids'},\n"
+        "                    'target': 'codex_app_server::request_processors::plugins',\n"
+        "                }), file=sys.stderr, flush=True)\n"
+        "                raise SystemExit(241)\n"
+        "            print(json.dumps({\n"
+        "                'id': message['id'],\n"
+        "                'error': {\n"
+        "                    'code': -32600,\n"
+        "                    'message': 'chatgpt authentication required for remote plugin catalog',\n"
+        "                },\n"
+        "            }), flush=True)\n"
+        "        elif method == 'config/value/write':\n"
+        "            params = message['params']\n"
+        "            config_path = Path(params['filePath'])\n"
+        "            config_path.write_text(config_path.read_text().replace(\n"
+        "                'codex_switch_config_write_probe = false',\n"
+        "                'codex_switch_config_write_probe = true',\n"
+        "            ))\n"
+        "            print(json.dumps({\n"
+        "                'id': message['id'],\n"
+        "                'result': {\n"
+        "                    'filePath': str(config_path.resolve()),\n"
+        "                    'status': 'ok',\n"
+        "                    'version': 'profile-smoke-v1',\n"
+        "                },\n"
+        "            }), flush=True)\n"
+        "    raise SystemExit(0)\n"
+        "print('fake-app-server-smoke-codex')\n",
+    )
+
+
+def write_fake_staged_update_helper(
+    path: Path,
+    *,
+    candidate_source: Path | None,
+    args_log: Path,
+    exit_status: int = 0,
+) -> None:
+    source_value = str(candidate_source) if candidate_source is not None else None
+    write_fake_script(
+        path,
+        f"#!{sys.executable}\n"
+        "from pathlib import Path\n"
+        "import shutil\n"
+        "import sys\n"
+        f"args_log = Path({str(args_log)!r})\n"
+        f"source_value = {source_value!r}\n"
+        f"exit_status = {exit_status}\n"
+        "args = sys.argv[1:]\n"
+        "args_log.write_text(' '.join(args) + '\\n')\n"
+        "if exit_status:\n"
+        "    raise SystemExit(exit_status)\n"
+        "if source_value is None:\n"
+        "    raise SystemExit(0)\n"
+        "install_dir = Path(args[args.index('--install-dir') + 1])\n"
+        "install_dir.mkdir(parents=True, exist_ok=True, mode=0o700)\n"
+        "install_dir.chmod(0o700)\n"
+        "target = install_dir / 'codex'\n"
+        "shutil.copy2(Path(source_value), target)\n"
+        "target.chmod(0o755)\n",
+    )
+
+
+def write_fake_internal_update_promotion_driver(path: Path) -> None:
+    write_fake_script(
+        path,
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import os\n"
+        "import shutil\n"
+        "import subprocess\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "\n"
+        "argv = sys.argv[1:]\n"
+        "real_switcher = Path(os.environ['CODEX_SWITCH_TEST_REAL_SWITCHER'])\n"
+        "if 'promote-internal-update' not in argv:\n"
+        "    if '--store-dir' in argv and 'verify' in argv and 'internal' in argv:\n"
+        "        store = Path(argv[argv.index('--store-dir') + 1])\n"
+        "        marker = store / '.fake-internal-update-parity-verified'\n"
+        "        if marker.is_file():\n"
+        "            if '--app-server-smoke' in argv:\n"
+        "                print('App-server smoke: passed')\n"
+        "            print('Parity health: healthy')\n"
+        "            print('Verification passed for internal')\n"
+        "            raise SystemExit(0)\n"
+        "    delegate_python = (\n"
+        "        os.environ.get('CODEX_SWITCH_TEST_DELEGATE_PYTHON')\n"
+        "        or os.environ.get('CODEX_SWITCH_PYTHON')\n"
+        "        or sys.executable\n"
+        "    )\n"
+        "    raise SystemExit(subprocess.call([\n"
+        "        delegate_python, '-B', str(real_switcher), *argv\n"
+        "    ]))\n"
+        "\n"
+        "sys.path.insert(0, str(real_switcher.parent))\n"
+        "from codex_switch_update_policy import extract_semantic_version\n"
+        "from codex_switch_verify import run_app_server_smoke\n"
+        "\n"
+        "def option(name):\n"
+        "    index = argv.index(name)\n"
+        "    return argv[index + 1]\n"
+        "\n"
+        "bound = Path(option('--bound-bin'))\n"
+        "candidate = Path(option('--candidate-bin'))\n"
+        "target_version = option('--target-version')\n"
+        "probe = subprocess.run(\n"
+        "    [str(candidate), '--version'],\n"
+        "    check=False,\n"
+        "    text=True,\n"
+        "    stdout=subprocess.PIPE,\n"
+        "    stderr=subprocess.PIPE,\n"
+        ")\n"
+        "if probe.returncode != 0:\n"
+        "    print(\n"
+        "        f'update-internal: version probe failed (exit {probe.returncode}).',\n"
+        "        file=sys.stderr,\n"
+        "    )\n"
+        "    raise SystemExit(probe.returncode)\n"
+        "observed_version = extract_semantic_version(\n"
+        "    probe.stdout + '\\n' + probe.stderr\n"
+        ")\n"
+        "if observed_version != target_version:\n"
+        "    print(\n"
+        "        'update-internal: failed postcondition; '\n"
+        "        f'expected {target_version} but observed '\n"
+        "        f'{observed_version or \"<unparseable>\"}.',\n"
+        "        file=sys.stderr,\n"
+        "    )\n"
+        "    raise SystemExit(1)\n"
+        "store = Path(option('--store-dir'))\n"
+        "manifest = json.loads(\n"
+        "    (store / 'profiles' / 'internal' / 'manifest.json').read_text()\n"
+        ")\n"
+        "internal_home = Path(\n"
+        "    manifest.get('codex_home') or store / 'homes' / 'internal'\n"
+        ")\n"
+        "code, output = run_app_server_smoke(str(candidate), internal_home)\n"
+        "if code != 0:\n"
+        "    print(\n"
+        "        f'update-internal: app-server smoke failed (exit {code}): {output}',\n"
+        "        file=sys.stderr,\n"
+        "    )\n"
+        "    raise SystemExit(code if 0 < code < 256 else 1)\n"
+        "temporary = bound.with_name(f'.{bound.name}.profile-update-{os.getpid()}')\n"
+        "shutil.copy2(candidate, temporary)\n"
+        "os.replace(temporary, bound)\n"
+        "(store / '.fake-internal-update-parity-verified').write_text(\n"
+        "    target_version + '\\n'\n"
+        ")\n"
+        "print(f'update-internal: verified installed version {target_version}.')\n"
+        "print('App-server smoke: passed')\n"
+        "print('update-internal: capability and parity receipts verified.')\n",
+    )
+
+
+def write_fake_capability_codex(path: Path) -> None:
+    write_fake_script(
+        path,
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "if '--version' in sys.argv:\n"
+        "    print('codex-cli 0.142.4')\n"
+        "    raise SystemExit(0)\n"
+        "if 'generate-json-schema' in sys.argv:\n"
+        "    output = Path(sys.argv[sys.argv.index('--out') + 1])\n"
+        "    output.mkdir(parents=True, exist_ok=True)\n"
+        "    (output / 'protocol.json').write_text(json.dumps({\n"
+        "        '$defs': {\n"
+        "            'ThreadStartParams': {'type': 'object', 'properties': {'dynamicTools': {'type': 'array'}}},\n"
+        "            'PluginMarketplaceKind': {'enum': ['local', 'created-by-me-remote']},\n"
+        "        }\n"
+        "    }, sort_keys=True))\n"
+        "    raise SystemExit(0)\n"
+        "for raw in sys.stdin:\n"
+        "    message = json.loads(raw)\n"
+        "    if message.get('method') == 'initialize':\n"
+        "        print(json.dumps({'id': message['id'], 'result': {'userAgent': 'profile-test'}}), flush=True)\n"
+        "    elif message.get('method') == 'plugin/list':\n"
+        "        print(json.dumps({'id': message['id'], 'result': {'marketplaces': []}}), flush=True)\n"
+        "    elif message.get('method') == 'config/value/write':\n"
+        "        params = message['params']\n"
+        "        config_path = Path(params['filePath'])\n"
+        "        config_path.write_text(config_path.read_text().replace(\n"
+        "            'codex_switch_config_write_probe = false',\n"
+        "            'codex_switch_config_write_probe = true',\n"
+        "        ))\n"
+        "        print(json.dumps({\n"
+        "            'id': message['id'],\n"
+        "            'result': {\n"
+        "                'filePath': str(config_path.resolve()),\n"
+        "                'status': 'ok',\n"
+        "                'version': 'profile-test-v1',\n"
+        "            },\n"
+        "        }), flush=True)\n",
     )
 
 
@@ -263,12 +773,417 @@ class CodexProfileSwitchTests(unittest.TestCase):
         )
         return temp_dir, root
 
+    def make_parity_diagnostic_report(
+        self,
+        root: Path,
+        *,
+        findings: tuple[ParityFinding, ...],
+        queue: tuple[ParityQueueItem, ...] = (),
+    ) -> ParityReport:
+        bundle_root = root / "Applications" / "ChatGPT.app"
+        return ParityReport(
+            healthy=not any(
+                finding.severity == "error"
+                for finding in findings
+            ),
+            policy_version=ParityPolicyVersion(PARITY_POLICY_VERSION),
+            official_reference=OfficialReference(
+                authority="chatgpt-bundle",
+                bundle_root=bundle_root,
+                bundle_id=CURRENT_CHATGPT_BUNDLE_ID,
+                bundle_version="1.2026.196",
+                bundled_cli=(
+                    bundle_root / "Contents" / "Resources" / "codex"
+                ),
+                cli_version="0.146.0-alpha.3.1",
+                binary_sha256="a" * 64,
+                schema_sha256="b" * 64,
+                feature_inventory_sha256="c" * 64,
+            ),
+            internal_fingerprint=InternalFingerprint(
+                backend_cli=root / "internal" / "codex",
+                cli_version="0.144.6",
+                binary_sha256="d" * 64,
+                active_model="gpt-5.6-sol",
+                provider_id="azure",
+                wire_api="responses",
+                endpoint_sha256="e" * 64,
+                auth_source_kind="env",
+                capability_receipt_sha256="f" * 64,
+                source_catalog=root / "internal" / "models.json",
+                source_catalog_sha256="a" * 64,
+                config_sha256s=(
+                    ("profile", "b" * 64),
+                    ("runtime", "c" * 64),
+                ),
+            ),
+            findings=findings,
+            synchronization_queue=queue,
+        )
+
+    def run_parity_diagnostic_command(
+        self,
+        command: str,
+        store: Store,
+        report: ParityReport,
+    ) -> tuple[int, str, int]:
+        output = io.StringIO()
+        if command == "status":
+            module = status_module
+            args = SimpleNamespace()
+            with (
+                mock.patch.object(module, "make_store", return_value=store),
+                mock.patch.object(
+                    module,
+                    "print_active_profile_status",
+                    return_value="internal",
+                ),
+                mock.patch.object(module, "print_shell_codex_status"),
+                mock.patch.object(module, "print_app_codex_status"),
+                mock.patch.object(
+                    module,
+                    "collect_parity_report",
+                    return_value=report,
+                    create=True,
+                ) as collect_parity,
+                redirect_stdout(output),
+            ):
+                module.cmd_status(args)
+            return 0, output.getvalue(), collect_parity.call_count
+
+        if command == "doctor":
+            module = doctor_module
+            args = SimpleNamespace()
+            with (
+                mock.patch.object(module, "make_store", return_value=store),
+                mock.patch.object(
+                    module,
+                    "active_runtime_binding_for_observation",
+                    return_value=SimpleNamespace(profile="internal"),
+                ),
+                mock.patch.object(
+                    module,
+                    "collect_store_runtime_observation",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    module,
+                    "collect_doctor_problems",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    module,
+                    "collect_parity_report",
+                    return_value=report,
+                    create=True,
+                ) as collect_parity,
+                redirect_stdout(output),
+            ):
+                try:
+                    module.cmd_doctor(args)
+                except SystemExit as exc:
+                    code = int(exc.code)
+                else:
+                    code = 0
+            return code, output.getvalue(), collect_parity.call_count
+
+        if command == "verify":
+            module = verify_module
+            args = SimpleNamespace(
+                name="internal",
+                repair="none",
+                app_server_smoke=False,
+                runtime_smoke=False,
+                exec_smoke=None,
+                responses_tool_smoke=False,
+                report=False,
+            )
+            with (
+                mock.patch.object(module, "make_store", return_value=store),
+                mock.patch.object(store, "load_manifest", return_value={}),
+                mock.patch.object(
+                    module,
+                    "profile_home",
+                    return_value=store.managed_home("internal"),
+                ),
+                mock.patch.object(
+                    module,
+                    "manifest_uses_canonical_binding",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    module,
+                    "collect_store_runtime_observation",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    module,
+                    "collect_active_state_problems",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    module,
+                    "collect_runtime_config_problems",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    module,
+                    "collect_parity_report",
+                    return_value=report,
+                ) as collect_parity,
+                redirect_stdout(output),
+            ):
+                try:
+                    module.cmd_verify(args)
+                except SystemExit as exc:
+                    code = int(exc.code)
+                else:
+                    code = 0
+            return code, output.getvalue(), collect_parity.call_count
+
+        raise AssertionError(f"unsupported parity diagnostic command: {command}")
+
+    def tomllib_parser_for_config_test(self) -> object:
+        if sys.version_info >= (3, 11):
+            import tomllib
+
+            return tomllib
+        python = shutil.which("python3.12") or shutil.which("python3.11")
+        if python is None:
+            self.fail("Python 3.11+ is required for home-sync config tests")
+
+        class SubprocessTomllib:
+            TOMLDecodeError = ValueError
+
+            @staticmethod
+            def loads(text: str) -> object:
+                result = subprocess.run(
+                    [
+                        python,
+                        "-c",
+                        (
+                            "import json, sys, tomllib; "
+                            "print(json.dumps(tomllib.loads(sys.stdin.read())))"
+                        ),
+                    ],
+                    input=text,
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                if result.returncode != 0:
+                    raise ValueError(result.stderr.strip())
+                return json.loads(result.stdout)
+
+        return SubprocessTomllib
+
+    def parity_config_projection(
+        self,
+        *,
+        profile_config: Path,
+        profile_source: bytes,
+        projected_profile: bytes,
+        shared_config: Path,
+        shared_source: bytes,
+        projected_shared: bytes,
+        overlay_path: Path,
+    ) -> ConfigProjection:
+        config_inputs = ConfigInputs(
+            profile_config=profile_config,
+            sources=(
+                (
+                    profile_config,
+                    hashlib.sha256(profile_source).hexdigest(),
+                ),
+                (
+                    shared_config,
+                    hashlib.sha256(shared_source).hexdigest(),
+                ),
+            ),
+        )
+        return ConfigProjection(
+            config_inputs=config_inputs,
+            overlay_path=overlay_path,
+            payloads=(
+                (profile_config, projected_profile),
+                (shared_config, projected_shared),
+            ),
+            healthy=True,
+            findings=(),
+            changed_paths=(profile_config, shared_config),
+            max_threads_source=shared_config,
+        )
+
+    def internal_rebind_fixture(
+        self,
+        root: Path,
+    ) -> tuple[Store, Path, SimpleNamespace, tuple[Path, ...]]:
+        store = Store(
+            root=root / "store",
+            live_codex_home=root / "live",
+            launch_agent_path=root / "agent.plist",
+            launch_agent_label="test",
+            internal_codex_home=root / "store" / "homes" / "internal",
+            internal_codex_home_source="explicit",
+        )
+        store.ensure()
+        old_backend = root / "old-internal" / "codex"
+        candidate = root / "candidate-internal" / "codex"
+        old_backend.parent.mkdir(parents=True)
+        candidate.parent.mkdir(parents=True)
+        write_fake_app_server_smoke_codex(old_backend)
+        write_fake_app_server_smoke_codex(candidate)
+        launcher = store.bin_dir / "codex-internal-app"
+        write_fake_script(launcher, "#!/usr/bin/env sh\nexit 0\n")
+        profile_dir = store.profile_dir("internal")
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        source_catalog = root / "configured" / "azure-models.json"
+        source_catalog.parent.mkdir(parents=True)
+        source_catalog.write_bytes(
+            b'{"models":[{"provider":"azure","slug":"gpt-5.6-sol"}]}\n'
+        )
+        source_catalog.chmod(0o640)
+        profile_config = profile_dir / "config.toml"
+        profile_config.write_text(
+            'model = "gpt-5.6-sol"\n'
+            'model_provider = "azure"\n'
+            f'model_catalog_json = "{source_catalog}"\n'
+        )
+        profile_config.chmod(0o600)
+        internal_home = store.internal_codex_home
+        internal_home.mkdir(parents=True, exist_ok=True)
+        active_runtime_config = internal_home / "config.toml"
+        active_runtime_config.write_text('profile = "internal"\n')
+        active_runtime_config.chmod(0o600)
+        shared_config = store.official_codex_home / "config.toml"
+        shared_config.write_text(
+            '[agents]\nmax_threads = 4\n\n[notice]\nkeep = true\n'
+        )
+        shared_config.chmod(0o600)
+        bundle_root = root / "Applications" / "ChatGPT.app"
+        contents = bundle_root / "Contents"
+        contents.mkdir(parents=True)
+        with (contents / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {
+                    "CFBundleIdentifier": CURRENT_CHATGPT_BUNDLE_ID,
+                    "CFBundleShortVersionString": "1.2026.196",
+                },
+                handle,
+            )
+        official_main = contents / "MacOS" / "ChatGPT"
+        official_cli = contents / "Resources" / "codex"
+        official_main.parent.mkdir(parents=True)
+        official_cli.parent.mkdir(parents=True)
+        write_fake_script(official_main, "#!/usr/bin/env sh\nexit 0\n")
+        write_fake_script(official_cli, "#!/usr/bin/env sh\nexit 0\n")
+        store.manifest_path("internal").write_text(
+            json.dumps(
+                {
+                    "name": "internal",
+                    "codex_bin": str(old_backend),
+                    "app_cli_path": str(launcher),
+                    "app_cli_binding": "launchagent",
+                    "runtime_binding": "canonical",
+                }
+            )
+        )
+        store.active_path.write_text(
+            json.dumps(
+                {
+                    "profile": "internal",
+                    "codex_home": str(internal_home),
+                    "shell_cli_path": str(old_backend),
+                    "app_cli_path": str(launcher),
+                }
+            )
+        )
+        args = SimpleNamespace(
+            store_dir=store.root,
+            official_codex_home=store.official_codex_home,
+            official_codex_home_source="explicit",
+            internal_codex_home=store.internal_codex_home,
+            internal_codex_home_source="explicit",
+            launch_agent_path=store.launch_agent_path,
+            launch_agent_label=store.launch_agent_label,
+            name="internal",
+            codex_bin=str(candidate),
+            preserve_app_cli=False,
+            rebind_commit_fault_hook=None,
+            rebind_desktop_inventory=DesktopInventory(
+                current=ChatGPTDesktopHost(
+                    kind="chatgpt",
+                    bundle_root=bundle_root,
+                    bundle_id=CURRENT_CHATGPT_BUNDLE_ID,
+                    main_executable=official_main,
+                    bundled_cli=official_cli,
+                    healthy=True,
+                    migration_only=False,
+                )
+            ),
+        )
+        observed_paths = (
+            store.manifest_path("internal"),
+            launcher,
+            store.bin_dir / "codex-internal-app.capabilities.json",
+            profile_dir / "parity" / "receipt.json",
+            profile_dir / "parity" / "model-catalog.json",
+            profile_config,
+            shared_config,
+            active_runtime_config,
+            store.root / ".runtime-binding-rebind.json",
+            source_catalog,
+        )
+        return store, source_catalog, args, observed_paths
+
+    def snapshot_rebind_paths(
+        self,
+        paths: tuple[Path, ...],
+    ) -> dict[Path, tuple[str, bytes | None, int | None]]:
+        snapshot: dict[Path, tuple[str, bytes | None, int | None]] = {}
+        for path in paths:
+            if path.is_symlink():
+                snapshot[path] = ("symlink", os.readlink(path).encode(), None)
+            elif path.exists():
+                snapshot[path] = (
+                    "file" if path.is_file() else "other",
+                    path.read_bytes() if path.is_file() else None,
+                    path.stat().st_mode & 0o777,
+                )
+            else:
+                snapshot[path] = ("missing", None, None)
+        return snapshot
+
+    def build_internal_home_config_with_projection(
+        self,
+        official_home: Path,
+        profile_name: str,
+        target_runtime_config: Path,
+        canonical_config: Path,
+        config_projection: ConfigProjection,
+    ) -> str:
+        kwargs: dict[str, object] = {}
+        if (
+            "config_projection"
+            in inspect.signature(build_internal_home_config).parameters
+        ):
+            kwargs["config_projection"] = config_projection
+        return build_internal_home_config(
+            official_home,
+            profile_name,
+            target_runtime_config,
+            canonical_config,
+            **kwargs,
+        )
+
     def run_switcher(
         self,
         root: Path,
         *args: str,
         env: dict[str, str] | None = None,
         check: bool = True,
+        python_executable: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         clean_env = dict(env or os.environ)
         if (
@@ -277,7 +1192,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
         ):
             clean_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
         command = [
-            sys.executable,
+            python_executable or sys.executable,
             str(SCRIPT),
             "--store-dir",
             str(root / "store"),
@@ -302,6 +1217,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
         *args: str,
         env: dict[str, str] | None = None,
         check: bool = True,
+        cwd: Path | None = None,
+        allow_switch_script: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             str(WRAPPER),
@@ -315,7 +1232,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
         ]
         clean_env = dict(env or os.environ)
         clean_env.pop("CODEX_CLI_PATH", None)
-        clean_env.pop("CODEX_SWITCH_SCRIPT", None)
+        if not allow_switch_script:
+            clean_env.pop("CODEX_SWITCH_SCRIPT", None)
         clean_env.pop("CODEX_SWITCH_HOME", None)
         if (
             "CODEX_SWITCH_SHELL_PROFILE" not in clean_env
@@ -329,32 +1247,108 @@ class CodexProfileSwitchTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=clean_env,
+            cwd=cwd,
         )
+
+    def enable_fake_internal_update_promotion(
+        self,
+        root: Path,
+        env: dict[str, str],
+    ) -> Path:
+        driver = root / "fake-internal-update-promotion.py"
+        write_fake_internal_update_promotion_driver(driver)
+        env["CODEX_SWITCH_SCRIPT"] = str(driver)
+        env["CODEX_SWITCH_TEST_REAL_SWITCHER"] = str(SCRIPT)
+        return driver
+
+    def assert_staged_update_helper_args(
+        self,
+        args_log: Path,
+        *,
+        bound_bin: Path,
+        version: str,
+        expected_flags: tuple[str, ...] = (),
+    ) -> Path:
+        args = shlex.split(args_log.read_text())
+        self.assertEqual("update-internal", args[0])
+        self.assertEqual(version, args[args.index("--version") + 1])
+        self.assertEqual(
+            str(bound_bin),
+            args[args.index("--internal-bin") + 1],
+        )
+        candidate_dir = Path(args[args.index("--install-dir") + 1])
+        self.assertEqual(bound_bin.parent.resolve(), candidate_dir.parent.resolve())
+        self.assertNotEqual(bound_bin.parent.resolve(), candidate_dir.resolve())
+        self.assertTrue(candidate_dir.name.startswith(".codex-internal-update-"))
+        for flag in expected_flags:
+            self.assertIn(flag, args)
+        return candidate_dir
 
     def prepare_profiles(self, root: Path) -> tuple[Path, Path, dict[str, str]]:
         path_dir = root / "path"
         path_dir.mkdir()
-        internal = root / "internal-codex"
+        internal = root / "internal-bin" / "codex"
         official = root / "official-codex"
+        internal.parent.mkdir()
         write_fake_codex(internal, "internal-codex")
         write_fake_codex(official, "official-codex")
         (path_dir / "codex").symlink_to(internal)
         env = os.environ.copy()
         env.pop("CODEX_CLI_PATH", None)
         env["PATH"] = f"{path_dir}{os.pathsep}{env.get('PATH', '')}"
-        return path_dir / "codex", official, env
+        return internal.resolve(), official, env
+
+    def prepare_internal_plugin_profile(
+        self,
+        root: Path,
+        *,
+        config_text: str,
+        catalog: dict[str, object],
+        sources: dict[str, Path] | None = None,
+        python_executable: str | None = None,
+    ) -> tuple[Path, dict[str, str], Path]:
+        internal_codex, official_codex, env = self.prepare_profiles(root)
+        write_fake_plugin_refresh_codex(
+            internal_codex,
+            catalog=catalog,
+            sources=sources,
+        )
+        (root / "live" / "config.toml").write_text(config_text)
+        setup_python = python_executable
+        if setup_python is None and sys.version_info < (3, 11):
+            setup_python = (
+                shutil.which("python3.12")
+                or shutil.which("python3.11")
+            )
+        self.run_switcher(
+            root,
+            "init",
+            "--app-cli-path",
+            str(official_codex),
+            "--capture-current",
+            "internal",
+            env=env,
+            python_executable=setup_python,
+        )
+        internal_home = root / "store" / "homes" / "internal"
+        internal_home.mkdir(parents=True, exist_ok=True)
+        (internal_home / "config.toml").write_text(config_text)
+        return internal_codex, env, internal_home
 
     def read_manifest(self, root: Path, name: str) -> dict[str, str]:
         path = root / "store" / "profiles" / name / "manifest.json"
         return json.loads(path.read_text())
 
     def make_installed_wrapper(self, root: Path, version: str = "0.1.1") -> Path:
-        current = root / "lib" / "current"
-        scripts_dir = current / "scripts"
-        scripts_dir.mkdir(parents=True)
+        source_root = self.write_adapter_source(
+            root,
+            version,
+            "",
+            source_name="installed-source",
+        )
+        scripts_dir = source_root / "scripts"
         shutil.copy2(WRAPPER, scripts_dir / "codex-switch")
         (scripts_dir / "codex-switch").chmod(0o755)
-        (current / "VERSION").write_text(f"{version}\n")
         fake_switcher = scripts_dir / "codex_profile_switch.py"
         fake_switcher.write_text(
             "#!/usr/bin/env python3\n"
@@ -362,42 +1356,156 @@ class CodexProfileSwitchTests(unittest.TestCase):
             "print('old-switcher:' + ' '.join(sys.argv[1:]))\n"
         )
         fake_switcher.chmod(0o755)
-        return scripts_dir / "codex-switch"
+        receipt = build_release_bundle(source_root, root / "installed-release")
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        subprocess.run(
+            [
+                sys.executable,
+                str(PROMOTION_MODULE),
+                "--candidate-root",
+                str(receipt.package_dir),
+                "--layout-root",
+                str(root / "lib"),
+                "--expected-version",
+                version,
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        return root / "lib" / "current" / "scripts" / "codex-switch"
 
     def make_remote_wrapper_tarball(self, root: Path, version: str = "9.9.9") -> Path:
-        release_root = root / "remote-release" / "codex-switch"
-        scripts_dir = release_root / "scripts"
-        scripts_dir.mkdir(parents=True)
-        fake_wrapper = scripts_dir / "codex-switch"
-        fake_wrapper.write_text(
+        return self.make_adapter_release_tarball(
+            root,
+            version,
             "#!/usr/bin/env sh\n"
             "printf 'synced-wrapper:%s\\n' \"$*\"\n"
             "printf 'skip-self-update:%s\\n' \"${CODEX_SWITCH_SKIP_SELF_UPDATE:-}\"\n"
         )
-        fake_wrapper.chmod(0o755)
-        (release_root / "VERSION").write_text(f"{version}\n")
-        tarball = root / "remote-codex-switch.tar.gz"
-        with tarfile.open(tarball, "w:gz") as archive:
-            archive.add(release_root, arcname="codex-switch")
-        return tarball
 
-    def make_source_archive(self, root: Path, version: str = "9.9.9") -> Path:
+    def write_adapter_source(
+        self,
+        root: Path,
+        version: str,
+        wrapper_text: str,
+        *,
+        source_name: str = "adapter-source",
+    ) -> Path:
+        source_root = root / source_name
+        scripts_dir = source_root / "scripts"
+        (source_root / "agents").mkdir(parents=True)
+        (source_root / "docs").mkdir()
+        (source_root / "evals").mkdir()
+        scripts_dir.mkdir()
+        (source_root / "README.md").write_text("adapter source\n")
+        (source_root / "SKILL.md").write_text("adapter source\n")
+        (source_root / "VERSION").write_text(f"{version}\n")
+        (source_root / "run.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (source_root / "agents" / "openai.yaml").write_text(
+            "name: adapter-source\n"
+        )
+        (source_root / "docs" / "release.md").write_text("adapter source\n")
+        (source_root / "evals" / "evals.json").write_text('{"evals": []}\n')
+        wrapper_lines = wrapper_text.splitlines(keepends=True)
+        if wrapper_lines and wrapper_lines[0].startswith("#!"):
+            shebang = wrapper_lines[0]
+            wrapper_body = "".join(wrapper_lines[1:])
+        else:
+            shebang = "#!/usr/bin/env sh\n"
+            wrapper_body = wrapper_text
+        (scripts_dir / "codex-switch").write_text(
+            shebang
+            + 'if [ "${1:-}" = "--version" ]; then\n'
+            + f"  printf '%s\\n' '{version}'\n"
+            + "  exit 0\n"
+            + "fi\n"
+            + wrapper_body
+        )
+        (scripts_dir / "package-release.sh").write_text(
+            "#!/usr/bin/env bash\nexit 0\n"
+        )
+        write_required_release_modules(scripts_dir)
+        for path in (
+            source_root / "run.sh",
+            scripts_dir / "codex-switch",
+            scripts_dir / "package-release.sh",
+        ):
+            path.chmod(0o755)
+        return source_root
+
+    def make_adapter_release_tarball(
+        self,
+        root: Path,
+        version: str,
+        wrapper_text: str,
+    ) -> Path:
+        source_root = self.write_adapter_source(root, version, wrapper_text)
+        output_root = root / "adapter-release"
+        receipt = build_release_bundle(source_root, output_root)
+        return receipt.archive
+
+    def make_source_archive(
+        self,
+        root: Path,
+        version: str = "9.9.9",
+        *,
+        remove_path: str | None = None,
+    ) -> Path:
         source_root = root / "source-release" / f"codex-switch-{version}"
         scripts_dir = source_root / "scripts"
-        scripts_dir.mkdir(parents=True)
+        (source_root / "agents").mkdir(parents=True)
+        (source_root / "docs" / "troubleshooting").mkdir(parents=True)
+        (source_root / "evals").mkdir(parents=True)
+        (scripts_dir / "__pycache__").mkdir(parents=True)
         (source_root / "README.md").write_text("source archive\n")
         (source_root / "SKILL.md").write_text("source archive\n")
         (source_root / "VERSION").write_text(f"{version}\n")
+        source_runner = source_root / "run.sh"
+        source_runner.write_text("#!/usr/bin/env sh\nprintf 'source-runner\\n'\n")
+        source_runner.chmod(0o741)
+        (source_root / "agents" / "openai.yaml").write_text(
+            "name: source-agent\n"
+        )
+        (
+            source_root
+            / "docs"
+            / "troubleshooting"
+            / "source-fallback.md"
+        ).write_text("source fallback\n")
+        (source_root / "evals" / "evals.json").write_text('{"evals": []}\n')
         raw_wrapper = scripts_dir / "codex-switch"
         raw_wrapper.write_text(
             "#!/usr/bin/env sh\n"
+            "source_path=\"$0\"\n"
+            "while [ -L \"$source_path\" ]; do\n"
+            "  source_dir=\"$(cd -P -- \"$(dirname -- \"$source_path\")\" && pwd)\"\n"
+            "  source_path=\"$(readlink \"$source_path\")\"\n"
+            "  case \"$source_path\" in\n"
+            "    /*) ;;\n"
+            "    *) source_path=\"$source_dir/$source_path\" ;;\n"
+            "  esac\n"
+            "done\n"
+            "if [ \"${1:-}\" = \"--version\" ]; then\n"
+            "  sed -n '1p' \"$(dirname -- \"$source_path\")/../VERSION\"\n"
+            "  exit 0\n"
+            "fi\n"
             "printf 'raw-source:%s\\n' \"$*\"\n"
+            "printf 'skip-self-update:%s\\n' "
+            "\"${CODEX_SWITCH_SKIP_SELF_UPDATE:-}\"\n"
+            "printf 'source-root:%s\\n' "
+            "\"$(cd -P -- \"$(dirname -- \"$source_path\")/..\" && pwd)\"\n"
         )
-        raw_wrapper.chmod(0o755)
+        raw_wrapper.chmod(0o751)
         package_script = scripts_dir / "package-release.sh"
         package_script.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
+            "printf 'executed\\n' > "
+            "\"${CODEX_SWITCH_MALICIOUS_SENTINEL:?}\"\n"
             'out="${CODEX_SWITCH_DIST_DIR:-$PWD/dist}"\n'
             'pkg="$out/codex-switch"\n'
             'rm -rf "$pkg"\n'
@@ -411,11 +1519,64 @@ class CodexProfileSwitchTests(unittest.TestCase):
             'chmod +x "$pkg/scripts/codex-switch"\n'
             'echo "$out/codex-switch.tar.gz"\n'
         )
-        package_script.chmod(0o755)
+        package_script.chmod(0o701)
+        write_required_release_modules(scripts_dir)
+        (scripts_dir / "__pycache__" / "poison.pyc").write_bytes(b"cache")
+        (source_root / "DO_NOT_COPY.txt").write_text("outside allowlist\n")
+        if remove_path is not None:
+            removed = source_root / remove_path
+            if removed.is_dir():
+                shutil.rmtree(removed)
+            else:
+                removed.unlink()
         tarball = root / "source-codex-switch.tar.gz"
         with tarfile.open(tarball, "w:gz") as archive:
             archive.add(source_root, arcname=f"codex-switch-{version}")
         return tarball
+
+    def assert_trusted_source_fallback(
+        self,
+        installed_root: Path,
+        malicious_sentinel: Path,
+        *,
+        promoted: bool = False,
+    ) -> None:
+        self.assertFalse(malicious_sentinel.exists())
+        expected_entries = {
+            "README.md",
+            "SKILL.md",
+            "VERSION",
+            "run.sh",
+            "agents",
+            "docs",
+            "evals",
+            "scripts",
+        }
+        if promoted:
+            expected_entries.add("bundle-manifest.json")
+        self.assertEqual(
+            expected_entries,
+            {path.name for path in installed_root.iterdir()},
+        )
+        self.assertFalse((installed_root / "DO_NOT_COPY.txt").exists())
+        self.assertFalse((installed_root / "scripts" / "__pycache__").exists())
+        self.assertTrue(
+            (installed_root / "scripts" / "package-release.sh").is_file()
+        )
+        self.assertEqual(
+            0o755 if promoted else 0o741,
+            (installed_root / "run.sh").stat().st_mode & 0o777,
+        )
+        self.assertEqual(
+            0o755 if promoted else 0o751,
+            (installed_root / "scripts" / "codex-switch").stat().st_mode
+            & 0o777,
+        )
+        self.assertEqual(
+            0o755 if promoted else 0o701,
+            (installed_root / "scripts" / "package-release.sh").stat().st_mode
+            & 0o777,
+        )
 
     def init_release_repo(self, root: Path, version: str = "0.1.3") -> Path:
         repo = root / "release-repo"
@@ -450,6 +1611,27 @@ class CodexProfileSwitchTests(unittest.TestCase):
         result = self.run_release_auto(repo, "plan", "--json")
         return json.loads(result.stdout)
 
+    def release_assets(
+        self,
+        root: Path,
+        *,
+        install: bytes = b"installer\n",
+        runner: bytes = b"runner\n",
+        archive: bytes = b"archive\n",
+    ):
+        paths = {
+            "install.sh": root / "install.sh",
+            "run.sh": root / "run.sh",
+            "codex-switch.tar.gz": root / "codex-switch.tar.gz",
+        }
+        paths["install.sh"].write_bytes(install)
+        paths["run.sh"].write_bytes(runner)
+        paths["codex-switch.tar.gz"].write_bytes(archive)
+        return tuple(
+            release_auto.build_asset_evidence(name, path)
+            for name, path in paths.items()
+        )
+
     def self_update_env(self, root: Path, tarball: Path) -> dict[str, str]:
         env = os.environ.copy()
         env["CODEX_SWITCH_LIB_DIR"] = str(root / "lib")
@@ -459,20 +1641,14 @@ class CodexProfileSwitchTests(unittest.TestCase):
     def test_remote_runner_downloads_release_and_execs_command(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            release_root = root / "release" / "codex-switch"
-            scripts_dir = release_root / "scripts"
-            scripts_dir.mkdir(parents=True)
-            fake_wrapper = scripts_dir / "codex-switch"
-            fake_wrapper.write_text(
+            tarball = self.make_adapter_release_tarball(
+                root,
+                "9.9.9",
                 "#!/usr/bin/env sh\n"
                 "printf 'fake-codex-switch:%s\\n' \"$*\"\n"
                 "printf 'skip-self-update:%s\\n' \"${CODEX_SWITCH_SKIP_SELF_UPDATE:-}\"\n"
                 "printf 'script-dir:%s\\n' \"$(cd -- \"$(dirname -- \"$0\")\" && pwd)\"\n"
             )
-            fake_wrapper.chmod(0o755)
-            tarball = root / "codex-switch.tar.gz"
-            with tarfile.open(tarball, "w:gz") as archive:
-                archive.add(release_root, arcname="codex-switch")
 
             install_dir = root / "bin"
             lib_dir = root / "lib"
@@ -490,9 +1666,15 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 env=env,
             )
 
-            self.assertIn("fake-codex-switch:status --verbose", result.stdout)
+            self.assertEqual(
+                1,
+                result.stdout.count("fake-codex-switch:status --verbose"),
+            )
             self.assertIn("skip-self-update:1", result.stdout)
-            self.assertIn(f"script-dir:{lib_dir / 'current' / 'scripts'}", result.stdout)
+            self.assertIn(
+                f"script-dir:{(lib_dir / 'current' / 'scripts').resolve()}",
+                result.stdout,
+            )
             self.assertTrue((lib_dir / "current" / "scripts" / "codex-switch").exists())
             self.assertFalse((install_dir / "codex-switch").exists())
 
@@ -500,6 +1682,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
         temp_dir, root = self.make_workspace()
         with temp_dir:
             source_archive = self.make_source_archive(root)
+            malicious_sentinel = root / "installer-malicious-executed"
             install_dir = root / "bin"
             lib_dir = root / "lib"
             missing_tarball = root / "missing-codex-switch.tar.gz"
@@ -508,6 +1691,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
             env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
             env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+            env["CODEX_SWITCH_MALICIOUS_SENTINEL"] = str(malicious_sentinel)
 
             subprocess.run(
                 [str(INSTALLER)],
@@ -527,20 +1711,113 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 env=env,
             )
 
-            self.assertIn("packaged-source:status --verbose", result.stdout)
+            self.assertEqual(
+                1,
+                result.stdout.count("raw-source:status --verbose"),
+            )
+            self.assertIn(
+                f"source-root:{(lib_dir / 'current').resolve()}",
+                result.stdout,
+            )
             self.assertEqual("9.9.9\n", (lib_dir / "current" / "VERSION").read_text())
             self.assertTrue((install_dir / "codex-switch").exists())
+            self.assert_trusted_source_fallback(
+                lib_dir / "current",
+                malicious_sentinel,
+                promoted=True,
+            )
+
+    def test_installer_rejects_downloaded_source_missing_required_allowlist_path(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            source_archive = self.make_source_archive(root, remove_path="docs")
+            malicious_sentinel = root / "installer-malicious-executed"
+            install_dir = root / "bin"
+            lib_dir = root / "lib"
+            env = os.environ.copy()
+            env["CODEX_SWITCH_TARBALL_URL"] = (
+                root / "missing-codex-switch.tar.gz"
+            ).as_uri()
+            env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
+            env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
+            env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+            env["CODEX_SWITCH_MALICIOUS_SENTINEL"] = str(malicious_sentinel)
+
+            result = subprocess.run(
+                [str(INSTALLER)],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn(
+                "Downloaded source archive is missing required directory: docs",
+                result.stderr,
+            )
+            self.assertFalse(malicious_sentinel.exists())
+            self.assertFalse((lib_dir / "current").exists())
+            self.assertFalse((install_dir / "codex-switch").is_symlink())
+
+    def test_downloaded_source_cleanup_failure_is_not_reported_as_success(
+        self,
+    ) -> None:
+        for label, entrypoint, args in (
+            ("installer", INSTALLER, ()),
+            ("runner", REMOTE_RUNNER, ("status",)),
+        ):
+            with self.subTest(label=label):
+                temp_dir, root = self.make_workspace()
+                with temp_dir:
+                    source_archive = self.make_source_archive(root)
+                    fake_bin = root / "fake-bin"
+                    fake_bin.mkdir()
+                    write_fake_script(
+                        fake_bin / "rm",
+                        "#!/bin/sh\n"
+                        'case "$*" in\n'
+                        '  *"/scripts/__pycache__") exit 17 ;;\n'
+                        "esac\n"
+                        'exec /bin/rm "$@"\n',
+                    )
+                    install_dir = root / "bin"
+                    lib_dir = root / "lib"
+                    env = os.environ.copy()
+                    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+                    env["CODEX_SWITCH_TARBALL_URL"] = (
+                        root / "missing-codex-switch.tar.gz"
+                    ).as_uri()
+                    env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = (
+                        source_archive.as_uri()
+                    )
+                    env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
+                    env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+
+                    result = subprocess.run(
+                        [str(entrypoint), *args],
+                        check=False,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse((lib_dir / "current").exists())
+                    self.assertFalse((install_dir / "codex-switch").is_symlink())
 
     def test_installer_preserves_local_source_version(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            source_root = root / "source"
-            scripts_dir = source_root / "scripts"
-            scripts_dir.mkdir(parents=True)
-            fake_wrapper = scripts_dir / "codex-switch"
-            fake_wrapper.write_text("#!/usr/bin/env sh\nprintf 'source-wrapper\\n'\n")
-            fake_wrapper.chmod(0o755)
-            (source_root / "VERSION").write_text("0.1.13-dev\n")
+            source_root = self.write_adapter_source(
+                root,
+                "0.1.13-dev",
+                "#!/usr/bin/env sh\nprintf 'source-wrapper\\n'\n",
+            )
 
             install_dir = root / "bin"
             lib_dir = root / "lib"
@@ -565,6 +1842,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
         temp_dir, root = self.make_workspace()
         with temp_dir:
             source_archive = self.make_source_archive(root)
+            malicious_sentinel = root / "runner-malicious-executed"
             install_dir = root / "bin"
             lib_dir = root / "lib"
             missing_tarball = root / "missing-codex-switch.tar.gz"
@@ -573,6 +1851,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
             env["CODEX_SWITCH_INSTALL_DIR"] = str(install_dir)
             env["CODEX_SWITCH_LIB_DIR"] = str(lib_dir)
+            env["CODEX_SWITCH_MALICIOUS_SENTINEL"] = str(malicious_sentinel)
 
             result = subprocess.run(
                 [str(REMOTE_RUNNER), "status", "--verbose"],
@@ -583,10 +1862,22 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 env=env,
             )
 
-            self.assertIn("packaged-source:status --verbose", result.stdout)
+            self.assertEqual(
+                1,
+                result.stdout.count("raw-source:status --verbose"),
+            )
             self.assertIn("skip-self-update:1", result.stdout)
+            self.assertIn(
+                f"source-root:{(lib_dir / 'current').resolve()}",
+                result.stdout,
+            )
             self.assertEqual("9.9.9\n", (lib_dir / "current" / "VERSION").read_text())
             self.assertFalse((install_dir / "codex-switch").exists())
+            self.assert_trusted_source_fallback(
+                lib_dir / "current",
+                malicious_sentinel,
+                promoted=True,
+            )
 
     def test_local_wrapper_self_updates_release_install_before_command(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -595,14 +1886,18 @@ class CodexProfileSwitchTests(unittest.TestCase):
             tarball = self.make_remote_wrapper_tarball(root)
             env = self.self_update_env(root, tarball)
 
-            result = subprocess.run(
-                [str(local_wrapper), "status", "--verbose"],
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-            )
+            previous_umask = os.umask(0o077)
+            try:
+                result = subprocess.run(
+                    [str(local_wrapper), "status", "--verbose"],
+                    check=True,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                )
+            finally:
+                os.umask(previous_umask)
 
             self.assertIn("synced-wrapper:status --verbose", result.stdout)
             self.assertIn("codex-switch self-update: checking latest release", result.stderr)
@@ -787,8 +2082,10 @@ class CodexProfileSwitchTests(unittest.TestCase):
         with temp_dir:
             local_wrapper = self.make_installed_wrapper(root)
             source_archive = self.make_source_archive(root)
+            malicious_sentinel = root / "self-update-malicious-executed"
             env = self.self_update_env(root, root / "missing-release.tar.gz")
             env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
+            env["CODEX_SWITCH_MALICIOUS_SENTINEL"] = str(malicious_sentinel)
 
             result = subprocess.run(
                 [str(local_wrapper), "status", "--verbose"],
@@ -799,8 +2096,66 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 env=env,
             )
 
-            self.assertIn("packaged-source:status --verbose", result.stdout)
+            self.assertIn("raw-source:status --verbose", result.stdout)
+            self.assertIn(
+                f"source-root:{(root / 'lib' / 'current').resolve()}",
+                result.stdout,
+            )
             self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
+            self.assert_trusted_source_fallback(
+                root / "lib" / "current",
+                malicious_sentinel,
+                promoted=True,
+            )
+
+    def test_downloaded_source_self_update_stops_after_staging_cleanup_failure(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root)
+            source_archive = self.make_source_archive(root)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            failure_state = root / "rm-failure-state"
+            write_fake_script(
+                fake_bin / "rm",
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                '  *"/scripts/__pycache__")\n'
+                '    : > "$CODEX_SWITCH_RM_FAILURE_STATE"\n'
+                "    exit 17\n"
+                "    ;;\n"
+                "esac\n"
+                'if [ -f "$CODEX_SWITCH_RM_FAILURE_STATE" ]; then\n'
+                '  case "$*" in\n'
+                '    *".self-update."*) exit 18 ;;\n'
+                "  esac\n"
+                "fi\n"
+                'exec /bin/rm "$@"\n',
+            )
+            env = self.self_update_env(root, root / "missing-release.tar.gz")
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["CODEX_SWITCH_SOURCE_TARBALL_URL"] = source_archive.as_uri()
+            env["CODEX_SWITCH_RM_FAILURE_STATE"] = str(failure_state)
+
+            result = subprocess.run(
+                [str(local_wrapper), "status"],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertEqual(0, result.returncode)
+            self.assertIn("old-switcher:status", result.stdout)
+            self.assertNotIn("raw-source:status", result.stdout)
+            self.assertIn("sync failed; continuing", result.stderr)
+            self.assertEqual(
+                "0.1.1\n",
+                (root / "lib" / "current" / "VERSION").read_text(),
+            )
 
     def test_release_workflow_uploads_required_assets(self) -> None:
         workflow = RELEASE_WORKFLOW.read_text()
@@ -808,8 +2163,10 @@ class CodexProfileSwitchTests(unittest.TestCase):
         self.assertIn("contents: write", workflow)
         self.assertIn("@fission-ai/openspec@1.3.1", workflow)
         self.assertIn("scripts/package-release.sh", workflow)
-        self.assertIn("gh release upload", workflow)
-        self.assertIn("--clobber", workflow)
+        self.assertIn('"$RELEASE_AUTO" assets', workflow)
+        self.assertIn('"$RELEASE_AUTO" reconcile', workflow)
+        self.assertNotIn("gh release upload", workflow)
+        self.assertNotIn("--clobber", workflow)
         self.assertIn("install.sh", workflow)
         self.assertIn("dist/run.sh", workflow)
         self.assertIn("dist/codex-switch.tar.gz", workflow)
@@ -864,6 +2221,312 @@ class CodexProfileSwitchTests(unittest.TestCase):
         self.assertEqual(plan["next_version"], "0.1.4")
         self.assertIn("scripts/codex-switch", plan["release_relevant_files"])
 
+    def test_auto_release_plan_rejects_non_ancestor_latest_tag(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            repo = self.init_release_repo(root)
+            main_branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=repo,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "checkout", "-q", "-b", "side-release", "v0.1.3"],
+                cwd=repo,
+                check=True,
+            )
+            (repo / "scripts" / "side").write_text("side\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "side release"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(["git", "tag", "v0.1.4"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "checkout", "-q", main_branch],
+                cwd=repo,
+                check=True,
+            )
+            (repo / "scripts" / "codex-switch").write_text(
+                "#!/usr/bin/env sh\necho main\n"
+            )
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "main change"],
+                cwd=repo,
+                check=True,
+            )
+
+            result = self.run_release_auto(repo, "plan", "--json", check=False)
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("is not an ancestor", result.stderr)
+
+    def test_auto_release_plan_resumes_latest_tag_with_missing_assets(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            repo = self.init_release_repo(root)
+            planning = repo / ".planning"
+            planning.mkdir()
+            (planning / "note.md").write_text("later planning note\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "docs: planning note"],
+                cwd=repo,
+                check=True,
+            )
+            github = FakeGitHubReleaseAdapter(
+                assets={
+                    "install.sh": b"installer",
+                    "run.sh": b"runner",
+                }
+            )
+
+            plan = release_auto.build_plan(repo, "HEAD", github=github)
+            tagged_commit = subprocess.run(
+                ["git", "rev-list", "-n", "1", "v0.1.3"],
+                cwd=repo,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip()
+
+        self.assertEqual("reconcile", plan["release_action"])
+        self.assertTrue(plan["release_required"])
+        self.assertEqual("v0.1.3", plan["target_tag"])
+        self.assertEqual(tagged_commit, plan["target_commit"])
+        self.assertEqual(["codex-switch.tar.gz"], plan["missing_assets"])
+
+    def test_auto_release_plan_skips_matching_complete_published_tag(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            repo = self.init_release_repo(root)
+            github = FakeGitHubReleaseAdapter(
+                assets={
+                    "install.sh": b"installer",
+                    "run.sh": b"runner",
+                    "codex-switch.tar.gz": b"archive",
+                }
+            )
+
+            plan = release_auto.build_plan(repo, "HEAD", github=github)
+
+        self.assertEqual("none", plan["release_action"])
+        self.assertFalse(plan["release_required"])
+        self.assertEqual("v0.1.3", plan["latest_tag"])
+        self.assertEqual("", plan["target_tag"])
+        self.assertEqual([], plan["missing_assets"])
+
+    def test_auto_release_plan_resumes_complete_draft_release(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            repo = self.init_release_repo(root)
+            github = FakeGitHubReleaseAdapter(
+                assets={
+                    "install.sh": b"installer",
+                    "run.sh": b"runner",
+                    "codex-switch.tar.gz": b"archive",
+                },
+                draft=True,
+            )
+
+            plan = release_auto.build_plan(repo, "HEAD", github=github)
+
+        self.assertEqual("reconcile", plan["release_action"])
+        self.assertTrue(plan["release_required"])
+        self.assertEqual("v0.1.3", plan["target_tag"])
+        self.assertEqual([], plan["missing_assets"])
+
+    def test_auto_release_prepare_rejects_tag_on_different_commit(self) -> None:
+        with self.assertRaises(release_auto.ReleaseConflict) as caught:
+            release_auto.validate_prepare_state(
+                source_commit="a" * 40,
+                remote_main_commit="a" * 40,
+                candidate_commit="b" * 40,
+                existing_tag_commit="c" * 40,
+            )
+
+        self.assertIn("different commit", str(caught.exception))
+
+    def test_auto_release_prepare_rejects_remote_main_race(self) -> None:
+        with self.assertRaises(release_auto.ReleaseConflict) as caught:
+            release_auto.validate_prepare_state(
+                source_commit="a" * 40,
+                remote_main_commit="d" * 40,
+                candidate_commit="b" * 40,
+                existing_tag_commit=None,
+            )
+
+        self.assertIn("remote main moved", str(caught.exception))
+
+    def test_auto_release_prepare_rejects_existing_same_commit_tag(self) -> None:
+        with self.assertRaises(release_auto.ReleaseConflict) as caught:
+            release_auto.validate_prepare_state(
+                source_commit="a" * 40,
+                remote_main_commit="a" * 40,
+                candidate_commit="b" * 40,
+                existing_tag_commit="b" * 40,
+            )
+
+        self.assertIn("already exists", str(caught.exception))
+
+    def test_release_source_binding_rejects_untracked_and_ignored_files(self) -> None:
+        for ignored in (False, True):
+            with self.subTest(ignored=ignored):
+                temp_dir = tempfile.TemporaryDirectory()
+                root = Path(temp_dir.name)
+                with temp_dir:
+                    repo = self.init_release_repo(root)
+                    (repo / "install.sh").write_text(
+                        "#!/usr/bin/env sh\nexit 0\n"
+                    )
+                    (repo / "install.sh").chmod(0o755)
+                    if ignored:
+                        (repo / ".gitignore").write_text("scripts/generated.py\n")
+                    subprocess.run(
+                        ["git", "add", "install.sh", ".gitignore"]
+                        if ignored
+                        else ["git", "add", "install.sh"],
+                        cwd=repo,
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["git", "commit", "-q", "-m", "bind release source"],
+                        cwd=repo,
+                        check=True,
+                    )
+                    (repo / "scripts" / "generated.py").write_text("VALUE = 1\n")
+
+                    with self.assertRaises(release_auto.ReleaseConflict) as caught:
+                        release_auto.assert_release_source_matches_commit(
+                            repo,
+                            release_auto.resolve_commit(repo, "HEAD"),
+                            required_files=("VERSION",),
+                            required_directories=("scripts",),
+                        )
+
+                self.assertIn(
+                    "Release source file set differs from commit tree",
+                    str(caught.exception),
+                )
+                self.assertIn("scripts/generated.py", str(caught.exception))
+
+    def test_release_reconciliation_rejects_existing_asset_checksum_mismatch(
+        self,
+    ) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            assets = self.release_assets(root)
+            github = FakeGitHubReleaseAdapter(
+                assets={"install.sh": b"different installer"}
+            )
+
+            with self.assertRaises(release_auto.ReleaseConflict) as caught:
+                release_auto.reconcile_release_assets(
+                    tag="v1.2.3",
+                    release_commit="a" * 40,
+                    tag_commit="a" * 40,
+                    assets=assets,
+                    github=github,
+                )
+
+        self.assertIn("checksum mismatch", str(caught.exception))
+        self.assertEqual([], github.upload_attempts)
+
+    def test_release_reconciliation_publish_failure_reruns_same_tag(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            assets = self.release_assets(root)
+            github = FakeGitHubReleaseAdapter(
+                exists=False,
+                fail_publish_once=True,
+            )
+
+            with self.assertRaises(release_auto.ReleaseError):
+                release_auto.reconcile_release_assets(
+                    tag="v1.2.3",
+                    release_commit="a" * 40,
+                    tag_commit="a" * 40,
+                    assets=assets,
+                    github=github,
+                )
+
+            receipt = release_auto.reconcile_release_assets(
+                tag="v1.2.3",
+                release_commit="a" * 40,
+                tag_commit="a" * 40,
+                assets=assets,
+                github=github,
+            )
+
+        self.assertEqual(["v1.2.3"], github.create_calls)
+        self.assertEqual(
+            Counter(
+                {
+                    "install.sh": 1,
+                    "run.sh": 1,
+                    "codex-switch.tar.gz": 1,
+                }
+            ),
+            Counter(github.upload_attempts),
+        )
+        self.assertEqual(["v1.2.3", "v1.2.3"], github.publish_calls)
+        self.assertFalse(github.draft)
+        self.assertEqual(
+            {"install.sh", "run.sh", "codex-switch.tar.gz"},
+            set(github.assets),
+        )
+        self.assertEqual("published", receipt["outcome"])
+        self.assertEqual([], receipt["uploaded_assets"])
+
+    def test_release_reconciliation_detects_post_publish_asset_corruption(
+        self,
+    ) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        root = Path(temp_dir.name)
+        with temp_dir:
+            assets = self.release_assets(root)
+            github = FakeGitHubReleaseAdapter(
+                exists=False,
+                corrupt_after_publish="codex-switch.tar.gz",
+            )
+
+            with self.assertRaises(release_auto.ReleaseConflict) as caught:
+                release_auto.reconcile_release_assets(
+                    tag="v1.2.3",
+                    release_commit="a" * 40,
+                    tag_commit="a" * 40,
+                    assets=assets,
+                    github=github,
+                )
+
+        self.assertIn("Published release asset checksum mismatch", str(caught.exception))
+
+    def test_github_release_creation_requires_existing_tag_and_starts_draft(
+        self,
+    ) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with mock.patch.object(release_auto, "_run", return_value=completed) as run:
+            release_auto.GitHubCliAdapter("owner/repo").create_release("v1.2.3")
+
+        command = run.call_args.args[0]
+        self.assertIn("--verify-tag", command)
+        self.assertIn("--draft", command)
+
     def test_auto_release_plan_skips_planning_only_changes(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         root = Path(temp_dir.name)
@@ -902,15 +2565,82 @@ class CodexProfileSwitchTests(unittest.TestCase):
         self.assertIn("branches:", workflow)
         self.assertIn("- main", workflow)
         self.assertIn("contents: write", workflow)
-        self.assertIn("scripts/release_auto.py plan", workflow)
+        self.assertIn('"$RELEASE_AUTO" plan', workflow)
         self.assertIn("release_required", workflow)
-        self.assertIn("scripts/release_auto.py bump --tag", workflow)
+        self.assertIn('"$RELEASE_AUTO" bump --tag', workflow)
         self.assertIn('git tag "$NEXT_TAG"', workflow)
-        self.assertIn('git push origin "HEAD:main" "refs/tags/$NEXT_TAG"', workflow)
+        self.assertIn("push --atomic origin", workflow)
         self.assertIn("scripts/package-release.sh", workflow)
-        self.assertIn("gh release", workflow)
-        self.assertIn("dist/run.sh", workflow)
-        self.assertIn("dist/codex-switch.tar.gz", workflow)
+        self.assertIn('"$RELEASE_AUTO" reconcile', workflow)
+        self.assertIn("scripts/test_codex_update_release.py", workflow)
+        self.assertIn(
+            'if [ -f scripts/test_codex_update_release.py ]; then',
+            workflow,
+        )
+        self.assertIn(
+            "steps.plan.outputs.prepare_required == 'true'",
+            workflow,
+        )
+        self.assertNotIn(
+            'if [ "$RELEASE_ACTION" = "prepare" ]; then',
+            workflow,
+        )
+        self.assertIn(
+            "Historical release source has no "
+            "scripts/test_codex_update_release.py",
+            workflow,
+        )
+        self.assertIn('$CODEX_SWITCH_DIST_DIR/run.sh', workflow)
+        self.assertIn('$CODEX_SWITCH_DIST_DIR/codex-switch.tar.gz', workflow)
+        self.assertLess(
+            workflow.index("scripts/package-release.sh"),
+            workflow.index('git tag "$NEXT_TAG"'),
+        )
+        self.assertLess(
+            workflow.index("scripts/package-release.sh"),
+            workflow.index("push --atomic origin"),
+        )
+        self.assertLess(
+            workflow.index('"$RELEASE_AUTO" prepare'),
+            workflow.index("push --atomic origin"),
+        )
+        self.assertLess(
+            workflow.index('"$RELEASE_AUTO" assets'),
+            workflow.index('git tag "$NEXT_TAG"'),
+        )
+        self.assertIn(
+            '--force-with-lease="refs/heads/main:$SOURCE_COMMIT"',
+            workflow,
+        )
+        self.assertIn(
+            '--force-with-lease="refs/tags/$NEXT_TAG:"',
+            workflow,
+        )
+
+    def test_manual_release_workflow_packages_before_reconciliation(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text()
+
+        self.assertIn("$RUNNER_TEMP/codex-switch-release-tools", workflow)
+        self.assertIn("ref: main", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn('"$RELEASE_AUTO" assets', workflow)
+        self.assertIn('"$RELEASE_AUTO" reconcile', workflow)
+        self.assertIn("scripts/test_codex_update_release.py", workflow)
+        self.assertIn(
+            'if [ -f scripts/test_codex_update_release.py ]; then',
+            workflow,
+        )
+        self.assertIn(
+            "Historical release source has no "
+            "scripts/test_codex_update_release.py",
+            workflow,
+        )
+        self.assertLess(
+            workflow.index("scripts/package-release.sh"),
+            workflow.index('"$RELEASE_AUTO" reconcile'),
+        )
+        self.assertNotIn("gh release upload", workflow)
+        self.assertNotIn("--clobber", workflow)
 
     def test_init_defaults_official_codex_bin_to_app_cli_not_path_codex(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -932,7 +2662,87 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertEqual(official["codex_bin"], str(official_codex))
             self.assertEqual(official["app_cli_path"], str(official_codex))
             self.assertEqual(internal["codex_bin"], str(internal_codex))
-            self.assertEqual(internal["app_cli_path"], str(internal_codex))
+            self.assertEqual(
+                internal["app_cli_path"],
+                str(root / "store" / "bin" / "codex-internal-app"),
+            )
+
+    def test_init_capture_internal_resolves_path_symlink_backend(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            path_codex = root / "path" / "codex"
+            backend = root / "internal-bin" / "codex"
+            self.assertTrue(path_codex.is_symlink())
+
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            internal = self.read_manifest(root, "internal")
+            self.assertEqual(internal["codex_bin"], str(backend.resolve()))
+            self.assertNotEqual(internal["codex_bin"], str(path_codex))
+
+    def test_internal_switch_migrates_legacy_symlink_backend_manifest(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            path_codex = root / "path" / "codex"
+            backend = root / "internal-bin" / "codex"
+            write_fake_capability_codex(backend)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = (
+                root / "store" / "profiles" / "internal" / "manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text())
+            manifest["codex_bin"] = str(path_codex)
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
+            switched = self.run_switcher(
+                root,
+                "switch",
+                "internal",
+                "--skip-launchctl",
+                env=env,
+                check=False,
+            )
+            self.assertEqual(
+                switched.returncode,
+                0,
+                switched.stdout + switched.stderr,
+            )
+
+            migrated = json.loads(manifest_path.read_text())
+            self.assertEqual(migrated["codex_bin"], str(backend.resolve()))
+            receipt_path = (
+                root / "store" / "bin" / "codex-internal-app.capabilities.json"
+            )
+            self.assertTrue(receipt_path.is_file())
+            self.assertFalse(receipt_path.is_symlink())
+            shim_text = (root / "store" / "bin" / "codex").read_text()
+            self.assertIn("exec-internal-shell", shim_text)
+            self.assertIn(
+                "codex_switch_runtime_binding.py",
+                shim_text,
+            )
+            self.assertIn(
+                str(backend.resolve()),
+                (root / "store" / "bin" / "codex-internal-app").read_text(),
+            )
 
     def test_switch_updates_shim_and_app_cli_to_target_profile(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -960,7 +2770,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.run_switcher(root, "doctor", env=dirty_env)
 
             self.run_switcher(root, "switch", "internal", "--skip-launchctl")
-            self.assertIn(f'exec "{internal_codex}" "$@"', shim.read_text())
+            internal_shim = shim.read_text()
+            self.assertIn("exec-internal-shell", internal_shim)
+            self.assertIn(
+                "codex_switch_runtime_binding.py",
+                internal_shim,
+            )
             active = json.loads((root / "store" / "active.json").read_text())
             internal_app = root / "store" / "bin" / "codex-internal-app"
             self.assertEqual(active["app_cli_path"], str(internal_app))
@@ -996,6 +2811,192 @@ class CodexProfileSwitchTests(unittest.TestCase):
             shim_env = self.run_switcher(root, "shim-env")
             self.assertIn(f'export PATH="{shim_dir}:$PATH"', shim_env.stdout)
             self.assertIn("hash -r", shim_env.stdout)
+
+    def test_parity_diagnostics_share_unhealthy_core_code(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+            )
+            store.ensure()
+            report = self.make_parity_diagnostic_report(
+                root,
+                findings=(
+                    ParityFinding(
+                        category="protocol",
+                        code="parity.protocol.core_incompatible",
+                        severity="error",
+                        message="core protocol is incompatible",
+                    ),
+                ),
+            )
+
+            for command in ("status", "doctor", "verify"):
+                with self.subTest(command=command):
+                    code, output, collect_count = (
+                        self.run_parity_diagnostic_command(
+                            command,
+                            store,
+                            report,
+                        )
+                    )
+                    self.assertEqual(1, collect_count)
+                    self.assertEqual(
+                        0 if command == "status" else 1,
+                        code,
+                        output,
+                    )
+                    self.assertIn("Parity health: unhealthy", output)
+                    self.assertIn(
+                        "Parity finding: "
+                        "parity.protocol.core_incompatible",
+                        output,
+                    )
+
+    def test_parity_diagnostics_share_optional_queue_order(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+            )
+            store.ensure()
+            report = self.make_parity_diagnostic_report(
+                root,
+                findings=(
+                    ParityFinding(
+                        category="protocol",
+                        code="parity.protocol.optional_missing",
+                        severity="warning",
+                        message="optional protocol method is absent",
+                    ),
+                    ParityFinding(
+                        category="feature",
+                        code="parity.feature.optional_missing",
+                        severity="warning",
+                        message="optional feature is absent",
+                    ),
+                ),
+                queue=(
+                    ParityQueueItem(
+                        category="protocol",
+                        identifier="client_request:app/read",
+                        finding_code="parity.protocol.optional_missing",
+                    ),
+                    ParityQueueItem(
+                        category="feature",
+                        identifier="skill_search",
+                        finding_code="parity.feature.optional_missing",
+                    ),
+                ),
+            )
+
+            for command in ("status", "doctor", "verify"):
+                with self.subTest(command=command):
+                    code, output, collect_count = (
+                        self.run_parity_diagnostic_command(
+                            command,
+                            store,
+                            report,
+                        )
+                    )
+                    self.assertEqual(1, collect_count)
+                    self.assertEqual(0, code, output)
+                    self.assertIn("Parity health: healthy", output)
+                    self.assertIn(
+                        "Parity finding: "
+                        "parity.feature.optional_missing",
+                        output,
+                    )
+                    self.assertIn(
+                        "Parity finding: "
+                        "parity.protocol.optional_missing",
+                        output,
+                    )
+                    feature_queue = (
+                        "Parity sync: feature skill_search "
+                        "(parity.feature.optional_missing)"
+                    )
+                    protocol_queue = (
+                        "Parity sync: protocol client_request:app/read "
+                        "(parity.protocol.optional_missing)"
+                    )
+                    self.assertIn(feature_queue, output)
+                    self.assertIn(protocol_queue, output)
+                    self.assertLess(
+                        output.index(feature_queue),
+                        output.index(protocol_queue),
+                        output,
+                    )
+
+    def test_read_only_parity_diagnostics_preserve_owned_artifacts(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+            )
+            store.ensure()
+            profile = store.profile_dir("internal")
+            parity_dir = profile / "parity"
+            parity_dir.mkdir(parents=True)
+            owned_paths = (
+                store.manifest_path("internal"),
+                parity_dir / "receipt.json",
+                parity_dir / "model-catalog.json",
+                profile / "config.toml",
+                store.bin_dir / "codex-internal-app",
+            )
+            for index, path in enumerate(owned_paths):
+                path.write_bytes(f"artifact-{index}\n".encode())
+                path.chmod(0o755 if path == owned_paths[-1] else 0o600)
+
+            def snapshot() -> tuple[
+                tuple[str, int, int, int, int, int, int, bytes],
+                ...,
+            ]:
+                rows = []
+                for path in owned_paths:
+                    info = path.lstat()
+                    rows.append(
+                        (
+                            str(path),
+                            info.st_mode,
+                            info.st_dev,
+                            info.st_ino,
+                            info.st_size,
+                            info.st_mtime_ns,
+                            info.st_ctime_ns,
+                            path.read_bytes(),
+                        )
+                    )
+                return tuple(rows)
+
+            report = self.make_parity_diagnostic_report(
+                root,
+                findings=(
+                    ParityFinding(
+                        category="receipt",
+                        code="parity.receipt.missing",
+                        severity="error",
+                        message="receipt is missing",
+                    ),
+                ),
+            )
+            before = snapshot()
+
+            for command in ("status", "doctor", "verify"):
+                with self.subTest(command=command):
+                    self.run_parity_diagnostic_command(
+                        command,
+                        store,
+                        report,
+                    )
+                    self.assertEqual(before, snapshot())
 
     def test_switch_installs_shell_bootstrap_for_cli_alignment(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -1152,8 +3153,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
 
             shim = root / "store" / "bin" / "codex"
             shim_text = shim.read_text()
-            self.assertIn(f'export CODEX_HOME="{internal_home}"', shim_text)
-            self.assertIn(f'exec "{internal_codex}" "$@"', shim_text)
+            self.assertIn(str(internal_home), shim_text)
+            self.assertIn("exec-internal-shell", shim_text)
             active = json.loads((root / "store" / "active.json").read_text())
             self.assertEqual(active["profile"], "internal")
             self.assertEqual(active["home_mode"], "managed")
@@ -1591,7 +3592,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                     str(root / "store" / "homes" / "openai-official" / name),
                     dry_output,
                 )
-            self.assertIn(
+            self.assertNotIn(
                 str(
                     root
                     / "store"
@@ -1647,6 +3648,10 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "version.json",
             ):
                 self.assertNotIn(str(official_home / name), backup_paths)
+            self.assertNotIn(
+                str(official_home / ".codex-global-state.json"),
+                backup_paths,
+            )
 
     def test_internal_switch_prefers_last_runtime_config_and_refreshes_canonical(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -1853,7 +3858,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
         self.assertEqual(conversation["latestModel"], desktop_model)
         self.assertEqual(conversation["previousTurnModel"], desktop_model)
         self.assertEqual(conversation["settings"]["model"], desktop_model)
-        self.assertEqual(masked["result"]["writes"][0]["value"], desktop_model)
+        self.assertEqual(masked["result"]["writes"][0]["value"], actual_model)
         self.assertEqual(message["result"]["conversation"]["latestModel"], actual_model)
 
     def test_desktop_app_proxy_translates_desktop_model_alias_for_backend(self) -> None:
@@ -1882,9 +3887,120 @@ class CodexProfileSwitchTests(unittest.TestCase):
         )
 
         self.assertEqual(translated["params"]["model"], actual_model)
-        self.assertEqual(translated["params"]["threadSettings"]["model"], actual_model)
-        self.assertEqual(translated["params"]["writes"][0]["value"], actual_model)
+        self.assertEqual(translated["params"]["threadSettings"]["model"], desktop_model)
+        self.assertEqual(translated["params"]["writes"][0]["value"], desktop_model)
         self.assertEqual(message["params"]["model"], desktop_model)
+
+    def test_desktop_app_proxy_removes_resume_history_item_ids(self) -> None:
+        message = {
+            "id": 10,
+            "method": "thread/resume",
+            "params": {
+                "threadId": "thread-1",
+                "history": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_unavailable",
+                        "summary": [],
+                        "encrypted_content": None,
+                    },
+                    {
+                        "type": "message",
+                        "id": "019f8dfe-5fb3-7443-9889-6d89991bd9e8",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hook"}],
+                    }
+                ],
+            },
+        }
+
+        translated = translate_desktop_message_for_backend(
+            message,
+            actual_model="gpt-5.5-2026-04-24",
+            desktop_model="gpt-5.5",
+        )
+
+        self.assertEqual(1, len(translated["params"]["history"]))
+        self.assertNotIn("id", translated["params"]["history"][0])
+        self.assertEqual("message", translated["params"]["history"][0]["type"])
+        self.assertEqual(2, len(message["params"]["history"]))
+        self.assertEqual(
+            message["params"]["history"][1]["id"],
+            "019f8dfe-5fb3-7443-9889-6d89991bd9e8",
+        )
+
+    def test_desktop_app_proxy_preserves_unchanged_client_jsonl_line(self) -> None:
+        adapter = ProtocolAdapter(
+            actual_model="gpt-5.5-2026-04-24",
+            desktop_model="gpt-5.5",
+            capabilities=BackendCapabilities(True, True, None),
+        )
+        tracker = PendingRequestTracker()
+        line = (
+            ' { "id": 21, "method": "custom/tool", '
+            '"params": { "model": "gpt-5.5" } }\n'
+        )
+
+        output, message = adapt_client_json_line(line, adapter, tracker)
+
+        self.assertEqual(line, output)
+        self.assertEqual("custom/tool", message["method"])
+
+        crlf_line = line.replace("\n", "\r\n").encode()
+        crlf_output, crlf_message = adapt_client_json_line(
+            crlf_line,
+            adapter,
+            tracker,
+        )
+        self.assertEqual(crlf_line, crlf_output)
+        self.assertEqual("custom/tool", crlf_message["method"])
+
+    def test_desktop_app_proxy_jsonl_tracker_is_direction_aware(self) -> None:
+        adapter = ProtocolAdapter(
+            actual_model="gpt-5.5-2026-04-24",
+            desktop_model="gpt-5.5",
+            capabilities=BackendCapabilities(True, True, None),
+        )
+        tracker = PendingRequestTracker()
+        request = (
+            '{"id":"same","method":"thread/load",'
+            '"params":{"metadata":{"model":"gpt-5.5"}}}\n'
+        )
+        server_request = (
+            '{"id":"same","method":"server/request",'
+            '"params":{"model":"gpt-5.5-2026-04-24"}}\n'
+        )
+        response = (
+            '{"id":"same","result":{"conversation":'
+            '{"model":"gpt-5.5-2026-04-24"},'
+            '"writes":[{"key":"model","value":"gpt-5.5-2026-04-24"}]}}\n'
+        )
+
+        client_output, _ = adapt_client_json_line(request, adapter, tracker)
+        server_output, _, server_method = adapt_backend_json_line(
+            server_request,
+            adapter,
+            tracker,
+        )
+        response_output, _, response_method = adapt_backend_json_line(
+            response,
+            adapter,
+            tracker,
+        )
+
+        self.assertEqual(request, client_output)
+        self.assertEqual(server_request, server_output)
+        self.assertIsNone(server_method)
+        self.assertEqual("thread/load", response_method)
+        parsed = json.loads(response_output)
+        self.assertEqual(
+            "gpt-5.5",
+            parsed["result"]["conversation"]["model"],
+        )
+        self.assertEqual(
+            "gpt-5.5-2026-04-24",
+            parsed["result"]["writes"][0]["value"],
+        )
 
     def test_desktop_app_proxy_flattens_namespace_dynamic_tools_for_older_backend(self) -> None:
         actual_model = "gpt-5.5-2026-04-24"
@@ -2017,6 +4133,18 @@ class CodexProfileSwitchTests(unittest.TestCase):
             codex_version_supports_canonical_dynamic_tools("codex-cli 0.142.0-alpha.6")
         )
         self.assertFalse(codex_version_supports_canonical_dynamic_tools("not a version"))
+        self.assertEqual(
+            protocol_capabilities_for_version("codex-cli 0.140.0"),
+            BackendCapabilities(False, False, None),
+        )
+        self.assertEqual(
+            protocol_capabilities_for_version("codex-cli 0.144.6"),
+            BackendCapabilities(True, None, None),
+        )
+        self.assertEqual(
+            protocol_capabilities_for_version("not a version"),
+            BackendCapabilities(None, None, None),
+        )
 
     def test_desktop_app_proxy_filters_unsupported_plugin_marketplace_kind(self) -> None:
         actual_model = "gpt-5.5-2026-04-24"
@@ -2109,75 +4237,6 @@ class CodexProfileSwitchTests(unittest.TestCase):
         )
         self.assertNotIn('model_provider = "azure"', merged)
         self.assertNotIn("[model_providers.azure]", merged)
-
-    def test_app_proxy_restores_missing_shared_config_after_config_value_write(self) -> None:
-        temp_dir, root = self.make_workspace()
-        with temp_dir:
-            config_path = root / "config.toml"
-            config_path.write_text(
-                "[desktop]\n"
-                'appearanceTheme = "dark"\n'
-                "\n"
-                "[marketplaces.cy-codex-skills]\n"
-                'source_type = "github"\n'
-                'source = "cy/codex-skills"\n'
-                "\n"
-                '[plugins."agent-kb@cy-codex-skills"]\n'
-                "enabled = true\n"
-            )
-            pending = {}
-            request = {
-                "id": 1,
-                "method": "config/value/write",
-                "params": {"keyPath": "desktop.followUpQueueMode", "value": "queue"},
-            }
-
-            remember_config_write_request(request, config_path, pending)
-            config_path.write_text("[desktop]\n" 'followUpQueueMode = "queue"\n')
-            restore_config_write_response({"id": 1, "result": {"status": "ok"}}, pending)
-
-            restored = config_path.read_text()
-            self.assertIn('followUpQueueMode = "queue"', restored)
-            self.assertIn('appearanceTheme = "dark"', restored)
-            self.assertIn("[marketplaces.cy-codex-skills]", restored)
-            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', restored)
-
-    def test_app_proxy_restores_missing_shared_config_after_config_batch_write(self) -> None:
-        temp_dir, root = self.make_workspace()
-        with temp_dir:
-            config_path = root / "config.toml"
-            config_path.write_text(
-                "[memories]\n"
-                "enabled = true\n"
-                "\n"
-                "[[skills.config]]\n"
-                'path = "/Users/me/.codex/skills/agent-kb/SKILL.md"\n'
-            )
-            pending = {}
-            request = {
-                "id": 2,
-                "method": "config/batchWrite",
-                "params": {
-                    "filePath": str(config_path),
-                    "writes": [
-                        {
-                            "keyPath": "desktop.followUpQueueMode",
-                            "value": "queue",
-                        }
-                    ],
-                },
-            }
-
-            remember_config_write_request(request, root / "other.toml", pending)
-            config_path.write_text("[desktop]\n" 'followUpQueueMode = "queue"\n')
-            restore_config_write_response({"id": 2, "result": {"status": "ok"}}, pending)
-
-            restored = config_path.read_text()
-            self.assertIn('followUpQueueMode = "queue"', restored)
-            self.assertIn("[memories]", restored)
-            self.assertIn("enabled = true", restored)
-            self.assertIn("[[skills.config]]", restored)
-            self.assertIn("/Users/me/.codex/skills/agent-kb/SKILL.md", restored)
 
     def test_canonical_refresh_does_not_resurrect_removed_profile_settings(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -2322,7 +4381,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             official_config = (live_home / "config.toml").read_text()
             self.assertIn("# codex-switch: managed runtime config for profile openai-official", official_config)
             self.assertIn("[mcp_servers.from-internal]", official_config)
-            self.assertIn('[plugins."figma@openai-curated"]', official_config)
+            self.assertNotIn('[plugins."figma@openai-curated"]', official_config)
             self.assertNotIn('model = "internal-model"', official_config)
             self.assertNotIn('model_provider = "azure"', official_config)
             self.assertNotIn("[model_providers.azure]", official_config)
@@ -2392,7 +4451,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             official_config = (live_home / "config.toml").read_text()
             self.assertIn('model = "official-model"', official_config)
             self.assertIn("[mcp_servers.from-internal]", official_config)
-            self.assertIn('[plugins."figma@openai-curated"]', official_config)
+            self.assertNotIn('[plugins."figma@openai-curated"]', official_config)
             self.assertNotIn('model = "internal-model"', official_config)
             self.assertNotIn('model_provider = "azure"', official_config)
             self.assertNotIn("[model_providers.azure]", official_config)
@@ -2503,7 +4562,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             ).read_text()
             self.assertIn('model = "official-runtime"', canonical_config)
 
-    def test_internal_switch_merges_legacy_profile_layer_plugin_settings(self) -> None:
+    def test_internal_switch_uses_legacy_profile_layer_support_not_usage_state(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -2541,8 +4600,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
             internal_config = (root / "store" / "homes" / "internal" / "config.toml").read_text()
             self.assertIn('model = "internal-model"', internal_config)
             self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
-            self.assertIn('[plugins."dev-flow@cy-codex-skills"]', internal_config)
-            self.assertIn("[[skills.config]]", internal_config)
+            self.assertNotIn('[plugins."dev-flow@cy-codex-skills"]', internal_config)
+            self.assertNotIn("[[skills.config]]", internal_config)
             self.assertIn(
                 '[hooks.state."dev-flow@cy-codex-skills:hooks.json:stop:0:0"]',
                 internal_config,
@@ -2554,7 +4613,227 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn("[marketplaces.cy-codex-skills]", canonical_config)
             self.assertNotIn('[plugins."dev-flow@cy-codex-skills"]', canonical_config)
 
-    def test_internal_switch_restores_plugin_support_from_target_runtime_when_source_lost_it(self) -> None:
+    def test_internal_home_config_uses_parity_projection_without_mutating_sources(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            official_home = root / "homes" / "openai-official"
+            internal_home = root / "homes" / "internal"
+            profile_config = root / "profiles" / "internal" / "config.toml"
+            shared_config = official_home / "config.toml"
+            target_runtime_config = internal_home / "config.toml"
+            overlay_path = (
+                profile_config.parent / "parity" / "model-catalog.json"
+            )
+            profile_config.parent.mkdir(parents=True)
+            official_home.mkdir(parents=True)
+            internal_home.mkdir(parents=True)
+            profile_source = (
+                'model = "gpt-5.6-sol"\n'
+                'model_provider = "azure"\n'
+                'cli_auth_credentials_store = "file"\n'
+                'model_reasoning_effort = "high"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Azure"\n'
+                'wire_api = "responses"\n'
+            ).encode()
+            shared_source = (
+                "[features]\n"
+                "memory = true\n"
+                "\n"
+                "[agents]\n"
+                "max_threads = 6\n"
+                "max_depth = 3\n"
+                'role = "explorer"\n'
+                "\n"
+                "[tui]\n"
+                'theme = "dark"\n'
+            ).encode()
+            projected_profile = (
+                'model = "gpt-5.6-sol"\n'
+                'model_provider = "azure"\n'
+                'cli_auth_credentials_store = "file"\n'
+                'model_reasoning_effort = "high"\n'
+                f"model_catalog_json = {json.dumps(str(overlay_path))}\n"
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Azure"\n'
+                'wire_api = "responses"\n'
+                "\n"
+                "[features]\n"
+                "multi_agent_v2 = true\n"
+            ).encode()
+            projected_shared = (
+                "[features]\n"
+                "memory = true\n"
+                "\n"
+                "[agents]\n"
+                "max_depth = 3\n"
+                'role = "explorer"\n'
+                "\n"
+                "[tui]\n"
+                'theme = "dark"\n'
+            ).encode()
+            profile_config.write_bytes(profile_source)
+            shared_config.write_bytes(shared_source)
+            projection = self.parity_config_projection(
+                profile_config=profile_config,
+                profile_source=profile_source,
+                projected_profile=projected_profile,
+                shared_config=shared_config,
+                shared_source=shared_source,
+                projected_shared=projected_shared,
+                overlay_path=overlay_path,
+            )
+            parser = self.tomllib_parser_for_config_test()
+
+            with (
+                mock.patch("codex_switch_config_document.tomllib", parser),
+                mock.patch("codex_switch_toml_validate.tomllib", parser),
+            ):
+                rendered = self.build_internal_home_config_with_projection(
+                    official_home,
+                    "internal",
+                    target_runtime_config,
+                    profile_config,
+                    projection,
+                )
+                from codex_switch_config_document import ConfigDocument
+
+                document = ConfigDocument.parse(
+                    rendered,
+                    "projected internal managed-home config",
+                )
+
+            self.assertEqual(
+                str(overlay_path),
+                document.data.get("model_catalog_json"),
+            )
+            self.assertIs(
+                document.data.get("features", {}).get("multi_agent_v2"),
+                True,
+            )
+            self.assertIs(document.data["features"]["memory"], True)
+            self.assertNotIn("max_threads", document.data["agents"])
+            self.assertEqual(3, document.data["agents"]["max_depth"])
+            self.assertEqual("explorer", document.data["agents"]["role"])
+            self.assertEqual("dark", document.data["tui"]["theme"])
+            self.assertEqual("gpt-5.6-sol", document.data["model"])
+            self.assertEqual("azure", document.data["model_provider"])
+            self.assertEqual("high", document.data["model_reasoning_effort"])
+            self.assertEqual(
+                "responses",
+                document.data["model_providers"]["azure"]["wire_api"],
+            )
+            self.assertEqual(profile_source, profile_config.read_bytes())
+            self.assertEqual(shared_source, shared_config.read_bytes())
+            self.assertFalse(target_runtime_config.exists())
+
+    def test_materialized_internal_home_projection_is_staged_without_writing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            official_home = root / "homes" / "openai-official"
+            internal_home = root / "homes" / "internal"
+            profile_config = root / "profiles" / "internal" / "config.toml"
+            shared_config = official_home / "config.toml"
+            target_runtime_config = internal_home / "config.toml"
+            overlay_path = (
+                profile_config.parent / "parity" / "model-catalog.json"
+            )
+            profile_config.parent.mkdir(parents=True)
+            official_home.mkdir(parents=True)
+            internal_home.mkdir(parents=True)
+            profile_source = (
+                'model = "gpt-5.6-sol"\n'
+                'model_provider = "azure"\n'
+            ).encode()
+            shared_source = (
+                "[features]\n"
+                "memory = true\n"
+                "\n"
+                "[agents]\n"
+                "max_threads = 6\n"
+                "max_depth = 3\n"
+            ).encode()
+            projected_profile = (
+                'model = "gpt-5.6-sol"\n'
+                'model_provider = "azure"\n'
+                f"model_catalog_json = {json.dumps(str(overlay_path))}\n"
+                "\n"
+                "[features]\n"
+                "multi_agent_v2 = true\n"
+            ).encode()
+            projected_shared = (
+                "[features]\n"
+                "memory = true\n"
+                "\n"
+                "[agents]\n"
+                "max_depth = 3\n"
+            ).encode()
+            stale_runtime = (
+                "# codex-switch: managed runtime config for profile internal\n"
+                'model = "stale-model"\n'
+                "\n"
+                "[features]\n"
+                "memory = false\n"
+                "\n"
+                "[agents]\n"
+                "max_threads = 12\n"
+                "max_depth = 1\n"
+            ).encode()
+            profile_config.write_bytes(profile_source)
+            shared_config.write_bytes(shared_source)
+            target_runtime_config.write_bytes(stale_runtime)
+            projection = self.parity_config_projection(
+                profile_config=profile_config,
+                profile_source=profile_source,
+                projected_profile=projected_profile,
+                shared_config=shared_config,
+                shared_source=shared_source,
+                projected_shared=projected_shared,
+                overlay_path=overlay_path,
+            )
+            parser = self.tomllib_parser_for_config_test()
+
+            with (
+                mock.patch("codex_switch_config_document.tomllib", parser),
+                mock.patch("codex_switch_toml_validate.tomllib", parser),
+            ):
+                rendered = self.build_internal_home_config_with_projection(
+                    official_home,
+                    "internal",
+                    target_runtime_config,
+                    profile_config,
+                    projection,
+                )
+                from codex_switch_config_document import ConfigDocument
+
+                document = ConfigDocument.parse(
+                    rendered,
+                    "staged internal managed-home config",
+                )
+
+            self.assertEqual("gpt-5.6-sol", document.data["model"])
+            self.assertEqual(
+                str(overlay_path),
+                document.data.get("model_catalog_json"),
+            )
+            self.assertIs(
+                document.data.get("features", {}).get("multi_agent_v2"),
+                True,
+            )
+            self.assertIs(document.data["features"]["memory"], True)
+            self.assertNotIn("max_threads", document.data["agents"])
+            self.assertEqual(3, document.data["agents"]["max_depth"])
+            self.assertEqual(stale_runtime, target_runtime_config.read_bytes())
+            self.assertEqual(profile_source, profile_config.read_bytes())
+            self.assertEqual(shared_source, shared_config.read_bytes())
+
+    def test_internal_switch_recovers_target_support_without_restoring_usage_state(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -2604,8 +4883,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
             internal_config = (internal_home / "config.toml").read_text()
             self.assertIn("[features]", internal_config)
             self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
-            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', internal_config)
-            self.assertIn("[[skills.config]]", internal_config)
+            self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', internal_config)
+            self.assertNotIn("[[skills.config]]", internal_config)
             self.assertIn(
                 '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]',
                 internal_config,
@@ -2616,7 +4895,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn("[marketplaces.cy-codex-skills]", canonical_config)
             self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', canonical_config)
 
-    def test_internal_switch_restores_plugin_support_from_profile_snapshot_after_runtime_loss(self) -> None:
+    def test_internal_switch_recovers_snapshot_support_without_restoring_usage_state(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -2670,14 +4949,14 @@ class CodexProfileSwitchTests(unittest.TestCase):
 
             internal_config = (internal_home / "config.toml").read_text()
             self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
-            self.assertIn('[plugins."lark-feishu-ops@cy-codex-skills"]', internal_config)
+            self.assertNotIn('[plugins."lark-feishu-ops@cy-codex-skills"]', internal_config)
             canonical_config = (
                 root / "store" / "profiles" / "internal" / "config.toml"
             ).read_text()
             self.assertNotIn("[marketplaces.cy-codex-skills]", canonical_config)
             self.assertNotIn('[plugins."lark-feishu-ops@cy-codex-skills"]', canonical_config)
 
-    def test_internal_switch_restores_plugin_support_from_source_profile_snapshot(self) -> None:
+    def test_internal_switch_does_not_restore_usage_from_source_profile_snapshot(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -2733,11 +5012,143 @@ class CodexProfileSwitchTests(unittest.TestCase):
             ).read_text()
             self.assertIn("[features]", internal_config)
             self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
-            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', internal_config)
-            self.assertIn('[plugins."lark-feishu-ops@cy-codex-skills"]', internal_config)
-            self.assertIn("[[skills.config]]", internal_config)
+            self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', internal_config)
+            self.assertNotIn('[plugins."lark-feishu-ops@cy-codex-skills"]', internal_config)
+            self.assertNotIn("[[skills.config]]", internal_config)
 
-    def test_official_switch_does_not_narrow_existing_shared_settings(self) -> None:
+    def test_switch_propagates_plugin_and_skill_removal_both_directions(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_config_path = live_home / "config.toml"
+            live_config_path.write_text(
+                'model = "official-model"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[plugins."agent-kb@cy-codex-skills"]\n'
+                "enabled = true\n"
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/agent-kb/SKILL.md"\n'
+                "enabled = true\n"
+                "\n"
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]\n'
+                'trusted_hash = "sha256:agent-kb"\n'
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            internal_config_path = (
+                root / "store" / "homes" / "internal" / "config.toml"
+            )
+            self.assertIn(
+                '[plugins."agent-kb@cy-codex-skills"]',
+                internal_config_path.read_text(),
+            )
+
+            internal_config_path.write_text(
+                'model = "internal-model"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]\n'
+                'trusted_hash = "sha256:agent-kb"\n'
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            official_config = live_config_path.read_text()
+            self.assertIn("[marketplaces.cy-codex-skills]", official_config)
+            self.assertIn(
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]',
+                official_config,
+            )
+            self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', official_config)
+            self.assertNotIn("[[skills.config]]", official_config)
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_config = internal_config_path.read_text()
+            self.assertIn("[marketplaces.cy-codex-skills]", internal_config)
+            self.assertIn(
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]',
+                internal_config,
+            )
+            self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', internal_config)
+            self.assertNotIn("[[skills.config]]", internal_config)
+
+    def test_switch_preserves_disabled_skill_once_by_path(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_home.joinpath("config.toml").write_text(
+                'model = "official-model"\n'
+                "\n"
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/shared-skill/SKILL.md"\n'
+                "enabled = false\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            (root / "store" / "profiles" / "internal" / "config.toml").write_text(
+                'model = "internal-model"\n'
+            )
+            internal_home = root / "store" / "homes" / "internal"
+            internal_home.mkdir(parents=True, exist_ok=True)
+            stale_usage = (
+                "[marketplaces.cy-codex-skills]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "cy-codex-skills"}"\n'
+                "\n"
+                "[[skills.config]]\n"
+                'path = "/tmp/shared-skill/SKILL.md"\n'
+                "enabled = true\n"
+            )
+            (internal_home / "config.toml").write_text(
+                'model = "internal-model"\n\n' + stale_usage
+            )
+            (internal_home / "internal.plugin-support.config.toml").write_text(
+                stale_usage
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            internal_config = (internal_home / "config.toml").read_text()
+            self.assertEqual(
+                1,
+                internal_config.count('path = "/tmp/shared-skill/SKILL.md"'),
+            )
+            self.assertIn("enabled = false", internal_config)
+            self.assertNotIn("enabled = true", internal_config)
+
+    def test_official_switch_does_not_narrow_existing_non_usage_shared_settings(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -2808,10 +5219,10 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn('followUpQueueMode = "queue"', live_config)
             self.assertIn("[memories]", live_config)
             self.assertIn("[apps.connector_test]", live_config)
-            self.assertIn("[[skills.config]]", live_config)
+            self.assertNotIn("[[skills.config]]", live_config)
             self.assertNotIn('model = "internal-runtime"', live_config)
 
-    def test_plugin_support_snapshot_refresh_does_not_shrink_to_runtime_loss(self) -> None:
+    def test_plugin_support_snapshot_refresh_does_not_restore_removed_usage_state(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             runtime_config = root / "runtime.toml"
@@ -2832,6 +5243,9 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "[[skills.config]]\n"
                 'path = "/tmp/agent-kb/SKILL.md"\n'
                 "enabled = true\n"
+                "\n"
+                '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]\n'
+                'trusted_hash = "sha256:agent-kb"\n'
             )
 
             refresh_profile_plugin_support_snapshot(
@@ -2843,8 +5257,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
             for snapshot_path in (home_snapshot, profile_snapshot):
                 snapshot = snapshot_path.read_text()
                 self.assertIn("[marketplaces.cy-codex-skills]", snapshot)
-                self.assertIn('[plugins."agent-kb@cy-codex-skills"]', snapshot)
-                self.assertIn("[[skills.config]]", snapshot)
+                self.assertIn(
+                    '[hooks.state."agent-kb@cy-codex-skills:hooks.json:stop:0:0"]',
+                    snapshot,
+                )
+                self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', snapshot)
+                self.assertNotIn("[[skills.config]]", snapshot)
 
     def test_doctor_reports_missing_active_profile_enabled_plugin_cache(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -3048,7 +5466,9 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 log_lines,
             )
 
-    def test_verify_app_server_smoke_accepts_plugin_auth_error_response(self) -> None:
+    def test_verify_app_server_smoke_accepts_plugin_auth_before_parity_gate(
+        self,
+    ) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             internal_codex, official_codex, env = self.prepare_profiles(root)
@@ -3064,15 +5484,29 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             self.run_switcher(root, "switch", "internal", "--skip-launchctl")
 
-            result = self.run_switcher(root, "verify", "internal", "--app-server-smoke")
+            verify_log = root / "verify-app-server-smoke.log"
+            verify_env = dict(env)
+            verify_env["CODEX_SWITCH_TEST_APP_SERVER_LOG"] = str(verify_log)
+            result = self.run_switcher(
+                root,
+                "verify",
+                "internal",
+                "--app-server-smoke",
+                env=verify_env,
+                check=False,
+            )
 
-            self.assertIn("App-server smoke: passed", result.stdout)
-            log_lines = (
-                root / "store" / "homes" / "internal" / "app-server-smoke.log"
-            ).read_text().splitlines()
-            self.assertIn(
-                f"{root / 'store' / 'homes' / 'internal'}|app-server --analytics-default-enabled",
-                log_lines,
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("App-server smoke: passed", output)
+            self.assertIn("parity.receipt.missing", output)
+            self.assertNotIn("app-server smoke failed", output)
+            log_lines = verify_log.read_text().splitlines()
+            self.assertTrue(
+                any(
+                    line.endswith("|app-server --analytics-default-enabled")
+                    for line in log_lines
+                )
             )
             self.assertTrue(any('"method":"initialize"' in line for line in log_lines))
             self.assertTrue(any('"method":"plugin/list"' in line for line in log_lines))
@@ -3180,6 +5614,53 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn("202607031120158DCF6A7C87F2A6AF4908", output)
             self.assertNotIn("should-not-leak", output)
 
+    def test_verify_responses_tool_smoke_reports_missing_reasoning_item(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_responses_tool_smoke_codex(
+                official_codex,
+                fail_reasoning_item_not_found=True,
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                "--responses-tool-smoke",
+                "--report",
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("internal Responses reasoning continuity failure", output)
+            self.assertIn("rs_08926f6eb84342d1006a61d1f955e081938793643ece5c1c56", output)
+            self.assertNotIn("should-not-leak", output)
+            [report_path] = sorted(
+                (root / "store" / "verification").glob("*-openai-official.json")
+            )
+            report = json.loads(report_path.read_text())
+            self.assertEqual(
+                "responses_reasoning_item_unavailable",
+                report["smoke_diagnostics"][0]["kind"],
+            )
+            self.assertEqual(
+                ["rs_08926f6eb84342d1006a61d1f955e081938793643ece5c1c56"],
+                report["smoke_diagnostics"][0]["item_ids"],
+            )
+            self.assertNotIn("should-not-leak", json.dumps(report))
+
     def test_verify_report_includes_sanitized_responses_tool_smoke_diagnostics(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -3243,6 +5724,59 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             self.assertNotIn("should-not-leak", json.dumps(report))
 
+    def test_verify_sanitizes_exec_smoke_output_prompt_and_report(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_secret_smoke_codex(official_codex)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--skip-launchctl",
+            )
+
+            result = self.run_switcher(
+                root,
+                "verify",
+                "openai-official",
+                "--exec-smoke",
+                "prompt-secret",
+                "--report",
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            [report_path] = sorted(
+                (root / "store" / "verification").glob(
+                    "*-openai-official.json"
+                )
+            )
+            report_text = report_path.read_text()
+            for secret in (
+                "prompt-secret",
+                "auth-secret",
+                "standalone-secret",
+                "api-secret",
+                "cookie-secret",
+                "signed-secret",
+                "exception-secret",
+            ):
+                self.assertNotIn(secret, output)
+                self.assertNotIn(secret, report_text)
+            self.assertIn("safe-route-123", output)
+            self.assertIn("safe-route-123", report_text)
+
     def test_one_key_switch_forwards_responses_tool_smoke_to_verify(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -3264,6 +5798,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--skip-login",
                 "--skip-update-check",
                 "--skip-launchctl",
+                "--skip-plugin-repair",
                 "--skip-doctor",
                 "--no-status",
                 "--responses-tool-smoke",
@@ -3308,9 +5843,73 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 / "1.0.0"
             )
             installed.mkdir(parents=True)
-            (installed / ".codex-plugin").write_text("{}\n")
+            marker = installed / ".codex-plugin" / "plugin.json"
+            marker.parent.mkdir()
+            marker.write_text(
+                json.dumps(
+                    {"name": "installed-plugin", "version": "1.0.0"}
+                )
+                + "\n"
+            )
 
             result = self.run_switcher(root, "doctor")
+
+            self.assertEqual(0, result.returncode)
+            self.assertIn("Doctor passed", result.stdout)
+
+    def test_doctor_accepts_revision_named_enabled_plugin_cache(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            test_python = None
+            if sys.version_info < (3, 11):
+                test_python = shutil.which("python3.12") or shutil.which("python3.11")
+            live_home = root / "live"
+            (live_home / "config.toml").write_text(
+                "[marketplaces.openai-curated]\n"
+                'source_type = "local"\n'
+                f'source = "{root / "marketplace"}"\n'
+                "\n"
+                '[plugins."figma@openai-curated"]\n'
+                "enabled = true\n"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=test_python,
+            )
+            self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--skip-launchctl",
+                python_executable=test_python,
+            )
+            installed = (
+                live_home
+                / "plugins"
+                / "cache"
+                / "openai-curated"
+                / "figma"
+                / "11c74d6b"
+            )
+            write_plugin_source(
+                installed,
+                name="figma",
+                version="2.0.13",
+                payload="curated snapshot\n",
+            )
+
+            result = self.run_switcher(
+                root,
+                "doctor",
+                python_executable=test_python,
+            )
 
             self.assertEqual(0, result.returncode)
             self.assertIn("Doctor passed", result.stdout)
@@ -3318,74 +5917,455 @@ class CodexProfileSwitchTests(unittest.TestCase):
     def test_repair_plugins_installs_missing_profile_plugins(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            write_fake_plugin_catalog_codex(official_codex)
-            live_home = root / "live"
-            (live_home / "config.toml").write_text(
-                "[marketplaces.local-test]\n"
-                'source_type = "local"\n'
-                f'source = "{root / "marketplace"}"\n'
-                "\n"
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            self.run_switcher(
+            selector = "missing-plugin@local-test"
+            _, env, _ = self.prepare_internal_plugin_profile(
                 root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
-                "internal",
-                env=env,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog={
+                    "installed": [],
+                    "available": [
+                        {
+                            "pluginId": selector,
+                            "name": "missing-plugin",
+                            "marketplaceName": "local-test",
+                            "version": "1.0.0",
+                        }
+                    ],
+                },
             )
-            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl", env=env)
 
-            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
-            doctor = self.run_switcher(root, "doctor")
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+            doctor = self.run_switcher(root, "doctor", check=False)
 
-            self.assertIn("Installing plugin: missing-plugin@local-test", repair.stdout)
-            self.assertIn("Doctor passed", doctor.stdout)
+            self.assertIn(f"Installing plugin: {selector}", repair.stdout)
+            self.assertNotEqual(0, doctor.returncode)
+            self.assertIn(
+                "parity.receipt.missing",
+                doctor.stdout + doctor.stderr,
+            )
+
+    def test_plugin_catalog_result_distinguishes_command_and_schema_states(
+        self,
+    ) -> None:
+        selector = "available-plugin@local-test"
+        complete = json.dumps(
+            {
+                "installed": [],
+                "available": [
+                    {
+                        "pluginId": selector,
+                        "name": "available-plugin",
+                        "marketplaceName": "local-test",
+                        "version": "1.0.0",
+                    }
+                ],
+            }
+        )
+        cases = (
+            (
+                "verified-empty",
+                '{"installed":[],"available":[]}',
+                "",
+                0,
+                "verified",
+                frozenset(),
+            ),
+            (
+                "verified-complete",
+                complete,
+                "",
+                0,
+                "verified",
+                frozenset({selector}),
+            ),
+            (
+                "command-failed",
+                complete,
+                "network failed",
+                17,
+                "command_failed",
+                frozenset(),
+            ),
+            ("empty-output", "", "", 0, "empty_output", frozenset()),
+            (
+                "invalid-json",
+                '{"installed":[',
+                "",
+                0,
+                "invalid_json",
+                frozenset(),
+            ),
+            (
+                "stderr-warning",
+                complete,
+                "catalog warning",
+                0,
+                "stderr_output",
+                frozenset(),
+            ),
+            (
+                "unsupported-schema",
+                '{"unexpected":[]}',
+                "",
+                0,
+                "unsupported_schema",
+                frozenset(),
+            ),
+        )
+        for (
+            label,
+            stdout,
+            stderr,
+            returncode,
+            expected_status,
+            expected_selectors,
+        ) in cases:
+            with self.subTest(label=label):
+                result = available_plugin_catalog(
+                    stdout,
+                    stderr=stderr,
+                    returncode=returncode,
+                )
+                self.assertEqual(expected_status, result.status)
+                self.assertEqual(expected_selectors, frozenset(result.entries))
+                self.assertEqual(stderr, result.stderr)
+                self.assertEqual(returncode, result.returncode)
+                self.assertEqual(
+                    expected_status == "verified",
+                    result.verified,
+                )
+
+    def test_repair_plugins_unverified_catalog_performs_no_plugin_or_config_writes(
+        self,
+    ) -> None:
+        selector = "missing-plugin@local-test"
+        cases = (
+            (
+                "command_failed",
+                '{"installed":[],"available":[]}\n',
+                "network failed\n",
+                17,
+            ),
+            ("stderr_output", '{"installed":[],"available":[]}\n', "warning\n", 0),
+            ("empty_output", "", "", 0),
+            ("invalid_json", '{"installed":[', "", 0),
+            ("unsupported_schema", '{"unexpected":[]}\n', "", 0),
+        )
+        for expected_status, catalog_stdout, catalog_stderr, returncode in cases:
+            with self.subTest(expected_status=expected_status):
+                temp_dir, root = self.make_workspace()
+                with temp_dir:
+                    internal_codex, env, home = (
+                        self.prepare_internal_plugin_profile(
+                            root,
+                            config_text=(
+                                f'[plugins."{selector}"]\n'
+                                "enabled = true\n"
+                            ),
+                            catalog={"installed": [], "available": []},
+                        )
+                    )
+                    write_fake_plugin_refresh_codex(
+                        internal_codex,
+                        catalog={"installed": [], "available": []},
+                        catalog_stdout=catalog_stdout,
+                        catalog_stderr=catalog_stderr,
+                        catalog_returncode=returncode,
+                    )
+                    config_before = {
+                        path: path.read_bytes()
+                        for path in root.rglob("*.toml")
+                    }
+
+                    repair = self.run_wrapper(
+                        root,
+                        "repair-plugins",
+                        "internal",
+                        "--disable-unavailable",
+                        env=env,
+                        check=False,
+                    )
+
+                    output = repair.stdout + repair.stderr
+                    self.assertNotEqual(0, repair.returncode)
+                    self.assertIn(
+                        f"plugin catalog is unverified ({expected_status})",
+                        output,
+                    )
+                    calls = (home / "codex-calls.log").read_text()
+                    self.assertNotIn(f"plugin add {selector}", calls)
+                    self.assertEqual(
+                        config_before,
+                        {
+                            path: path.read_bytes()
+                            for path in root.rglob("*.toml")
+                        },
+                    )
+
+    def test_partial_plugin_caches_are_not_materialized(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            home = root / "home"
+            requirement = plugin_requirement("partial-plugin@local-test")
+            self.assertIsNotNone(requirement)
+            assert requirement is not None
+            cache_root = (
+                home
+                / "plugins"
+                / "cache"
+                / requirement.marketplace
+                / requirement.plugin
+            )
+            partial_builders = (
+                lambda: (cache_root / ".tmp").write_text("partial\n"),
+                lambda: (cache_root / ".DS_Store").write_text("partial\n"),
+                lambda: (
+                    cache_root / "1.0.0" / "payload.txt"
+                ).write_text("partial\n"),
+                lambda: (
+                    cache_root / "1.0.0" / ".codex-plugin"
+                ).mkdir(parents=True),
+            )
+            for index, build_partial in enumerate(partial_builders):
+                with self.subTest(index=index):
+                    if cache_root.exists():
+                        shutil.rmtree(cache_root)
+                    cache_root.mkdir(parents=True)
+                    if index == 2:
+                        (cache_root / "1.0.0").mkdir()
+                    build_partial()
+                    self.assertFalse(
+                        plugin_is_installed(home, requirement),
+                        cache_root,
+                    )
+
+            valid = cache_root / "1.0.0" / ".codex-plugin" / "plugin.json"
+            if cache_root.exists():
+                shutil.rmtree(cache_root)
+            valid.parent.mkdir(parents=True)
+            valid.write_text(
+                json.dumps(
+                    {"name": requirement.plugin, "version": "1.0.0"}
+                )
+                + "\n"
+            )
+            self.assertTrue(plugin_is_installed(home, requirement))
+
+    def test_repair_plugins_dry_run_returns_conditional_plan(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "missing-plugin@local-test"
+            _, _, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog={"installed": [], "available": []},
+            )
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+                internal_codex_home=home,
+            )
+
+            plan = repair_profile_plugins(store, "internal", dry_run=True)
+
+            self.assertFalse(plan.catalog_verified)
+            self.assertEqual(
+                (selector,),
+                tuple(
+                    requirement.selector
+                    for requirement in plan.conditional_install
+                ),
+            )
+            self.assertEqual((), plan.install)
+            self.assertEqual((), plan.disable)
+            self.assertEqual((), plan.refresh)
+
+    def test_disable_unavailable_rolls_back_prior_config_writes(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "missing-plugin@local-test"
+            _, _, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog={"installed": [], "available": []},
+            )
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+                internal_codex_home=home,
+            )
+            requirement = plugin_requirement(selector)
+            self.assertIsNotNone(requirement)
+            assert requirement is not None
+            config_paths = profile_plugin_config_paths(store, "internal", home)
+            self.assertGreaterEqual(len(config_paths), 2)
+            before = {path: path.read_bytes() for path in config_paths}
+            writes = 0
+
+            def fail_second_write(
+                path: Path,
+                data: bytes,
+                mode: int | None = None,
+            ) -> None:
+                nonlocal writes
+                writes += 1
+                if writes == 2:
+                    raise OSError("injected config write failure")
+                path.write_bytes(data)
+                if mode is not None:
+                    path.chmod(mode)
+
+            with mock.patch(
+                "codex_switch_plugins.atomic_write",
+                side_effect=fail_second_write,
+            ):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "injected config write failure",
+                ):
+                    disable_unavailable_plugin_requirements(
+                        store,
+                        "internal",
+                        home,
+                        [requirement],
+                    )
+
+            self.assertEqual(
+                before,
+                {path: path.read_bytes() for path in config_paths},
+            )
+
+    def test_disable_unavailable_validates_all_configs_before_writing(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "missing-plugin@local-test"
+            _, _, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog={"installed": [], "available": []},
+            )
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+                internal_codex_home=home,
+            )
+            requirement = plugin_requirement(selector)
+            self.assertIsNotNone(requirement)
+            assert requirement is not None
+            config_paths = profile_plugin_config_paths(store, "internal", home)
+            self.assertGreaterEqual(len(config_paths), 2)
+            invalid_path = config_paths[-1]
+            invalid_path.write_text(
+                f'[plugins."{selector}"]\n'
+                "enabled = [\n"
+            )
+            before = {path: path.read_bytes() for path in config_paths}
+
+            with self.assertRaises(SwitchError):
+                disable_unavailable_plugin_requirements(
+                    store,
+                    "internal",
+                    home,
+                    [requirement],
+                )
+
+            self.assertEqual(
+                before,
+                {path: path.read_bytes() for path in config_paths},
+            )
+
+    def test_plugin_config_apply_rejects_plan_drift_before_writing(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "missing-plugin@local-test"
+            _, _, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog={"installed": [], "available": []},
+            )
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+                internal_codex_home=home,
+            )
+            requirement = plugin_requirement(selector)
+            self.assertIsNotNone(requirement)
+            assert requirement is not None
+            updates = build_plugin_config_updates(
+                store,
+                "internal",
+                home,
+                [requirement],
+            )
+            self.assertGreaterEqual(len(updates), 2)
+            updates[-1].path.write_bytes(updates[-1].before + b"# changed\n")
+
+            with mock.patch(
+                "codex_switch_plugins.atomic_write",
+            ) as writer:
+                with self.assertRaisesRegex(
+                    SwitchError,
+                    "plugin config changed after planning",
+                ):
+                    apply_plugin_config_updates(updates)
+
+            writer.assert_not_called()
 
     def test_repair_plugins_refreshes_available_catalog_before_installing_missing_profile_plugins(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            write_fake_plugin_catalog_codex(official_codex)
-            live_home = root / "live"
-            (live_home / "config.toml").write_text(
-                "[marketplaces.local-test]\n"
-                'source_type = "local"\n'
-                f'source = "{root / "marketplace"}"\n'
-                "\n"
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            self.run_switcher(
+            selector = "missing-plugin@local-test"
+            _, env, home = self.prepare_internal_plugin_profile(
                 root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
-                "internal",
-                env=env,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog={
+                    "installed": [],
+                    "available": [
+                        {
+                            "pluginId": selector,
+                            "name": "missing-plugin",
+                            "marketplaceName": "local-test",
+                            "version": "1.0.0",
+                        }
+                    ],
+                },
             )
-            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
 
-            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
 
-            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            calls = (home / "codex-calls.log").read_text().splitlines()
             self.assertEqual(
                 [
-                    "plugin marketplace upgrade --json",
-                    "plugin list --available --json",
-                    "plugin add missing-plugin@local-test",
+                    f"{home}|--version",
+                    f"{home}|plugin marketplace upgrade --json",
+                    f"{home}|plugin list --available --json",
+                    f"{home}|plugin add {selector}",
                 ],
                 calls,
             )
-            self.assertTrue((live_home / ".tmp" / "plugins" / "plugins" / "catalog-only").is_dir())
+            self.assertTrue((home / ".tmp" / "plugins" / "plugins" / "catalog-only").is_dir())
             self.assertTrue(
                 (
-                    live_home
+                    home
                     / "plugins"
                     / "cache"
                     / "local-test"
@@ -3394,36 +6374,38 @@ class CodexProfileSwitchTests(unittest.TestCase):
                     / ".codex-plugin"
                 ).exists()
             )
-            self.assertIn("Refreshing plugin marketplaces for openai-official", repair.stdout)
-            self.assertIn("Priming available plugin catalog for openai-official", repair.stdout)
-            self.assertIn("Installing plugin: missing-plugin@local-test", repair.stdout)
+            self.assertIn("Refreshing plugin marketplaces for internal", repair.stdout)
+            self.assertIn("Priming available plugin catalog for internal", repair.stdout)
+            self.assertIn(f"Installing plugin: {selector}", repair.stdout)
 
     def test_repair_plugins_refreshes_available_catalog_when_enabled_plugins_are_installed(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            write_fake_plugin_catalog_codex(official_codex)
-            live_home = root / "live"
-            (live_home / "config.toml").write_text(
-                "[marketplaces.local-test]\n"
-                'source_type = "local"\n'
-                f'source = "{root / "marketplace"}"\n'
-                "\n"
-                '[plugins."installed-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            self.run_switcher(
+            selector = "installed-plugin@local-test"
+            _, env, home = self.prepare_internal_plugin_profile(
                 root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
-                "internal",
-                env=env,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog={
+                    "installed": [
+                        {
+                            "pluginId": selector,
+                            "name": "installed-plugin",
+                            "marketplaceName": "local-test",
+                            "version": "1.0.0",
+                        }
+                    ],
+                    "available": [],
+                },
             )
-            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
             installed = (
-                live_home
+                home
                 / "plugins"
                 / "cache"
                 / "local-test"
@@ -3431,53 +6413,402 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 / "1.0.0"
             )
             installed.mkdir(parents=True)
-            (installed / ".codex-plugin").write_text("{}\n")
+            marker = installed / ".codex-plugin" / "plugin.json"
+            marker.parent.mkdir()
+            marker.write_text(
+                json.dumps(
+                    {"name": "installed-plugin", "version": "1.0.0"}
+                )
+                + "\n"
+            )
 
-            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
 
-            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            calls = (home / "codex-calls.log").read_text().splitlines()
             self.assertEqual(
                 [
-                    "plugin marketplace upgrade --json",
-                    "plugin list --available --json",
+                    f"{home}|--version",
+                    f"{home}|plugin marketplace upgrade --json",
+                    f"{home}|plugin list --available --json",
                 ],
                 calls,
             )
-            self.assertTrue((live_home / ".tmp" / "plugins" / "plugins" / "catalog-only").is_dir())
-            self.assertIn("No missing enabled plugins for openai-official", repair.stdout)
+            self.assertTrue((home / ".tmp" / "plugins" / "plugins" / "catalog-only").is_dir())
+            self.assertIn("No missing enabled plugins for internal", repair.stdout)
 
-    def test_repair_plugins_skips_unavailable_enabled_plugins_after_catalog_refresh(self) -> None:
+    def test_repair_plugins_refreshes_stale_local_plugin_cache(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "installed-plugin@local-test"
+            source = root / "marketplace" / "plugins" / "installed-plugin"
+            write_plugin_source(
+                source,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="source-current\n",
+            )
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "installed-plugin",
+                        "marketplaceName": "local-test",
+                        "version": "1.0.0",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {"source": "local", "path": str(source)},
+                    }
+                ],
+                "available": [],
+            }
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog=catalog,
+                sources={selector: source},
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "local-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            write_plugin_source(
+                cache,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="cache-stale\n",
+            )
+
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+
+            calls = (home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    f"{home}|--version",
+                    f"{home}|plugin marketplace upgrade --json",
+                    f"{home}|plugin list --available --json",
+                    f"{home}|plugin add {selector}",
+                ],
+                calls,
+            )
+            self.assertEqual("source-current\n", (cache / "payload.txt").read_text())
+            self.assertIn(f"Refreshing stale plugin cache: {selector}", repair.stdout)
+
+    def test_repair_plugins_keeps_current_cache_with_runtime_residue(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "installed-plugin@local-test"
+            source = root / "marketplace" / "plugins" / "installed-plugin"
+            write_plugin_source(
+                source,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="same\n",
+            )
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "installed-plugin",
+                        "marketplaceName": "local-test",
+                        "version": "1.0.0",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {"source": "local", "path": str(source)},
+                    }
+                ],
+                "available": [],
+            }
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog=catalog,
+                sources={selector: source},
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "local-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            shutil.copytree(source, cache, symlinks=True)
+            (cache / ".DS_Store").write_text("runtime residue\n")
+            pycache = cache / "__pycache__"
+            pycache.mkdir()
+            (pycache / "module.cpython-312.pyc").write_bytes(b"bytecode")
+            pytest_cache = cache / ".pytest_cache"
+            pytest_cache.mkdir()
+            (pytest_cache / "README.md").write_text("runtime residue\n")
+            git_dir = cache / ".git"
+            git_dir.mkdir()
+            (git_dir / "config").write_text("runtime residue\n")
+
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+
+            calls = (home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    f"{home}|--version",
+                    f"{home}|plugin marketplace upgrade --json",
+                    f"{home}|plugin list --available --json",
+                ],
+                calls,
+            )
+            self.assertIn(f"Plugin cache current: {selector}", repair.stdout)
+
+    def test_repair_plugins_keeps_current_revision_named_cache(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "figma@openai-curated"
+            source = root / "marketplace" / "plugins" / "figma"
+            write_plugin_source(
+                source,
+                name="figma",
+                version="2.0.13",
+                payload="curated snapshot\n",
+            )
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "figma",
+                        "marketplaceName": "openai-curated",
+                        "version": "11c74d6b",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {"source": "local", "path": str(source)},
+                    }
+                ],
+                "available": [],
+            }
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog=catalog,
+                sources={selector: source},
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "openai-curated"
+                / "figma"
+                / "11c74d6b"
+            )
+            shutil.copytree(source, cache, symlinks=True)
+
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+
+            calls = (home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    f"{home}|--version",
+                    f"{home}|plugin marketplace upgrade --json",
+                    f"{home}|plugin list --available --json",
+                ],
+                calls,
+            )
+            self.assertIn(f"Plugin cache current: {selector}", repair.stdout)
+
+    def test_repair_plugins_skips_revision_cache_manifest_version_mismatch(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "figma@openai-curated"
+            source = root / "marketplace" / "plugins" / "figma"
+            write_plugin_source(
+                source,
+                name="figma",
+                version="2.0.13",
+                payload="new curated snapshot\n",
+            )
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "figma",
+                        "marketplaceName": "openai-curated",
+                        "version": "11c74d6b",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {"source": "local", "path": str(source)},
+                    }
+                ],
+                "available": [],
+            }
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog=catalog,
+                sources={selector: source},
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "openai-curated"
+                / "figma"
+                / "11c74d6b"
+            )
+            write_plugin_source(
+                cache,
+                name="figma",
+                version="2.0.12",
+                payload="old curated snapshot\n",
+            )
+
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+
+            self.assertIn(
+                f"Skipping stale-cache check for {selector}: "
+                "source and cache manifest versions differ",
+                repair.stdout,
+            )
+            self.assertNotIn(
+                f"plugin add {selector}",
+                (home / "codex-calls.log").read_text(),
+            )
+
+    def test_plugin_tree_manifest_propagates_walk_errors(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            tree = root / "plugin-tree"
+            tree.mkdir()
+
+            def fail_walk(*args, **kwargs):
+                onerror = kwargs.get("onerror")
+                self.assertIsNotNone(onerror)
+                onerror(PermissionError("denied"))
+                return []
+
+            with mock.patch(
+                "codex_switch_plugins.os.walk",
+                side_effect=fail_walk,
+            ):
+                with self.assertRaises(PermissionError):
+                    plugin_tree_manifest(tree)
+
+    def test_repair_plugins_skips_uninspectable_installed_source(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "installed-plugin@remote-test"
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "installed-plugin",
+                        "marketplaceName": "remote-test",
+                        "version": "1.0.0",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {
+                            "source": "git",
+                            "path": "git@example.com:plugins/installed-plugin.git",
+                        },
+                    }
+                ],
+                "available": [],
+            }
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog=catalog,
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "remote-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            write_plugin_source(
+                cache,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="installed\n",
+            )
+
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+
+            self.assertIn(
+                f"Skipping stale-cache check for {selector}: "
+                "catalog source is not inspectable",
+                repair.stdout,
+            )
+            self.assertNotIn(f"plugin add {selector}", (home / "codex-calls.log").read_text())
+
+    def test_repair_plugins_skips_catalog_source_manifest_version_mismatch(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "installed-plugin@local-test"
+            source = root / "marketplace" / "plugins" / "installed-plugin"
+            write_plugin_source(
+                source,
+                name="installed-plugin",
+                version="2.0.0",
+                payload="newer-source\n",
+            )
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "installed-plugin",
+                        "marketplaceName": "local-test",
+                        "version": "1.0.0",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {"source": "local", "path": str(source)},
+                    }
+                ],
+                "available": [],
+            }
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog=catalog,
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "local-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            write_plugin_source(
+                cache,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="installed\n",
+            )
+
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+
+            self.assertIn(
+                f"Skipping stale-cache check for {selector}: "
+                "source manifest does not match catalog name/version",
+                repair.stdout,
+            )
+            self.assertNotIn(f"plugin add {selector}", (home / "codex-calls.log").read_text())
+
+    def test_repair_plugins_uses_canonical_binding_cli_and_home(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
-            write_fake_script(
-                official_codex,
-                "#!/usr/bin/env sh\n"
-                "set -eu\n"
-                "printf '%s\\n' \"$*\" >> \"$CODEX_HOME/codex-calls.log\"\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
-                "  printf '{\"upgraded\":[]}\\n'\n"
-                "  exit 0\n"
-                "fi\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
-                "  printf '{\"installed\":[],\"available\":[{\"pluginId\":\"other-plugin@local-test\"}]}\\n'\n"
-                "  exit 0\n"
-                "fi\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
-                "  echo unexpected-add \"$3\"\n"
-                "  exit 44\n"
-                "fi\n"
-                "echo fake-codex\n",
-            )
-            live_home = root / "live"
-            (live_home / "config.toml").write_text(
-                "[marketplaces.local-test]\n"
-                'source_type = "local"\n'
-                f'source = "{root / "marketplace"}"\n'
-                "\n"
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
             self.run_switcher(
                 root,
                 "init",
@@ -3487,100 +6818,299 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "internal",
                 env=env,
             )
-            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
+            canonical_cli = root / "canonical-chatgpt-codex"
+            canonical_home = root / "canonical-official-home"
+            canonical_home.mkdir()
+            (canonical_home / "config.toml").write_text("")
+            write_fake_plugin_refresh_codex(
+                canonical_cli,
+                catalog={"installed": [], "available": []},
+            )
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+            )
+            binding = SimpleNamespace(
+                backend_cli=canonical_cli,
+                codex_home=canonical_home,
+                desktop_cli=canonical_cli,
+                requires_proxy=False,
+            )
 
-            repair = self.run_wrapper(root, "repair-plugins", "openai-official", env=env)
+            with mock.patch(
+                "codex_switch_plugins.resolve_store_runtime_binding",
+                return_value=binding,
+            ) as resolver:
+                repair_profile_plugins(store, "openai-official")
 
-            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            resolver.assert_called_once_with(store, "openai-official")
             self.assertEqual(
                 [
-                    "plugin marketplace upgrade --json",
-                    "plugin list --available --json",
+                    f"{canonical_home}|--version",
+                    f"{canonical_home}|plugin marketplace upgrade --json",
+                    f"{canonical_home}|plugin list --available --json",
+                ],
+                (canonical_home / "codex-calls.log").read_text().splitlines(),
+            )
+
+    def test_repair_plugins_blocks_stale_refresh_for_running_target_app_server(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "installed-plugin@local-test"
+            source = root / "marketplace" / "plugins" / "installed-plugin"
+            write_plugin_source(
+                source,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="source-current\n",
+            )
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "installed-plugin",
+                        "marketplaceName": "local-test",
+                        "version": "1.0.0",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {"source": "local", "path": str(source)},
+                    }
+                ],
+                "available": [],
+            }
+            internal_cli, _, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog=catalog,
+                sources={selector: source},
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "local-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            write_plugin_source(
+                cache,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="cache-stale\n",
+            )
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+                internal_codex_home=home,
+            )
+            desktop_cli = root / "store" / "bin" / "codex-internal-app"
+            binding = SimpleNamespace(
+                backend_cli=internal_cli,
+                codex_home=home,
+                desktop_cli=desktop_cli,
+                requires_proxy=True,
+            )
+            observation = RuntimeObservation(
+                processes=(
+                    RunningCodexProcess(
+                        pid=4242,
+                        kind="app-server",
+                        command_path=str(internal_cli),
+                        app_cli_env="",
+                        parent_command="",
+                    ),
+                )
+            )
+
+            with mock.patch(
+                "codex_switch_plugins.resolve_store_runtime_binding",
+                return_value=binding,
+            ), mock.patch(
+                "codex_switch_plugins.collect_store_runtime_observation",
+                return_value=observation,
+            ):
+                with self.assertRaisesRegex(
+                    SwitchError,
+                    "target profile internal app-server is running",
+                ):
+                    repair_profile_plugins(store, "internal")
+
+            self.assertNotIn(f"plugin add {selector}", (home / "codex-calls.log").read_text())
+
+    def test_wrapper_one_key_refreshes_stale_plugins_before_parity_gate(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "installed-plugin@local-test"
+            source = root / "marketplace" / "plugins" / "installed-plugin"
+            write_plugin_source(
+                source,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="source-current\n",
+            )
+            catalog = {
+                "installed": [
+                    {
+                        "pluginId": selector,
+                        "name": "installed-plugin",
+                        "marketplaceName": "local-test",
+                        "version": "1.0.0",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {"source": "local", "path": str(source)},
+                    }
+                ],
+                "available": [],
+            }
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=f'[plugins."{selector}"]\nenabled = true\n',
+                catalog=catalog,
+                sources={selector: source},
+            )
+            cache = (
+                home
+                / "plugins"
+                / "cache"
+                / "local-test"
+                / "installed-plugin"
+                / "1.0.0"
+            )
+            write_plugin_source(
+                cache,
+                name="installed-plugin",
+                version="1.0.0",
+                payload="cache-stale\n",
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-update-check",
+                "--skip-launchctl",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn(f"Refreshing stale plugin cache: {selector}", output)
+            self.assertLess(
+                output.index(f"Refreshing stale plugin cache: {selector}"),
+                output.index("== Verification =="),
+            )
+            self.assertIn("Parity health: unhealthy", output)
+            self.assertIn("parity.receipt.missing", output)
+            self.assertIn("Doctor: not run", output)
+            self.assertIn("Outcome: ACTION REQUIRED", output)
+
+    def test_repair_plugins_skips_unavailable_enabled_plugins_after_catalog_refresh(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "missing-plugin@local-test"
+            _, env, home = self.prepare_internal_plugin_profile(
+                root,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog={
+                    "installed": [],
+                    "available": [
+                        {
+                            "pluginId": "other-plugin@local-test",
+                            "name": "other-plugin",
+                            "marketplaceName": "local-test",
+                            "version": "1.0.0",
+                        }
+                    ],
+                },
+            )
+
+            repair = self.run_wrapper(root, "repair-plugins", "internal", env=env)
+
+            calls = (home / "codex-calls.log").read_text().splitlines()
+            self.assertEqual(
+                [
+                    f"{home}|--version",
+                    f"{home}|plugin marketplace upgrade --json",
+                    f"{home}|plugin list --available --json",
                 ],
                 calls,
             )
             self.assertIn(
-                "Skipping unavailable enabled plugin: missing-plugin@local-test",
+                f"Skipping unavailable enabled plugin: {selector}",
                 repair.stdout,
             )
 
     def test_repair_plugins_disable_unavailable_stale_enabled_plugins(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            write_fake_script(
-                official_codex,
-                "#!/usr/bin/env sh\n"
-                "set -eu\n"
-                "printf '%s\\n' \"$*\" >> \"$CODEX_HOME/codex-calls.log\"\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
-                "  printf '{\"upgraded\":[]}\\n'\n"
-                "  exit 0\n"
-                "fi\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
-                "  printf '{\"installed\":[],\"available\":[{\"pluginId\":\"other-plugin@local-test\"}]}\\n'\n"
-                "  exit 0\n"
-                "fi\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
-                "  echo unexpected-add \"$3\"\n"
-                "  exit 44\n"
-                "fi\n"
-                "echo fake-codex\n",
-            )
-            live_home = root / "live"
-            (live_home / "config.toml").write_text(
+            selector = "missing-plugin@local-test"
+            config_text = (
                 "[marketplaces.local-test]\n"
                 'source_type = "local"\n'
                 f'source = "{root / "marketplace"}"\n'
                 "\n"
-                '[plugins."missing-plugin@local-test"]\n'
+                f'[plugins."{selector}"]\n'
                 "enabled = true\n"
             )
-            self.run_switcher(
+            _, env, home = self.prepare_internal_plugin_profile(
                 root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
-                "internal",
-                env=env,
+                config_text=config_text,
+                catalog={
+                    "installed": [],
+                    "available": [
+                        {
+                            "pluginId": "other-plugin@local-test",
+                            "name": "other-plugin",
+                            "marketplaceName": "local-test",
+                            "version": "1.0.0",
+                        }
+                    ],
+                },
             )
-            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
-            profile_layer = live_home / "openai-official.config.toml"
-            profile_layer.write_text(
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            profile_snapshot = live_home / "openai-official.plugin-support.config.toml"
-            profile_snapshot.write_text(
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            canonical_profile = root / "store" / "profiles" / "openai-official" / "config.toml"
-            canonical_profile.write_text(
-                canonical_profile.read_text()
-                + '\n[plugins."missing-plugin@local-test"]\n'
-                + "enabled = true\n"
-            )
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl", env=env)
+            live_home = root / "live"
+            profile_layer = home / "internal.config.toml"
+            profile_snapshot = home / "internal.plugin-support.config.toml"
+            canonical_profile = root / "store" / "profiles" / "internal" / "config.toml"
+            for config_path in (
+                live_home / "config.toml",
+                profile_layer,
+                profile_snapshot,
+                canonical_profile,
+            ):
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text(config_text)
 
             repair = self.run_wrapper(
                 root,
                 "repair-plugins",
-                "openai-official",
+                "internal",
                 "--disable-unavailable",
                 env=env,
             )
-            doctor = self.run_switcher(root, "doctor")
+            doctor = self.run_switcher(root, "doctor", check=False)
 
             self.assertIn(
-                "Disabling unavailable enabled plugin: missing-plugin@local-test",
+                f"Disabling unavailable enabled plugin: {selector}",
                 repair.stdout,
             )
-            calls = (live_home / "codex-calls.log").read_text().splitlines()
+            calls = (home / "codex-calls.log").read_text().splitlines()
             self.assertEqual(
                 [
-                    "plugin marketplace upgrade --json",
-                    "plugin list --available --json",
+                    f"{home}|--version",
+                    f"{home}|plugin marketplace upgrade --json",
+                    f"{home}|plugin list --available --json",
                 ],
                 calls,
             )
@@ -3591,50 +7121,93 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 canonical_profile,
             ):
                 config_text = config_path.read_text()
-                self.assertIn('[plugins."missing-plugin@local-test"]', config_text)
+                self.assertIn(f'[plugins."{selector}"]', config_text)
                 self.assertIn("enabled = false", config_text)
                 self.assertNotIn("enabled = true", config_text)
-            self.assertIn("Doctor passed", doctor.stdout)
+            self.assertNotEqual(0, doctor.returncode)
+            self.assertIn(
+                "parity.receipt.missing",
+                doctor.stdout + doctor.stderr,
+            )
 
     def test_repair_plugins_dry_run_does_not_claim_unverified_plugin_add(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            write_fake_plugin_catalog_codex(official_codex)
-            live_home = root / "live"
-            (live_home / "config.toml").write_text(
-                "[marketplaces.local-test]\n"
-                'source_type = "local"\n'
-                f'source = "{root / "marketplace"}"\n'
-                "\n"
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            self.run_switcher(
+            selector = "missing-plugin@local-test"
+            _, env, _ = self.prepare_internal_plugin_profile(
                 root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
-                "internal",
-                env=env,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog={"installed": [], "available": []},
             )
-            self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
 
             repair = self.run_wrapper(
                 root,
                 "repair-plugins",
-                "openai-official",
+                "internal",
                 "--dry-run",
                 env=env,
             )
 
             self.assertIn("Dry run: plugin catalog is not inspected", repair.stdout)
             self.assertIn(
-                "Dry run: would install if available: missing-plugin@local-test",
+                f"Dry run: would install if available: {selector}",
                 repair.stdout,
             )
-            self.assertNotIn("plugin add missing-plugin@local-test", repair.stdout)
+            self.assertNotIn(f"plugin add {selector}", repair.stdout)
+
+    def test_repair_plugins_does_not_refresh_project_workflow_state(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, env, _ = self.prepare_internal_plugin_profile(
+                root,
+                config_text="",
+                catalog={"installed": [], "available": []},
+            )
+            project = root / "project"
+            project.mkdir()
+            generated = project / "AGENTS.md.generated"
+            generated.write_text("project-generated-guidance\n")
+            state = project / ".planning" / "devflow" / "STATE.md"
+            state.parent.mkdir(parents=True)
+            state.write_text("project-state\n")
+            spec = project / "openspec" / "changes" / "keep" / "spec.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("project-spec\n")
+            skill_source = root / "project-skill-source"
+            skill_source.mkdir()
+            skill_link = project / ".agents" / "skills" / "dev-flow"
+            skill_link.parent.mkdir(parents=True)
+            skill_link.symlink_to(skill_source, target_is_directory=True)
+
+            def snapshot() -> list[tuple[str, str, bytes | str]]:
+                entries: list[tuple[str, str, bytes | str]] = []
+                for path in sorted(project.rglob("*")):
+                    relative = path.relative_to(project).as_posix()
+                    if path.is_symlink():
+                        entries.append((relative, "symlink", os.readlink(path)))
+                    elif path.is_file():
+                        entries.append((relative, "file", path.read_bytes()))
+                    else:
+                        entries.append((relative, "dir", ""))
+                return entries
+
+            before = snapshot()
+            self.run_wrapper(
+                root,
+                "repair-plugins",
+                "internal",
+                env=env,
+                cwd=project,
+            )
+
+            self.assertEqual(before, snapshot())
 
     def test_wrapper_one_key_help_is_pure_help(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -3647,120 +7220,36 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn("Dry-run plan", output)
             self.assertFalse((root / "store").exists())
 
-    def test_wrapper_one_key_repairs_plugins_before_doctor(self) -> None:
+    def test_wrapper_one_key_repairs_plugins_before_parity_gate(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            write_fake_plugin_catalog_codex(official_codex)
-            (root / "live" / "config.toml").write_text(
-                "[marketplaces.local-test]\n"
-                'source_type = "local"\n'
-                f'source = "{root / "marketplace"}"\n'
-                "\n"
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            self.run_switcher(
+            selector = "missing-plugin@local-test"
+            _, env, _ = self.prepare_internal_plugin_profile(
                 root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
-                "internal",
-                env=env,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog={
+                    "installed": [],
+                    "available": [
+                        {
+                            "pluginId": selector,
+                            "name": "missing-plugin",
+                            "marketplaceName": "local-test",
+                            "version": "1.0.0",
+                        }
+                    ],
+                },
             )
 
             result = self.run_wrapper(
                 root,
-                "official",
-                "--skip-login",
-                "--skip-update-check",
-                "--skip-launchctl",
-                "--no-status",
-                env=env,
-            )
-
-            output = result.stdout + result.stderr
-            self.assertIn("Plugin repair", output)
-            self.assertIn("Installing plugin: missing-plugin@local-test", output)
-            self.assertIn("Doctor passed", output)
-            self.assertIn("Outcome: SUCCESS", output)
-
-    def test_wrapper_one_key_runs_verification_before_doctor(self) -> None:
-        temp_dir, root = self.make_workspace()
-        with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            self.run_switcher(
-                root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
                 "internal",
-                env=env,
-            )
-
-            result = self.run_wrapper(
-                root,
-                "official",
-                "--skip-login",
-                "--skip-update-check",
-                "--skip-launchctl",
-                "--no-status",
-                env=env,
-            )
-
-            output = result.stdout + result.stderr
-            self.assertIn("== Verification ==", output)
-            self.assertIn("Verification passed for openai-official", output)
-            self.assertLess(output.index("== Verification =="), output.index("== Doctor =="))
-            self.assertIn("Verify: passed", output)
-            self.assertIn("Outcome: SUCCESS", output)
-
-    def test_wrapper_one_key_unavailable_plugin_reaches_doctor_without_repair_failure(self) -> None:
-        temp_dir, root = self.make_workspace()
-        with temp_dir:
-            _, official_codex, env = self.prepare_profiles(root)
-            write_fake_script(
-                official_codex,
-                "#!/usr/bin/env sh\n"
-                "set -eu\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"marketplace\" ] && [ \"${3:-}\" = \"upgrade\" ]; then\n"
-                "  printf '{\"upgraded\":[]}\\n'\n"
-                "  exit 0\n"
-                "fi\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"list\" ] && [ \"${3:-}\" = \"--available\" ]; then\n"
-                "  printf '{\"installed\":[],\"available\":[]}\\n'\n"
-                "  exit 0\n"
-                "fi\n"
-                "if [ \"${1:-}\" = \"plugin\" ] && [ \"${2:-}\" = \"add\" ]; then\n"
-                "  echo unexpected-add \"$3\"\n"
-                "  exit 44\n"
-                "fi\n"
-                "echo official-codex\n",
-            )
-            (root / "live" / "config.toml").write_text(
-                "[marketplaces.local-test]\n"
-                'source_type = "local"\n'
-                f'source = "{root / "marketplace"}"\n'
-                "\n"
-                '[plugins."missing-plugin@local-test"]\n'
-                "enabled = true\n"
-            )
-            self.run_switcher(
-                root,
-                "init",
-                "--app-cli-path",
-                str(official_codex),
-                "--capture-current",
-                "internal",
-                env=env,
-            )
-
-            result = self.run_wrapper(
-                root,
-                "official",
-                "--skip-login",
                 "--skip-update-check",
                 "--skip-launchctl",
                 "--no-status",
@@ -3769,8 +7258,72 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
 
             output = result.stdout + result.stderr
+            self.assertIn("Plugin repair", output)
+            self.assertIn(f"Installing plugin: {selector}", output)
+            self.assertIn("Parity health: unhealthy", output)
+            self.assertIn("parity.receipt.missing", output)
+            self.assertIn("Doctor: not run", output)
+            self.assertIn("Outcome: ACTION REQUIRED", output)
+
+    def test_wrapper_one_key_stops_at_missing_parity_before_doctor(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, env, _ = self.prepare_internal_plugin_profile(
+                root,
+                config_text="",
+                catalog={"installed": [], "available": []},
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-update-check",
+                "--skip-launchctl",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("== Verification ==", output)
+            self.assertIn("Parity health: unhealthy", output)
+            self.assertIn("parity.receipt.missing", output)
+            self.assertNotIn("== Doctor ==", output)
+            self.assertIn("Verify: failed (exit 1)", output)
+            self.assertIn("Doctor: not run", output)
+            self.assertIn("Outcome: ACTION REQUIRED", output)
+
+    def test_wrapper_one_key_unavailable_plugin_reaches_doctor_without_repair_failure(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            selector = "missing-plugin@local-test"
+            _, env, _ = self.prepare_internal_plugin_profile(
+                root,
+                config_text=(
+                    "[marketplaces.local-test]\n"
+                    'source_type = "local"\n'
+                    f'source = "{root / "marketplace"}"\n'
+                    "\n"
+                    f'[plugins."{selector}"]\n'
+                    "enabled = true\n"
+                ),
+                catalog={"installed": [], "available": []},
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-update-check",
+                "--skip-verify",
+                "--skip-launchctl",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("Skipping unavailable enabled plugin: missing-plugin@local-test", output)
+            self.assertIn(f"Skipping unavailable enabled plugin: {selector}", output)
             self.assertIn("Doctor found issues:", output)
             self.assertIn("Doctor: failed", output)
             self.assertNotIn("Failed step: plugin repair", output)
@@ -3861,8 +7414,9 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertEqual(official_manifest["home_mode"], "managed")
 
             shim = root / "store" / "bin" / "codex"
-            self.assertIn(f'export CODEX_HOME="{live_home}"', shim.read_text())
-            self.assertIn(f'exec "{internal_codex}" "$@"', shim.read_text())
+            shim_text = shim.read_text()
+            self.assertIn(str(live_home), shim_text)
+            self.assertIn("exec-internal-shell", shim_text)
 
             self.run_switcher(root, "switch", "openai-official", "--skip-launchctl")
 
@@ -4580,7 +8134,14 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn(str(Path(__file__).parent), wrapper_text)
             self.assertNotIn("/old/missing/path", wrapper_text)
             self.assertIn("codex_switch_app_proxy.py", wrapper_text)
-            self.assertIn('if [ "${1:-}" = "app-server" ]; then', wrapper_text)
+            self.assertIn("codex_switch_home_sync.py", wrapper_text)
+            self.assertIn("prepare-launch", wrapper_text)
+            self.assertIn('"$PYTHON_BIN" -B', wrapper_text)
+            self.assertNotIn('find "$APP_CODEX_HOME"', wrapper_text)
+            self.assertNotIn('find "$LIVE_CODEX_HOME"', wrapper_text)
+            self.assertNotIn("is_runtime_state_name()", wrapper_text)
+            self.assertNotIn("<<'PY'", wrapper_text)
+            self.assertNotIn('if [ "${1:-}" = "app-server" ]; then', wrapper_text)
             self.assertNotIn('&& [ "${2:-}" = "--stdio" ]', wrapper_text)
 
             result = subprocess.run(
@@ -4591,7 +8152,59 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 env=env,
             )
-            self.assertIn("internal-codex", result.stdout)
+            self.assertEqual(1, result.stdout.count("internal-codex"))
+            child_receipt = root / "proxy-child.json"
+            proxy_env = dict(env)
+            proxy_env["CODEX_SWITCH_PROXY_CHILD_RECEIPT"] = str(child_receipt)
+            app_server_result = subprocess.run(
+                [
+                    str(app_wrapper),
+                    "-c",
+                    "features.code_mode_host=true",
+                    "app-server",
+                    "--analytics-default-enabled",
+                ],
+                input="",
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=proxy_env,
+            )
+            self.assertTrue(
+                child_receipt.exists(),
+                app_server_result.stdout + app_server_result.stderr,
+            )
+            receipt = json.loads(child_receipt.read_text())
+            self.assertEqual(
+                receipt["args"],
+                [
+                    "-c",
+                    "features.code_mode_host=true",
+                    "app-server",
+                    "--analytics-default-enabled",
+                ],
+            )
+            pythonpath_backend = root / "internal-bin" / "codex"
+            write_fake_script(
+                pythonpath_backend,
+                "#!/usr/bin/env sh\n"
+                "printf 'pythonpath:%s\\n' \"${PYTHONPATH-unset}\"\n",
+            )
+            pythonpath_env = dict(env)
+            pythonpath_env["PYTHONPATH"] = "/original/pythonpath"
+            pythonpath_result = subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=pythonpath_env,
+            )
+            self.assertEqual(
+                "pythonpath:/original/pythonpath\n",
+                pythonpath_result.stdout,
+            )
             app_home_config = (
                 root / "store" / "homes" / "internal" / "config.toml"
             ).read_text()
@@ -4607,6 +8220,258 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn("\n# codex-switch: shared settings\n", app_home_config)
             self.assertFalse(
                 (root / "store" / "homes" / "internal" / "auth.json").exists()
+            )
+
+    def test_internal_desktop_wrapper_matches_switch_for_forbidden_symlinks(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            (live_home / "sessions").mkdir()
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            manifest["app_cli_path"] = str(app_wrapper)
+            manifest_path.write_text(json.dumps(manifest))
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            app_home = root / "store" / "homes" / "internal"
+            other_profile_home = root / "store" / "homes" / "other-profile"
+            other_profile_home.mkdir(parents=True)
+            (other_profile_home / "cache").mkdir()
+            (app_home / "target-state").write_text("target\n")
+            (live_home / "history.jsonl").write_text("live\n")
+
+            links = {
+                "sessions": Path("../../../../live/sessions"),
+                "cache": other_profile_home / "cache",
+                "plugins": root / "missing-plugin-cache",
+                "history.jsonl": live_home / "history.jsonl",
+                "models_cache.json": app_home / "target-state",
+                "state_5.sqlite": app_home / "state_5.sqlite",
+            }
+
+            def install_links() -> None:
+                for name, target in links.items():
+                    path = app_home / name
+                    if path.is_symlink() or path.is_file():
+                        path.unlink()
+                    elif path.is_dir():
+                        shutil.rmtree(path)
+                    path.symlink_to(target)
+
+            install_links()
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            switch_removed = {
+                name for name in links if not (app_home / name).is_symlink()
+            }
+
+            install_links()
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            launcher_removed = {
+                name for name in links if not (app_home / name).is_symlink()
+            }
+
+            self.assertEqual(set(links), switch_removed)
+            self.assertEqual(switch_removed, launcher_removed)
+
+    def test_internal_desktop_wrapper_and_switch_skip_unsafe_shareable_symlinks(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            (live_home / "config.toml").write_text("[features]\nmemory = true\n")
+            external = root / "external-share"
+            external.mkdir()
+            (external / "settings.json").write_text("{}\n")
+            (live_home / "live-share").mkdir()
+            relative_target = root / "relative-share"
+            relative_target.mkdir()
+            (live_home / "relative-share").symlink_to(Path("../relative-share"))
+            (live_home / "dangling-share").symlink_to(root / "missing-share")
+            (live_home / "live-home-share").symlink_to(live_home / "live-share")
+            (live_home / "self-share").symlink_to(live_home / "self-share")
+            (live_home / "external-share").symlink_to(external)
+
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            manifest["app_cli_path"] = str(app_wrapper)
+            manifest_path.write_text(json.dumps(manifest))
+            app_home = root / "store" / "homes" / "internal"
+            app_home.mkdir(parents=True, exist_ok=True)
+            (app_home / "target-state").write_text("target\n")
+            (live_home / "target-home-share").symlink_to(
+                app_home / "target-state"
+            )
+            target_home_alias = root / "target-home-alias"
+            target_home_alias.symlink_to(app_home, target_is_directory=True)
+            (live_home / "target-home-alias-share").symlink_to(
+                target_home_alias / "target-state"
+            )
+
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+            unsafe_names = {
+                "relative-share",
+                "dangling-share",
+                "live-home-share",
+                "target-home-share",
+                "target-home-alias-share",
+                "self-share",
+            }
+            switch_state = {
+                name: (app_home / name).is_symlink() for name in unsafe_names
+            }
+            self.assertEqual(
+                {name: False for name in unsafe_names},
+                switch_state,
+            )
+            self.assertTrue((app_home / "external-share").is_symlink())
+            self.assertEqual(str(external), os.readlink(app_home / "external-share"))
+
+            subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            launcher_state = {
+                name: (app_home / name).is_symlink() for name in unsafe_names
+            }
+            self.assertEqual(switch_state, launcher_state)
+            self.assertTrue((app_home / "external-share").is_symlink())
+
+    def test_internal_desktop_wrapper_preflights_config_before_home_mutation(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            live_home = root / "live"
+            live_config = live_home / "config.toml"
+            live_config.write_text("[features]\nmemory = true\n")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            manifest_path = root / "store" / "profiles" / "internal" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            app_wrapper = root / "store" / "bin" / "codex-internal-app"
+            manifest["app_cli_path"] = str(app_wrapper)
+            manifest_path.write_text(json.dumps(manifest))
+            self.run_switcher(root, "switch", "internal", "--skip-launchctl")
+
+            app_home = root / "store" / "homes" / "internal"
+            stale = app_home / "sessions"
+            if stale.exists() or stale.is_symlink():
+                if stale.is_symlink() or stale.is_file():
+                    stale.unlink()
+                else:
+                    shutil.rmtree(stale)
+            stale.symlink_to(live_home / "sessions")
+            auth = app_home / "auth.json"
+            auth.write_text('{"must":"remain"}\n')
+            app_config = app_home / "config.toml"
+            before_config = app_config.read_bytes()
+            snapshot_paths = (
+                app_home / "internal.plugin-support.config.toml",
+                root
+                / "store"
+                / "profiles"
+                / "internal"
+                / "internal.plugin-support.config.toml",
+            )
+            before_snapshots = {
+                path: path.read_bytes() for path in snapshot_paths if path.exists()
+            }
+            live_config.write_text('value = "unterminated\n')
+
+            result = subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Invalid TOML", result.stderr)
+            self.assertTrue(stale.is_symlink())
+            self.assertEqual('{"must":"remain"}\n', auth.read_text())
+            self.assertEqual(before_config, app_config.read_bytes())
+            self.assertEqual(
+                before_snapshots,
+                {
+                    path: path.read_bytes()
+                    for path in snapshot_paths
+                    if path.exists()
+                },
+            )
+
+            live_config.write_text("[features]\nmemory = true\n")
+            profile_config = (
+                root / "store" / "profiles" / "internal" / "config.toml"
+            )
+            profile_config.write_text('value = "unterminated\n')
+            result = subprocess.run(
+                [str(app_wrapper), "--version"],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Invalid TOML", result.stderr)
+            self.assertTrue(stale.is_symlink())
+            self.assertEqual('{"must":"remain"}\n', auth.read_text())
+            self.assertEqual(before_config, app_config.read_bytes())
+            self.assertEqual(
+                before_snapshots,
+                {
+                    path: path.read_bytes()
+                    for path in snapshot_paths
+                    if path.exists()
+                },
             )
 
     def test_internal_desktop_wrapper_persists_app_home_plugin_state(self) -> None:
@@ -4703,7 +8568,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                     snapshot,
                 )
 
-    def test_internal_desktop_wrapper_does_not_narrow_official_shared_settings(self) -> None:
+    def test_internal_desktop_wrapper_uses_internal_plugin_skill_state_without_narrowing_support(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -4786,10 +8651,27 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn("[memories]", live_config)
             self.assertIn("[apps.connector_test]", live_config)
             self.assertIn("[marketplaces.cy-codex-skills]", live_config)
-            self.assertIn('[plugins."agent-kb@cy-codex-skills"]', live_config)
-            self.assertIn("[[skills.config]]", live_config)
+            self.assertNotIn('[plugins."agent-kb@cy-codex-skills"]', live_config)
+            self.assertNotIn("[[skills.config]]", live_config)
             self.assertIn('[plugins."github@openai-curated"]', live_config)
             self.assertNotIn('model = "internal-runtime"', live_config)
+            for snapshot_path in (
+                app_home_config_path.parent
+                / "internal.plugin-support.config.toml",
+                root
+                / "store"
+                / "profiles"
+                / "internal"
+                / "internal.plugin-support.config.toml",
+            ):
+                snapshot = snapshot_path.read_text()
+                self.assertIn("[marketplaces.cy-codex-skills]", snapshot)
+                self.assertNotIn(
+                    '[plugins."agent-kb@cy-codex-skills"]',
+                    snapshot,
+                )
+                self.assertNotIn("[[skills.config]]", snapshot)
+                self.assertIn('[plugins."github@openai-curated"]', snapshot)
 
     def test_internal_desktop_wrapper_preserves_official_personality(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -5134,6 +9016,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 root,
                 "official",
                 "--skip-launchctl",
+                "--skip-plugin-repair",
                 "--skip-doctor",
                 "--no-status",
                 env=env,
@@ -5169,6 +9052,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--skip-login",
                 "--skip-update-check",
                 "--skip-launchctl",
+                "--skip-plugin-repair",
                 "--skip-doctor",
                 "--no-status",
                 env=env,
@@ -5201,6 +9085,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "official",
                 "--skip-launchctl",
                 "--skip-update-check",
+                "--skip-plugin-repair",
                 "--skip-doctor",
                 "--no-status",
                 env=env,
@@ -5253,8 +9138,24 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             manifest_path = root / "store" / "profiles" / "openai-official" / "manifest.json"
             manifest = json.loads(manifest_path.read_text())
-            manifest["app_cli_path"] = str(root / "missing-app-cli")
+            doctor_mismatch_app_cli = root / "doctor-mismatch-app-cli"
+            write_fake_codex(doctor_mismatch_app_cli, "doctor-mismatch-app-cli")
+            manifest["app_cli_path"] = str(doctor_mismatch_app_cli)
             manifest_path.write_text(json.dumps(manifest))
+            (root / "agent.plist").write_bytes(
+                plistlib.dumps(
+                    {
+                        "Label": "test",
+                        "ProgramArguments": [
+                            "/bin/launchctl",
+                            "setenv",
+                            "CODEX_CLI_PATH",
+                            str(official_codex),
+                        ],
+                        "RunAtLoad": True,
+                    }
+                )
+            )
 
             result = self.run_wrapper(
                 root,
@@ -5263,6 +9164,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--skip-update-check",
                 "--skip-shim",
                 "--skip-app-cli",
+                "--skip-plugin-repair",
+                "--skip-verify",
                 "--no-status",
                 env=env,
                 check=False,
@@ -5283,6 +9186,10 @@ class CodexProfileSwitchTests(unittest.TestCase):
         temp_dir, root = self.make_workspace()
         with temp_dir:
             internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
             env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = "http://127.0.0.1:1/latest"
             self.run_switcher(
                 root,
@@ -5292,12 +9199,19 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--capture-current",
                 "internal",
                 env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
             )
 
             result = self.run_wrapper(
                 root,
                 "internal",
                 "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-verify",
                 "--skip-doctor",
                 "--no-status",
                 env=env,
@@ -5313,12 +9227,493 @@ class CodexProfileSwitchTests(unittest.TestCase):
             active = json.loads((root / "store" / "active.json").read_text())
             self.assertEqual(active["profile"], "internal")
 
+    def test_internal_check_compares_with_official_stable_without_helper(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 0.144.6",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            helper_called = root / "helper-called"
+            curl_args = root / "curl-args"
+            write_fake_release_redirects(
+                fake_tools / "curl",
+                {
+                    "internal.example/latest": (
+                        "https://github.com/SDGLBL/codex/releases/tag/"
+                        "internal-rust-v0.144.6"
+                    ),
+                    "official.example/latest": (
+                        "https://github.com/openai/codex/releases/tag/"
+                        "rust-v0.145.0"
+                    ),
+                },
+                args_log=curl_args,
+            )
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"touch {helper_called}\n"
+                "exit 0\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = (
+                "https://internal.example/latest"
+            )
+            env["CODEX_SWITCH_OFFICIAL_LATEST_URL"] = (
+                "https://official.example/latest"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+            store_before = filesystem_snapshot(root / "store")
+
+            result = self.run_wrapper(
+                root,
+                "check-update",
+                "internal",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn("Official stable comparison (internal)", output)
+            self.assertIn("Current internal CLI: 0.144.6", output)
+            self.assertIn(
+                "Latest openai/codex stable: 0.145.0 (rust-v0.145.0)",
+                output,
+            )
+            self.assertIn("Status: behind upstream stable", output)
+            self.assertIn(
+                "internal updates remain governed by the internal release source",
+                output,
+            )
+            self.assertFalse(helper_called.exists())
+            self.assertEqual(store_before, filesystem_snapshot(root / "store"))
+            curl_calls = curl_args.read_text().splitlines()
+            self.assertTrue(
+                any(
+                    "--connect-timeout 3 --max-time 20 "
+                    "https://internal.example/latest" in call
+                    for call in curl_calls
+                ),
+                curl_calls,
+            )
+            self.assertTrue(
+                any(
+                    "--connect-timeout 3 --max-time 8 "
+                    "https://official.example/latest" in call
+                    for call in curl_calls
+                ),
+                curl_calls,
+            )
+
+    def test_official_check_compares_bundled_prerelease_with_stable(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                official_codex,
+                version="codex-cli 0.146.0-alpha.3",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            curl_args = root / "curl-args"
+            write_fake_release_redirects(
+                fake_tools / "curl",
+                {
+                    "official.example/latest": (
+                        "https://github.com/openai/codex/releases/tag/"
+                        "rust-v0.145.0"
+                    ),
+                },
+                args_log=curl_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_OFFICIAL_LATEST_URL"] = (
+                "https://official.example/latest"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+            store_before = filesystem_snapshot(root / "store")
+
+            result = self.run_wrapper(
+                root,
+                "check-update",
+                "official",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn(
+                "Update: managed by ChatGPT.app; codex-switch does not modify "
+                "the app bundle.",
+                output,
+            )
+            self.assertIn("Official stable comparison (openai-official)", output)
+            self.assertIn("Current official CLI: 0.146.0-alpha.3", output)
+            self.assertIn("Status: ahead of upstream stable", output)
+            self.assertIn("Current channel: prerelease or vendor build", output)
+            self.assertEqual(store_before, filesystem_snapshot(root / "store"))
+            self.assertTrue(
+                any(
+                    "--connect-timeout 3 --max-time 8 "
+                    "https://official.example/latest" in call
+                    for call in curl_args.read_text().splitlines()
+                )
+            )
+
+    def test_official_unparseable_version_is_nonblocking(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                official_codex,
+                version="codex-cli unknown",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            write_fake_release_redirects(
+                fake_tools / "curl",
+                {
+                    "official.example/latest": (
+                        "https://github.com/openai/codex/releases/tag/"
+                        "rust-v0.145.0"
+                    ),
+                },
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_OFFICIAL_LATEST_URL"] = (
+                "https://official.example/latest"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+            store_before = filesystem_snapshot(root / "store")
+
+            result = self.run_wrapper(
+                root,
+                "check-update",
+                "official",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn(
+                "Official stable comparison: unavailable "
+                "(selected profile CLI version is not parseable)",
+                output,
+            )
+            self.assertEqual(store_before, filesystem_snapshot(root / "store"))
+
+    def test_internal_switch_compares_after_successful_auto_update(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 0.144.6",
+            )
+            successor = root / "successor-codex"
+            write_fake_app_server_smoke_codex(
+                successor,
+                version="codex-cli 0.145.1",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_release_redirects(
+                fake_tools / "curl",
+                {
+                    "internal.example/latest": (
+                        "https://github.com/SDGLBL/codex/releases/tag/"
+                        "internal-rust-v0.145.1"
+                    ),
+                    "official.example/latest": (
+                        "https://github.com/openai/codex/releases/tag/"
+                        "rust-v0.145.0"
+                    ),
+                },
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=successor,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = (
+                "https://internal.example/latest"
+            )
+            env["CODEX_SWITCH_OFFICIAL_LATEST_URL"] = (
+                "https://official.example/latest"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="0.145.1",
+            )
+            self.assertIn("Official stable comparison (internal)", output)
+            self.assertLess(
+                output.index("Auto-update: installed 0.145.1"),
+                output.index("Official stable comparison (internal)"),
+            )
+            self.assertIn("Current internal CLI: 0.145.1", output)
+            self.assertIn("Status: ahead of upstream stable", output)
+
+    def test_official_stable_lookup_failure_is_nonblocking(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 0.144.6",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            write_fake_release_redirects(
+                fake_tools / "curl",
+                {
+                    "internal.example/latest": (
+                        "https://github.com/SDGLBL/codex/releases/tag/"
+                        "internal-rust-v0.144.6"
+                    ),
+                    "official.example/latest": None,
+                },
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = (
+                "https://internal.example/latest"
+            )
+            env["CODEX_SWITCH_OFFICIAL_LATEST_URL"] = (
+                "https://official.example/latest"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn(
+                "Official stable comparison: unavailable (release lookup failed)",
+                output,
+            )
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual("internal", active["profile"])
+
+    def test_prerelease_tag_is_not_used_as_stable_baseline(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 0.144.6",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            write_fake_release_redirects(
+                fake_tools / "curl",
+                {
+                    "internal.example/latest": (
+                        "https://github.com/SDGLBL/codex/releases/tag/"
+                        "internal-rust-v0.144.6"
+                    ),
+                    "official.example/latest": (
+                        "https://github.com/openai/codex/releases/tag/"
+                        "rust-v0.146.0-alpha.6"
+                    ),
+                },
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = (
+                "https://internal.example/latest"
+            )
+            env["CODEX_SWITCH_OFFICIAL_LATEST_URL"] = (
+                "https://official.example/latest"
+            )
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "check-update",
+                "internal",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn(
+                "Official stable comparison: unavailable "
+                "(latest upstream tag is not a stable rust-v semantic version)",
+                output,
+            )
+            self.assertNotIn("Latest openai/codex stable: 0.146.0-alpha.6", output)
+
+    def test_skip_update_check_skips_official_release_lookup(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            curl_called = root / "curl-called"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                f"touch {curl_called}\n"
+                "exit 22\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-update-check",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn("Update check: skipped by command option.", output)
+            self.assertNotIn("Official stable comparison", output)
+            self.assertFalse(curl_called.exists())
+
     def test_internal_update_check_skips_blocked_latest_on_fallback(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
             write_fake_app_server_smoke_codex(
-                root / "internal-codex",
+                root / "internal-bin" / "codex",
                 version="codex-cli 0.142.4",
             )
             fake_tools = root / "fake-tools"
@@ -5348,6 +9743,11 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--capture-current",
                 "internal",
                 env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
             )
 
             result = self.run_wrapper(root, "check-update", "internal", env=env)
@@ -5364,7 +9764,142 @@ class CodexProfileSwitchTests(unittest.TestCase):
         with temp_dir:
             internal_codex, official_codex, env = self.prepare_profiles(root)
             write_fake_app_server_smoke_codex(
-                root / "internal-codex",
+                root / "internal-bin" / "codex",
+                version="codex-cli 0.142.5",
+            )
+            fallback_codex = root / "fallback-codex"
+            write_fake_app_server_smoke_codex(
+                fallback_codex,
+                version="codex-cli 0.142.4",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.5\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=fallback_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("Latest release tag: internal-rust-v0.142.5", output)
+            self.assertIn("blocked", output)
+            self.assertIn(
+                "Auto-update: running staged parity-safe internal promotion",
+                output,
+            )
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="0.142.4",
+            )
+
+    def test_one_key_internal_auto_update_resumes_for_successor_latest(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-bin" / "codex",
+                version="codex-cli 0.142.4",
+            )
+            successor_codex = root / "successor-codex"
+            write_fake_app_server_smoke_codex(
+                successor_codex,
+                version="codex-cli 0.142.6",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.6\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=successor_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                allow_switch_script=True,
+            )
+
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="0.142.6",
+            )
+
+    def test_update_internal_command_pins_blocked_latest_without_explicit_version(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-bin" / "codex",
                 version="codex-cli 0.142.5",
             )
             fake_tools = root / "fake-tools"
@@ -5394,33 +9929,34 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--capture-current",
                 "internal",
                 env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
             )
 
-            result = self.run_wrapper(
-                root,
-                "internal",
-                "--skip-launchctl",
-                "--skip-doctor",
-                "--no-status",
-                env=env,
-            )
+            result = self.run_wrapper(root, "update-internal", "--dry-run", env=env)
 
             output = result.stdout + result.stderr
-            self.assertIn("Latest release tag: internal-rust-v0.142.5", output)
-            self.assertIn("blocked", output)
-            self.assertIn("Auto-update: running codex-switch update-internal", output)
-            self.assertEqual(
-                update_args.read_text().strip(),
-                f"update-internal --version 0.142.4 --install-dir {internal_codex.parent}",
+            self.assertIn(
+                "Current internal release status: blocked by codex-switch policy",
+                output,
+            )
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="0.142.4",
+                expected_flags=("--dry-run",),
             )
 
-    def test_one_key_internal_auto_update_resumes_for_successor_latest(self) -> None:
+    def test_update_internal_command_keeps_healthy_newer_current(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
-            internal_codex, official_codex, env = self.prepare_profiles(root)
+            _, official_codex, env = self.prepare_profiles(root)
             write_fake_app_server_smoke_codex(
-                root / "internal-codex",
-                version="codex-cli 0.142.4",
+                root / "internal-bin" / "codex",
+                version="codex-cli 1.2.0",
             )
             fake_tools = root / "fake-tools"
             fake_tools.mkdir()
@@ -5430,7 +9966,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "#!/usr/bin/env sh\n"
                 "cat <<'EOF'\n"
                 "HTTP/2 302\n"
-                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.6\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
                 "EOF\n",
             )
             write_fake_script(
@@ -5449,26 +9985,540 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--capture-current",
                 "internal",
                 env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
             )
 
-            self.run_wrapper(
+            result = self.run_wrapper(root, "update-internal", env=env)
+
+            output = result.stdout + result.stderr
+            self.assertIn(
+                "healthy current 1.2.0 is newer than reported latest 1.1.0",
+                output,
+            )
+            self.assertIn("update-internal: no automatic update required", output)
+            self.assertFalse(update_args.exists())
+
+    def test_update_internal_binds_helper_and_postcondition_to_profile_binary(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            custom_dir = root / "custom-internal-bin"
+            custom_dir.mkdir()
+            custom_codex = custom_dir / "codex"
+            write_fake_app_server_smoke_codex(
+                custom_codex,
+                version="codex-cli 1.0.0",
+            )
+            updated_codex = root / "custom-updated-codex"
+            write_fake_app_server_smoke_codex(
+                updated_codex,
+                version="codex-cli 1.1.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=updated_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
                 root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
                 "internal",
-                "--skip-launchctl",
-                "--skip-doctor",
-                "--no-status",
                 env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+            manifest_path = (
+                root / "store" / "profiles" / "internal" / "manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text())
+            manifest["codex_bin"] = str(custom_codex)
+            manifest_path.write_text(json.dumps(manifest))
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "1.1.0",
+                env=env,
+                check=False,
+                allow_switch_script=True,
             )
 
-            self.assertEqual(
-                update_args.read_text().strip(),
-                f"update-internal --install-dir {internal_codex.parent}",
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=custom_codex,
+                version="1.1.0",
+            )
+            self.assertIn(
+                "codex-cli 1.1.0",
+                subprocess.run(
+                    [str(custom_codex), "--version"],
+                    check=True,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                ).stdout,
+            )
+            self.assertIn("App-server smoke: passed", output)
+
+    def test_update_internal_expands_store_before_manifest_binding(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=internal_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+            home = root / "home"
+            home.mkdir()
+            store = home / ".codex-switch"
+            shutil.move(root / "store", store)
+            env["HOME"] = str(home)
+            env["CODEX_SWITCH_SKIP_SELF_UPDATE"] = "1"
+            env["CODEX_SWITCH_PYTHON"] = (
+                shutil.which("python3.12")
+                or shutil.which("python3.11")
+                or sys.executable
             )
 
-    def test_update_internal_command_pins_blocked_latest_without_explicit_version(self) -> None:
+            for raw_store in ("~/.codex-switch", "$HOME/.codex-switch"):
+                with self.subTest(raw_store=raw_store):
+                    update_args.unlink(missing_ok=True)
+                    env["CODEX_SWITCH_HOME"] = raw_store
+                    result = subprocess.run(
+                        [
+                            str(WRAPPER),
+                            "update-internal",
+                            "--version",
+                            "1.1.0",
+                            "--dry-run",
+                        ],
+                        check=False,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                    )
+
+                    output = result.stdout + result.stderr
+                    self.assertEqual(0, result.returncode, output)
+                    self.assert_staged_update_helper_args(
+                        update_args,
+                        bound_bin=internal_codex,
+                        version="1.1.0",
+                        expected_flags=("--dry-run",),
+                    )
+
+    def test_update_internal_rejects_option_as_version_before_helper(
+        self,
+    ) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, _, env = self.prepare_profiles(root)
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            helper_called = root / "helper-called"
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"touch {helper_called}\n"
+                "exit 0\n",
+            )
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "--dry-run",
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(2, result.returncode)
+            self.assertIn(
+                "--version requires a non-option value",
+                result.stdout + result.stderr,
+            )
+            self.assertFalse(helper_called.exists())
+
+    def test_update_internal_rejects_option_as_install_dir_before_helper(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, _, env = self.prepare_profiles(root)
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            helper_called = root / "helper-called"
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"touch {helper_called}\n"
+                "exit 0\n",
+            )
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "1.1.0",
+                "--install-dir",
+                "--dry-run",
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(2, result.returncode)
+            self.assertIn(
+                "--install-dir requires a non-option value",
+                result.stdout + result.stderr,
+            )
+            self.assertFalse(helper_called.exists())
+
+    def test_update_internal_rejects_dry_run_as_helper_option_value(
+        self,
+    ) -> None:
+        value_options = (
+            "--internal-bin",
+            "--official-bin",
+            "--installer-url",
+            "--latest-url",
+            "--model",
+            "--azure-base-url",
+            "--codex-install-base-url",
+        )
+        for option in value_options:
+            with self.subTest(option=option):
+                temp_dir, root = self.make_workspace()
+                with temp_dir:
+                    _, _, env = self.prepare_profiles(root)
+                    fake_tools = root / "fake-tools"
+                    fake_tools.mkdir()
+                    helper_called = root / "helper-called"
+                    write_fake_script(
+                        fake_tools / "codex-env-setup",
+                        "#!/usr/bin/env sh\n"
+                        f"touch {helper_called}\n"
+                        "exit 0\n",
+                    )
+                    env["CODEX_SWITCH_ENV_SETUP"] = str(
+                        fake_tools / "codex-env-setup"
+                    )
+
+                    result = self.run_wrapper(
+                        root,
+                        "update-internal",
+                        "--version",
+                        "1.1.0",
+                        option,
+                        "--dry-run",
+                        env=env,
+                        check=False,
+                    )
+
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn(
+                        f"{option} requires a non-option value",
+                        result.stdout + result.stderr,
+                    )
+                    self.assertFalse(helper_called.exists())
+
+    def test_update_internal_normalizes_equals_options(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            updated_codex = root / "equals-updated-codex"
+            write_fake_app_server_smoke_codex(
+                updated_codex,
+                version="codex-cli 1.1.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=updated_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version=1.1.0",
+                f"--install-dir={internal_codex.parent}",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="1.1.0",
+            )
+            self.assertIn("App-server smoke: passed", output)
+
+    def test_update_internal_rejects_noncanonical_profile_binary_before_helper(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            custom_dir = root / "custom-internal-bin"
+            custom_dir.mkdir()
+            custom_codex = custom_dir / "codex-internal"
+            write_fake_app_server_smoke_codex(
+                custom_codex,
+                version="codex-cli 1.0.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            helper_called = root / "helper-called"
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"touch {helper_called}\n"
+                "exit 0\n",
+            )
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+            manifest_path = (
+                root / "store" / "profiles" / "internal" / "manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text())
+            manifest["codex_bin"] = str(custom_codex)
+            manifest_path.write_text(json.dumps(manifest))
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "1.1.0",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            self.assertEqual(2, result.returncode)
+            self.assertIn(
+                "profile codex_bin basename must be codex",
+                result.stdout + result.stderr,
+            )
+            self.assertFalse(helper_called.exists())
+
+    def test_update_internal_rejects_invalid_existing_profile_manifest(
+        self,
+    ) -> None:
+        manifest_values = (
+            "{not-json",
+            json.dumps({"name": "internal"}),
+        )
+        for manifest_text in manifest_values:
+            with self.subTest(manifest_text=manifest_text):
+                temp_dir, root = self.make_workspace()
+                with temp_dir:
+                    _, _, env = self.prepare_profiles(root)
+                    manifest_path = (
+                        root
+                        / "store"
+                        / "profiles"
+                        / "internal"
+                        / "manifest.json"
+                    )
+                    manifest_path.parent.mkdir(parents=True)
+                    manifest_path.write_text(manifest_text)
+                    fake_tools = root / "fake-tools"
+                    fake_tools.mkdir()
+                    helper_called = root / "helper-called"
+                    write_fake_script(
+                        fake_tools / "codex-env-setup",
+                        "#!/usr/bin/env sh\n"
+                        f"touch {helper_called}\n"
+                        "exit 0\n",
+                    )
+                    env["CODEX_SWITCH_ENV_SETUP"] = str(
+                        fake_tools / "codex-env-setup"
+                    )
+
+                    result = self.run_wrapper(
+                        root,
+                        "update-internal",
+                        "--version",
+                        "1.1.0",
+                        env=env,
+                        check=False,
+                    )
+
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn(
+                        "internal profile manifest is invalid",
+                        result.stdout + result.stderr,
+                    )
+                    self.assertFalse(helper_called.exists())
+
+    def test_one_key_internal_rejects_noncanonical_profile_binary_before_helper(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            custom_dir = root / "custom-internal-bin"
+            custom_dir.mkdir()
+            custom_codex = custom_dir / "codex-internal"
+            write_fake_app_server_smoke_codex(
+                custom_codex,
+                version="codex-cli 1.0.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            helper_called = root / "helper-called"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
+                "EOF\n",
+            )
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"touch {helper_called}\n"
+                "exit 0\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+            manifest_path = (
+                root / "store" / "profiles" / "internal" / "manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text())
+            manifest["codex_bin"] = str(custom_codex)
+            manifest_path.write_text(json.dumps(manifest))
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(2, result.returncode)
+            self.assertIn(
+                "profile codex_bin basename must be codex",
+                result.stdout + result.stderr,
+            )
+            self.assertFalse(helper_called.exists())
+            self.assertFalse((root / "store" / "active.json").exists())
+
+    def test_update_internal_rejects_failed_current_version_probe(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_script(
+                internal_codex,
+                "#!/usr/bin/env sh\n"
+                "if [ \"${1:-}\" = \"--version\" ]; then\n"
+                "  echo codex-cli 1.2.0\n"
+                "  exit 9\n"
+                "fi\n"
+                "exit 0\n",
+            )
             fake_tools = root / "fake-tools"
             fake_tools.mkdir()
             update_args = root / "update-args.txt"
@@ -5477,7 +10527,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "#!/usr/bin/env sh\n"
                 "cat <<'EOF'\n"
                 "HTTP/2 302\n"
-                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.5\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
                 "EOF\n",
             )
             write_fake_script(
@@ -5488,14 +10538,565 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
             env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
 
-            result = self.run_wrapper(root, "update-internal", "--dry-run", env=env)
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                env=env,
+                check=False,
+            )
 
             output = result.stdout + result.stderr
-            self.assertIn("latest internal release 0.142.5 is blocked", output)
-            self.assertEqual(
-                update_args.read_text().strip(),
-                "update-internal --version 0.142.4 --dry-run",
+            self.assertEqual(9, result.returncode)
+            self.assertIn("current version probe failed (exit 9)", output)
+            self.assertFalse(update_args.exists())
+
+    def test_one_key_internal_blocks_failed_current_version_probe(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_script(
+                internal_codex,
+                "#!/usr/bin/env sh\n"
+                "if [ \"${1:-}\" = \"--version\" ]; then\n"
+                "  echo codex-cli 1.2.0\n"
+                "  exit 9\n"
+                "fi\n"
+                "exit 0\n",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            helper_called = root / "helper-called"
+            write_fake_script(
+                fake_tools / "codex-env-setup",
+                "#!/usr/bin/env sh\n"
+                f"touch {helper_called}\n"
+                "exit 0\n",
+            )
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(9, result.returncode)
+            self.assertIn("current version probe failed (exit 9)", output)
+            self.assertIn("Failed step: update check", output)
+            self.assertFalse(helper_called.exists())
+            self.assertFalse((root / "store" / "active.json").exists())
+
+    def test_update_internal_explicit_version_rejects_wrong_after_version(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=internal_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "1.1.0",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("expected 1.1.0", output)
+            self.assertIn("observed 1.0.0", output)
+            self.assertFalse(
+                (
+                    root
+                    / "store"
+                    / "homes"
+                    / "internal"
+                    / "app-server-smoke.log"
+                ).exists()
+            )
+
+    def test_update_internal_rejects_nonzero_version_probe(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            failed_probe_codex = root / "failed-probe-codex"
+            write_fake_script(
+                failed_probe_codex,
+                "#!/usr/bin/env sh\n"
+                "if [ \"${1:-}\" = \"--version\" ]; then\n"
+                "  echo codex-cli 1.1.0\n"
+                "  exit 9\n"
+                "fi\n"
+                "exit 0\n",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=failed_probe_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "1.1.0",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("version probe failed (exit 9)", output)
+            self.assertFalse(
+                (
+                    root
+                    / "store"
+                    / "homes"
+                    / "internal"
+                    / "app-server-smoke.log"
+                ).exists()
+            )
+
+    def test_update_internal_requires_compatibility_smoke_success(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            failed_candidate = root / "failed-direct-update-codex"
+            write_fake_app_server_smoke_codex(
+                failed_candidate,
+                version="codex-cli 1.1.0",
+                exit_241_after_plugin_list=True,
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=failed_candidate,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "1.1.0",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("app-server smoke failed", output)
+            self.assertIn("exit 241", output)
+
+    def test_internal_update_runs_compatibility_when_switch_apply_fails(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            updated_codex = root / "switch-failure-updated-codex"
+            write_fake_app_server_smoke_codex(
+                updated_codex,
+                version="codex-cli 1.1.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=updated_codex,
+                args_log=update_args,
+            )
+            python_shim = fake_tools / "python-shim"
+            write_fake_script(
+                python_shim,
+                f"#!{sys.executable}\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
+                "args = sys.argv[1:]\n"
+                "script_index = 1 if args[:1] == ['-B'] else 0\n"
+                "if len(args) > script_index "
+                "and Path(args[script_index]).name == 'codex_profile_switch.py' "
+                "and 'switch' in args and '--dry-run' not in args:\n"
+                "    raise SystemExit(43)\n"
+                "raise SystemExit(subprocess.call(["
+                "os.environ['CODEX_SWITCH_TEST_REAL_PYTHON'], *args]))\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            env["CODEX_SWITCH_PYTHON"] = str(python_shim)
+            env["CODEX_SWITCH_TEST_REAL_PYTHON"] = (
+                shutil.which("python3.12")
+                or shutil.which("python3.11")
+                or sys.executable
+            )
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=env["CODEX_SWITCH_TEST_REAL_PYTHON"],
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(43, result.returncode)
+            self.assertIn("App-server smoke: passed", output)
+            self.assertTrue(
+                (
+                    root
+                    / "store"
+                    / "homes"
+                    / "internal"
+                    / "app-server-smoke.log"
+                ).exists()
+            )
+
+    def test_internal_update_adapter_preserves_full_semver_tokens(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-bin" / "codex",
+                version="codex-cli 10.20.30-rc-alpha.1+build-7",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v10.20.30-rc-alpha.2+build-8\n"
+                "EOF\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(root, "check-update", "internal", env=env)
+
+            output = result.stdout + result.stderr
+            self.assertIn(
+                "Current: codex-cli 10.20.30-rc-alpha.1+build-7",
+                output,
+            )
+            self.assertIn(
+                "ordered upgrade to 10.20.30-rc-alpha.2+build-8",
+                output,
+            )
+
+    def test_blocked_current_repairs_when_latest_lookup_fails(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-bin" / "codex",
+                version="codex-cli 0.142.5",
+            )
+            fallback_codex = root / "offline-fallback-codex"
+            write_fake_app_server_smoke_codex(
+                fallback_codex,
+                version="codex-cli 0.142.4",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "exit 22\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=fallback_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("Latest release: <unavailable", output)
+            self.assertIn("blocked-current fallback", output)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="0.142.4",
+            )
+            self.assertIn("App-server smoke: passed", output)
+
+    def test_internal_update_runs_compatibility_after_plugin_repair_failure(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                root / "internal-bin" / "codex",
+                version="codex-cli 1.0.0",
+            )
+            updated_codex = root / "plugin-failure-updated-codex"
+            write_fake_app_server_smoke_codex(
+                updated_codex,
+                version="codex-cli 1.1.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=updated_codex,
+                args_log=update_args,
+            )
+            python_shim = fake_tools / "python-shim"
+            write_fake_script(
+                python_shim,
+                f"#!{sys.executable}\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
+                "args = sys.argv[1:]\n"
+                "script_index = 1 if args[:1] == ['-B'] else 0\n"
+                "if len(args) > script_index "
+                "and Path(args[script_index]).name == 'codex_profile_switch.py' "
+                "and 'repair-plugins' in args:\n"
+                "    raise SystemExit(41)\n"
+                "raise SystemExit(subprocess.call(["
+                "os.environ['CODEX_SWITCH_TEST_REAL_PYTHON'], *args]))\n",
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            env["CODEX_SWITCH_PYTHON"] = str(python_shim)
+            env["CODEX_SWITCH_TEST_REAL_PYTHON"] = (
+                shutil.which("python3.12")
+                or shutil.which("python3.11")
+                or sys.executable
+            )
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=env["CODEX_SWITCH_TEST_REAL_PYTHON"],
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(41, result.returncode)
+            self.assertIn("App-server smoke: passed", output)
+            self.assertTrue(
+                (
+                    root
+                    / "store"
+                    / "homes"
+                    / "internal"
+                    / "app-server-smoke.log"
+                ).exists()
             )
 
     def test_one_key_internal_auto_update_runs_app_server_smoke(self) -> None:
@@ -5503,8 +11104,13 @@ class CodexProfileSwitchTests(unittest.TestCase):
         with temp_dir:
             internal_codex, official_codex, env = self.prepare_profiles(root)
             write_fake_app_server_smoke_codex(
-                root / "internal-codex",
+                root / "internal-bin" / "codex",
                 version="codex-cli 1.0.0",
+            )
+            updated_codex = root / "updated-codex"
+            write_fake_app_server_smoke_codex(
+                updated_codex,
+                version="codex-cli 9.9.9",
             )
             fake_tools = root / "fake-tools"
             fake_tools.mkdir()
@@ -5517,14 +11123,14 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v9.9.9\n"
                 "EOF\n",
             )
-            write_fake_script(
+            write_fake_staged_update_helper(
                 fake_tools / "codex-env-setup",
-                "#!/usr/bin/env sh\n"
-                f"printf '%s\\n' \"$*\" > {update_args}\n"
-                "exit 0\n",
+                candidate_source=updated_codex,
+                args_log=update_args,
             )
             env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
             env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
             self.run_switcher(
                 root,
                 "init",
@@ -5533,6 +11139,11 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "--capture-current",
                 "internal",
                 env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
             )
 
             check_result = self.run_wrapper(root, "check-update", "internal", env=env)
@@ -5544,23 +11155,428 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 root,
                 "internal",
                 "--skip-launchctl",
+                "--skip-plugin-repair",
                 "--skip-doctor",
                 "--no-status",
                 env=env,
+                allow_switch_script=True,
             )
 
             output = result.stdout + result.stderr
             self.assertIn("Auto-update: internal Codex update detected.", output)
-            self.assertIn("Auto-update: running codex-switch update-internal", output)
+            self.assertIn(
+                "Auto-update: running staged parity-safe internal promotion",
+                output,
+            )
             self.assertIn("App-server smoke: passed", output)
-            self.assertEqual(
-                update_args.read_text().strip(),
-                f"update-internal --install-dir {internal_codex.parent}",
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="9.9.9",
             )
             smoke_log = root / "store" / "homes" / "internal" / "app-server-smoke.log"
             self.assertTrue(smoke_log.exists())
             active = json.loads((root / "store" / "active.json").read_text())
             self.assertEqual(active["profile"], "internal")
+
+    def test_set_bin_internal_unhealthy_parity_evidence_promotes_nothing(
+        self,
+    ) -> None:
+        cases = (
+            ("failed", "parity.preparation.failed", True),
+            ("unknown", "parity.probe.unknown", False),
+            ("core", "parity.protocol.core_incompatible", False),
+            (
+                "unclassified",
+                "parity.feature.unclassified_drift",
+                False,
+            ),
+        )
+        for name, finding_code, raises in cases:
+            with self.subTest(case=name):
+                temp_dir, root = self.make_workspace()
+                with temp_dir:
+                    (
+                        _store,
+                        source_catalog,
+                        args,
+                        observed_paths,
+                    ) = self.internal_rebind_fixture(root)
+                    before = self.snapshot_rebind_paths(observed_paths)
+                    finding = SimpleNamespace(
+                        code=finding_code,
+                        severity="error",
+                    )
+                    unhealthy_bundle = SimpleNamespace(
+                        healthy=False,
+                        findings=(finding,),
+                        synchronization_queue=(),
+                        receipt=SimpleNamespace(
+                            healthy=False,
+                            findings=(finding,),
+                        ),
+                        receipt_payload=b"",
+                        overlay=SimpleNamespace(overlay_payload=b""),
+                        config_projection=SimpleNamespace(
+                            healthy=False,
+                            findings=(finding,),
+                            payloads=(),
+                            changed_paths=(),
+                            max_threads_source=None,
+                        ),
+                        manifest_metadata={},
+                    )
+                    prepare_effect: object = (
+                        SwitchError(
+                            "Parity preparation failed before promotion"
+                        )
+                        if raises
+                        else unhealthy_bundle
+                    )
+                    rebind_python = (
+                        sys.executable
+                        if sys.version_info >= (3, 11)
+                        else (
+                            shutil.which("python3.12")
+                            or shutil.which("python3.11")
+                        )
+                    )
+                    self.assertIsNotNone(rebind_python)
+                    bundle_commit = mock.Mock()
+                    error: SwitchError | None = None
+                    with mock.patch.dict(
+                        os.environ,
+                        {"CODEX_SWITCH_PYTHON": str(rebind_python)},
+                    ), mock.patch.object(
+                        bindings_module,
+                        "prepare_parity_bundle",
+                        side_effect=(
+                            prepare_effect
+                            if isinstance(prepare_effect, BaseException)
+                            else None
+                        ),
+                        return_value=(
+                            None
+                            if isinstance(prepare_effect, BaseException)
+                            else prepare_effect
+                        ),
+                        create=True,
+                    ), mock.patch.object(
+                        bindings_module,
+                        "commit_runtime_binding_bundle",
+                        bundle_commit,
+                        create=True,
+                    ), redirect_stdout(io.StringIO()):
+                        try:
+                            cmd_set_bin(args)
+                        except SwitchError as exc:
+                            error = exc
+                    after = self.snapshot_rebind_paths(observed_paths)
+                    changed = [
+                        str(path)
+                        for path in observed_paths
+                        if before[path] != after[path]
+                    ]
+                    self.assertEqual(
+                        {
+                            "raised_switch_error": error is not None,
+                            "changed_paths": changed,
+                            "bundle_commit_calls": (
+                                bundle_commit.call_count
+                            ),
+                            "source_bytes": source_catalog.read_bytes(),
+                            "source_mode": (
+                                source_catalog.stat().st_mode & 0o777
+                            ),
+                        },
+                        {
+                            "raised_switch_error": True,
+                            "changed_paths": [],
+                            "bundle_commit_calls": 0,
+                            "source_bytes": before[source_catalog][1],
+                            "source_mode": before[source_catalog][2],
+                        },
+                    )
+
+    def test_one_key_internal_auto_update_propagates_helper_exit_17(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=None,
+                args_log=update_args,
+                exit_status=17,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(17, result.returncode)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="1.1.0",
+            )
+            self.assertIn("Auto-update: failed", output)
+            self.assertNotIn("Auto-update: completed", output)
+            self.assertFalse(
+                (
+                    root
+                    / "store"
+                    / "homes"
+                    / "internal"
+                    / "app-server-smoke.log"
+                ).exists()
+            )
+
+    def test_one_key_internal_auto_update_rejects_wrong_after_version(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=internal_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="1.1.0",
+            )
+            self.assertIn("expected 1.1.0", output)
+            self.assertIn("observed 1.0.0", output)
+            self.assertNotIn("Auto-update: completed", output)
+            self.assertFalse(
+                (
+                    root
+                    / "store"
+                    / "homes"
+                    / "internal"
+                    / "app-server-smoke.log"
+                ).exists()
+            )
+
+    def test_blocked_current_repair_failure_is_not_reported_successful(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 0.142.5",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v0.142.5\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=None,
+                args_log=update_args,
+                exit_status=23,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(23, result.returncode)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="0.142.4",
+            )
+            self.assertIn("Auto-update: failed", output)
+            self.assertNotIn("Auto-update: completed", output)
+
+    def test_internal_auto_update_requires_compatibility_smoke_success(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            failed_candidate = root / "failed-candidate-codex"
+            write_fake_app_server_smoke_codex(
+                failed_candidate,
+                version="codex-cli 1.1.0",
+                exit_241_after_plugin_list=True,
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=failed_candidate,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotEqual(0, result.returncode)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="1.1.0",
+            )
+            self.assertIn("app-server smoke failed", output)
+            self.assertIn("exit 241", output)
+            self.assertNotIn("Auto-update: completed", output)
 
     def test_parse_running_processes_ignores_headers_and_bad_lines(self) -> None:
         output = """

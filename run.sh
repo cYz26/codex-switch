@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
+SCRIPT_DIR=""
+SCRIPT_LOCAL_MODULES=0
+if [[ -n "$SCRIPT_SOURCE" && -f "$SCRIPT_SOURCE" && ! -L "$SCRIPT_SOURCE" ]]; then
+  if SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_SOURCE")" && pwd)"; then
+    SCRIPT_LOCAL_MODULES=1
+  else
+    echo "codex-switch run: could not resolve script directory" >&2
+    exit 1
+  fi
+fi
 REPO_TARBALL_BASE="https://github.com/cYz26/codex-switch/releases"
 REPO_SOURCE_BASE="https://github.com/cYz26/codex-switch/archive"
 LIB_DIR="${CODEX_SWITCH_LIB_DIR:-$HOME/.local/share/codex-switch}"
+PYTHON_BIN="${CODEX_SWITCH_PYTHON:-python3}"
+TRUSTED_SCRIPTS_DIR="${CODEX_SWITCH_TRUSTED_SCRIPTS_DIR:-}"
+TRUSTED_BUNDLE_SHA256="3772b5bab9e4d3eeea95e52569d3d78da5b3a96145c64d9164ce2853f0da0437"
+TRUSTED_PROMOTION_SHA256="fe516e541a93a6b11f6065e354885b52f634c2941c00476f6a6fa287b9e47f70"
 INSTALL_VERSION="${CODEX_SWITCH_VERSION:-}"
 SOURCE_DIR="${CODEX_SWITCH_SOURCE_DIR:-}"
 TARBALL_URL="${CODEX_SWITCH_TARBALL_URL:-}"
@@ -32,28 +47,21 @@ print_cmd() {
 copy_source() {
   local src="$1"
   local dest="$2"
-  local staged="${dest}.tmp.$$"
 
   if [[ ! -x "$src/scripts/codex-switch" ]]; then
     echo "Invalid codex-switch source directory: $src" >&2
-    exit 1
+    return 1
   fi
 
-  if is_dry_run; then
-    print_cmd rm -rf "$staged"
-    print_cmd mkdir -p "$(dirname "$dest")"
-    print_cmd cp -R "$src" "$staged"
-    print_cmd rm -rf "$dest"
-    print_cmd mv "$staged" "$dest"
-    return
+  if ! rm -rf "$dest"; then
+    return 1
   fi
-
-  rm -rf "$staged"
-  mkdir -p "$(dirname "$dest")"
-  cp -R "$src" "$staged"
-  rm -rf "$staged/scripts/__pycache__"
-  rm -rf "$dest"
-  mv "$staged" "$dest"
+  if ! mkdir -p "$(dirname "$dest")"; then
+    return 1
+  fi
+  if ! cp -pR "$src" "$dest"; then
+    return 1
+  fi
 }
 
 source_tarball_url() {
@@ -66,32 +74,105 @@ source_tarball_url() {
   fi
 }
 
-copy_packaged_source() {
+validate_downloaded_source() {
+  local src="$1"
+  local path
+
+  for path in README.md SKILL.md VERSION run.sh; do
+    if [[ ! -f "$src/$path" || -L "$src/$path" ]]; then
+      echo "Downloaded source archive is missing required file: $path" >&2
+      return 1
+    fi
+  done
+  for path in agents docs evals scripts; do
+    if [[ ! -d "$src/$path" || -L "$src/$path" ]]; then
+      echo "Downloaded source archive is missing required directory: $path" >&2
+      return 1
+    fi
+  done
+  for path in run.sh scripts/codex-switch scripts/package-release.sh; do
+    if [[ ! -f "$src/$path" || -L "$src/$path" || ! -x "$src/$path" ]]; then
+      echo "Downloaded source archive is missing required executable: $path" >&2
+      return 1
+    fi
+  done
+}
+
+copy_downloaded_source() {
   local src="$1"
   local dest="$2"
-  local dist
+  local staged="${dest}.source.$$"
+  local path
 
-  if [[ -x "$src/scripts/package-release.sh" ]]; then
-    dist="$(mktemp -d)"
-    if CODEX_SWITCH_DIST_DIR="$dist" "$src/scripts/package-release.sh" >/dev/null; then
-      if [[ -x "$dist/codex-switch/scripts/codex-switch" ]]; then
-        copy_source "$dist/codex-switch" "$dest"
-        rm -rf "$dist"
-        return
-      fi
-    fi
-    rm -rf "$dist"
+  if ! rm -rf "$staged"; then
+    return 1
   fi
+  if ! validate_downloaded_source "$src"; then
+    return 1
+  fi
+  if ! mkdir -p "$(dirname "$dest")" "$staged"; then
+    if ! rm -rf "$staged"; then
+      echo "codex-switch run: could not clean source staging: $staged" >&2
+    fi
+    return 1
+  fi
+  for path in README.md SKILL.md VERSION run.sh agents docs evals scripts; do
+    if ! cp -pR "$src/$path" "$staged/"; then
+      if ! rm -rf "$staged"; then
+        echo "codex-switch run: could not clean source staging: $staged" >&2
+      fi
+      return 1
+    fi
+  done
+  if ! rm -rf "$staged/scripts/__pycache__"; then
+    if ! rm -rf "$staged"; then
+      echo "codex-switch run: could not clean source staging: $staged" >&2
+    fi
+    return 1
+  fi
+  if ! rm -rf "$dest" || ! mv "$staged" "$dest"; then
+    if ! rm -rf "$staged"; then
+      echo "codex-switch run: could not clean source staging: $staged" >&2
+    fi
+    return 1
+  fi
+}
 
-  copy_source "$src" "$dest"
+resolve_archive_source() {
+  local tmp="$1"
+  local candidate="" entry
+  local count=0
+
+  if [[ -d "$tmp/codex-switch" && ! -L "$tmp/codex-switch" ]]; then
+    printf '%s\n' "$tmp/codex-switch"
+    return 0
+  fi
+  for entry in "$tmp"/*; do
+    if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+      continue
+    fi
+    if [[ -d "$entry" && ! -L "$entry" ]]; then
+      candidate="$entry"
+      count=$((count + 1))
+    fi
+  done
+  if [[ "$count" -ne 1 ]]; then
+    echo "Downloaded archive must contain exactly one source directory" >&2
+    return 1
+  fi
+  printf '%s\n' "$candidate"
 }
 
 install_archive() {
   local url="$1"
   local dest="$2"
   local mode="$3"
-  local tmp src
-  tmp="$(mktemp -d)"
+  local tmp src tar_options
+  if ! tmp="$(mktemp -d)"; then
+    echo "codex-switch run: could not create archive staging directory" >&2
+    return 1
+  fi
+  tar_options="-xpzf"
 
   if [[ -n "$PROXY_URL" ]]; then
     export https_proxy="${https_proxy:-$PROXY_URL}"
@@ -100,47 +181,83 @@ install_archive() {
 
   if is_dry_run; then
     print_cmd curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"
-    print_cmd tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"
+    print_cmd tar -xpzf "$tmp/codex-switch.tar.gz" -C "$tmp"
     print_cmd install extracted codex-switch to "$dest"
-    rm -rf "$tmp"
+    if ! rm -rf "$tmp"; then
+      return 1
+    fi
     return
   fi
 
-  if ! curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"; then
-    rm -rf "$tmp"
-    return 1
-  fi
-  if ! tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"; then
-    rm -rf "$tmp"
-    return 1
-  fi
-  if [[ -d "$tmp/codex-switch" ]]; then
-    src="$tmp/codex-switch"
+  local status
+  if curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"; then
+    :
   else
-    src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    status=$?
+    if ! rm -rf "$tmp"; then
+      echo "codex-switch run: could not clean archive staging: $tmp" >&2
+    fi
+    return "$status"
+  fi
+  if tar "$tar_options" "$tmp/codex-switch.tar.gz" -C "$tmp"; then
+    :
+  else
+    status=$?
+    if ! rm -rf "$tmp"; then
+      echo "codex-switch run: could not clean archive staging: $tmp" >&2
+    fi
+    return "$status"
+  fi
+  if src="$(resolve_archive_source "$tmp")"; then
+    :
+  else
+    status=$?
+    if ! rm -rf "$tmp"; then
+      echo "codex-switch run: could not clean archive staging: $tmp" >&2
+    fi
+    return "$status"
   fi
   if [[ -z "$src" || ! -x "$src/scripts/codex-switch" ]]; then
     echo "Downloaded archive does not contain scripts/codex-switch" >&2
-    rm -rf "$tmp"
+    if ! rm -rf "$tmp"; then
+      echo "codex-switch run: could not clean archive staging: $tmp" >&2
+    fi
     return 1
   fi
   if [[ "$mode" == "source" ]]; then
-    copy_packaged_source "$src" "$dest"
+    if ! copy_downloaded_source "$src" "$dest"; then
+      if ! rm -rf "$tmp"; then
+        echo "codex-switch run: could not clean archive staging: $tmp" >&2
+      fi
+      return 1
+    fi
   else
-    copy_source "$src" "$dest"
+    if ! copy_source "$src" "$dest"; then
+      if ! rm -rf "$tmp"; then
+        echo "codex-switch run: could not clean archive staging: $tmp" >&2
+      fi
+      return 1
+    fi
   fi
-  rm -rf "$tmp"
+  if ! rm -rf "$tmp"; then
+    return 1
+  fi
 }
 
 download_source() {
   local dest="$1"
-  local fallback_url
+  local fallback_url status
 
   if install_archive "$TARBALL_URL" "$dest" "bundle"; then
     return
   fi
 
-  fallback_url="$(source_tarball_url)"
+  if fallback_url="$(source_tarball_url)"; then
+    :
+  else
+    status=$?
+    return "$status"
+  fi
   if [[ -n "$fallback_url" ]]; then
     echo "codex-switch run: release bundle unavailable; trying source archive fallback" >&2
     if install_archive "$fallback_url" "$dest" "source"; then
@@ -149,25 +266,252 @@ download_source() {
   fi
 
   echo "codex-switch run: failed to download release bundle or source archive" >&2
-  exit 1
+  return 1
+}
+
+create_workdir() {
+  local workdir
+  if ! mkdir -p "$LIB_DIR"; then
+    echo "codex-switch run: could not create library directory: $LIB_DIR" >&2
+    return 1
+  fi
+  if ! workdir="$(mktemp -d "$LIB_DIR/.run-candidate.XXXXXX")"; then
+    echo "codex-switch run: could not create candidate staging directory" >&2
+    return 1
+  fi
+  printf '%s\n' "$workdir"
+}
+
+cleanup_workdir() {
+  local workdir="$1"
+  if ! rm -rf "$workdir"; then
+    echo "codex-switch run: could not clean candidate staging: $workdir" >&2
+    return 1
+  fi
+}
+
+scripts_dir_ready() {
+  local scripts_dir="$1"
+  local module
+
+  for module in codex_switch_release_bundle.py codex_switch_promotion.py; do
+    if [[
+      ! -f "$scripts_dir/$module"
+      || -L "$scripts_dir/$module"
+    ]]; then
+      return 1
+    fi
+  done
+}
+
+file_sha256() {
+  local path="$1"
+  "$PYTHON_BIN" -I -B -c \
+    'import hashlib, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256()
+with path.open("rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())' \
+    "$path"
+}
+
+scripts_dir_hash_bound() {
+  local scripts_dir="$1"
+  local bundle_hash promotion_hash
+
+  if ! scripts_dir_ready "$scripts_dir"; then
+    return 1
+  fi
+  if bundle_hash="$(file_sha256 "$scripts_dir/codex_switch_release_bundle.py")"; then
+    :
+  else
+    return 1
+  fi
+  if promotion_hash="$(file_sha256 "$scripts_dir/codex_switch_promotion.py")"; then
+    :
+  else
+    return 1
+  fi
+  [[
+    "$bundle_hash" == "$TRUSTED_BUNDLE_SHA256"
+    && "$promotion_hash" == "$TRUSTED_PROMOTION_SHA256"
+  ]]
+}
+
+materialize_hash_bound_scripts() {
+  local source_dir="$1"
+  local destination_dir="$2"
+  local module
+
+  if ! scripts_dir_hash_bound "$source_dir"; then
+    return 1
+  fi
+  if ! rm -rf "$destination_dir"; then
+    return 1
+  fi
+  if ! mkdir -p "$destination_dir"; then
+    return 1
+  fi
+  for module in codex_switch_release_bundle.py codex_switch_promotion.py; do
+    if ! cp -p "$source_dir/$module" "$destination_dir/$module"; then
+      if ! rm -rf "$destination_dir"; then
+        echo "codex-switch run: could not clean trusted module staging" >&2
+      fi
+      return 1
+    fi
+  done
+  if ! scripts_dir_hash_bound "$destination_dir"; then
+    if ! rm -rf "$destination_dir"; then
+      echo "codex-switch run: could not clean trusted module staging" >&2
+    fi
+    return 1
+  fi
+  printf '%s\n' "$destination_dir"
+}
+
+resolve_scripts_dir() {
+  local source_root="$1"
+  local workdir="$2"
+  local candidate materialized
+
+  if [[ -n "$TRUSTED_SCRIPTS_DIR" ]]; then
+    if scripts_dir_ready "$TRUSTED_SCRIPTS_DIR"; then
+      printf '%s\n' "$TRUSTED_SCRIPTS_DIR"
+      return 0
+    fi
+    echo "codex-switch run: explicit trusted scripts are invalid" >&2
+    return 1
+  fi
+  candidate="$SCRIPT_DIR/scripts"
+  if [[
+    "$SCRIPT_LOCAL_MODULES" == 1
+    && -n "$SCRIPT_DIR"
+  ]] && scripts_dir_ready "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  for candidate in "$LIB_DIR/current/scripts" "$source_root/scripts"; do
+    if scripts_dir_hash_bound "$candidate"; then
+      if materialized="$(materialize_hash_bound_scripts "$candidate" "$workdir/trusted-scripts")"; then
+        printf '%s\n' "$materialized"
+        return 0
+      fi
+      echo "codex-switch run: could not materialize trusted promotion modules" >&2
+      return 1
+    fi
+  done
+  echo "codex-switch run: promotion modules are unavailable" >&2
+  return 1
+}
+
+canonical_candidate() {
+  local source_root="$1"
+  local workdir="$2"
+  local scripts_dir="$3"
+  local output_root="$workdir/bundle"
+
+  if [[
+    -f "$source_root/bundle-manifest.json"
+    && ! -L "$source_root/bundle-manifest.json"
+  ]]; then
+    printf '%s\n' "$source_root"
+    return 0
+  fi
+  if ! "$PYTHON_BIN" -B "$scripts_dir/codex_switch_release_bundle.py" \
+    --repo-root "$source_root" \
+    --output-root "$output_root" >/dev/null; then
+    return 1
+  fi
+  printf '%s\n' "$output_root/codex-switch"
+}
+
+promote_and_run() {
+  local candidate_root="$1"
+  local scripts_dir="$2"
+  shift 2
+  local expected_version="${INSTALL_VERSION#v}"
+  local -a command=(
+    "$PYTHON_BIN"
+    -B
+    "$scripts_dir/codex_switch_promotion.py"
+    --candidate-root "$candidate_root"
+    --layout-root "$LIB_DIR"
+  )
+
+  if [[ -n "$expected_version" ]]; then
+    command+=(--expected-version "$expected_version")
+  fi
+  command+=(--exec-command -- "$@")
+  "${command[@]}"
 }
 
 main() {
-  local target_lib="$LIB_DIR/current"
-  local target_cmd="$target_lib/scripts/codex-switch"
-
-  if [[ -n "$SOURCE_DIR" ]]; then
-    copy_source "$SOURCE_DIR" "$target_lib"
-  else
-    download_source "$target_lib"
-  fi
+  local workdir source_root scripts_dir candidate_root status cleanup_status
 
   if is_dry_run; then
-    print_cmd exec "$target_cmd" "$@"
+    printf '[DRY-RUN] stage and validate candidate in "%s"\n' "$LIB_DIR"
+    printf '[DRY-RUN] promote immutable release and retain rollback\n'
+    print_cmd exec "$LIB_DIR/current/scripts/codex-switch" "$@"
     return
   fi
+  if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    echo "codex-switch run: Python is unavailable: $PYTHON_BIN" >&2
+    return 1
+  fi
+  if ! workdir="$(create_workdir)"; then
+    return 1
+  fi
+  source_root="$workdir/source"
+  status=0
+  if [[ -n "$SOURCE_DIR" ]]; then
+    if copy_source "$SOURCE_DIR" "$source_root"; then
+      :
+    else
+      status=$?
+    fi
+  else
+    if download_source "$source_root"; then
+      :
+    else
+      status=$?
+    fi
+  fi
 
-  CODEX_SWITCH_SKIP_SELF_UPDATE=1 exec "$target_cmd" "$@"
+  if [[ "$status" -eq 0 ]]; then
+    if scripts_dir="$(resolve_scripts_dir "$source_root" "$workdir")"; then
+      :
+    else
+      status=$?
+    fi
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    if candidate_root="$(canonical_candidate "$source_root" "$workdir" "$scripts_dir")"; then
+      :
+    else
+      status=$?
+    fi
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    if promote_and_run "$candidate_root" "$scripts_dir" "$@"; then
+      :
+    else
+      status=$?
+    fi
+  fi
+  cleanup_status=0
+  if cleanup_workdir "$workdir"; then
+    :
+  else
+    cleanup_status=$?
+  fi
+  if [[ "$status" -ne 0 ]]; then
+    return "$status"
+  fi
+  if [[ "$cleanup_status" -ne 0 ]]; then
+    return "$cleanup_status"
+  fi
 }
 
 main "$@"

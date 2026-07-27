@@ -23,10 +23,6 @@ def first_table_index(lines: list[str]) -> int:
     return len(lines)
 
 
-def has_toml_table(text: str, table_name: str) -> bool:
-    return any(toml_table_name(line) == table_name for line in text.splitlines())
-
-
 def extract_toml_table_block(text: str, table_name: str) -> str:
     lines = text.splitlines()
     start = None

@@ -149,3 +149,14 @@ git diff --check
 - [x] One-key switch forwarding supports `--responses-tool-smoke`.
 - [x] Troubleshooting docs capture symptoms, local command, safe evidence, and
       upstream AIDP/backend repair contract.
+
+## 2026-07-23 Reasoning Continuity Amendment
+
+- [x] Diagnose `Item with id 'rs_…' not found` without echoing arbitrary smoke
+      output or credentials.
+- [x] Record only the unavailable reasoning item ID and known safe routing
+      headers in JSON reports.
+- [x] Document the `store=false` / `reasoning.encrypted_content` requirement and
+      the local degraded-continuity fallback.
+- [x] Pass focused dual-runtime tests, both strict OpenSpec validations, compile,
+      and diff checks.

@@ -1,0 +1,21 @@
+{
+  "expected_result_codes": [
+    [
+      "core_protocol",
+      "passed"
+    ],
+    [
+      "typed_subagent_v2",
+      "passed"
+    ]
+  ],
+  "probe_outputs": {
+    "core_stderr": "Authorization: [REDACTED]\nx-account-id: retained-safe-route\n",
+    "core_stdout": "{\"id\":\"parity-probe-initialize\",\"result\":{\"userAgent\":\"candidate\"}}\n{\"id\":\"parity-probe-collaboration\",\"result\":{\"data\":[]}}\n{\"id\":\"parity-probe-thread\",\"result\":{\"thread\":{\"id\":\"parent\"}}}\n",
+    "typed_stderr": "password=[REDACTED]\n",
+    "typed_stdout": "{\"type\":\"thread.started\",\"thread_id\":\"parent\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"subagent_spawn\",\"multi_agent_version\":\"v2\",\"agentRole\":\"explorer\",\"source\":\"thread_spawn\"}}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"agentRole\":\"explorer\",\"text\":\"parity-subagent-ok\"}}\n{\"type\":\"turn.completed\",\"result\":\"parity-parent-ok\"}\n"
+  },
+  "redacted_config": "model = \"gpt-5.6-sol\"\nmodel_provider = \"azure-redacted\"\nmodel_catalog_json = __MODEL_CATALOG_JSON__\n\n[model_providers.azure-redacted]\nname = \"Azure OpenAI Redacted Fixture\"\nbase_url = \"https://redacted-resource.openai.azure.test/openai\"\nwire_api = \"responses\"\nenv_key = \"AZURE_OPENAI_API_KEY\"\napi_key = \"[REDACTED]\"\n\n[model_providers.azure-redacted.query_params]\napi-version = \"2025-03-01-preview\"\n\n[features]\nmulti_agent_v2 = true\n",
+  "schema": "codex-switch.parity-retained-probe-fixture",
+  "schema_version": 1
+}

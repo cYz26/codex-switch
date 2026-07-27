@@ -14,16 +14,9 @@ CODEX_SWITCH_VERSION="${CODEX_SWITCH_VERSION:-}"
 ORIGINAL_ARGS=("$@")
 
 PYTHON_BIN="${CODEX_SWITCH_PYTHON:-}"
-if [[ -z "$PYTHON_BIN" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="$(command -v python3)"
-  elif [[ -x /usr/bin/python3 ]]; then
-    PYTHON_BIN="/usr/bin/python3"
-  else
-    echo "python3 not found; set CODEX_SWITCH_PYTHON to a valid interpreter" >&2
-    exit 1
-  fi
-fi
+PYTHON_BIN_EXPLICIT=0
+PYTHON_BIN_RESOLVED=0
+[[ -n "$PYTHON_BIN" ]] && PYTHON_BIN_EXPLICIT=1
 
 STORE_DIR="${CODEX_SWITCH_HOME:-$HOME/.codex-switch}"
 REPO_TARBALL_BASE="https://github.com/cYz26/codex-switch/releases"
@@ -71,11 +64,11 @@ Switch options for internal/official:
   --snapshot                   Use whole-file config snapshot mode.
   --shared-config-base <name>  Rebuild shared config from a stored profile.
   --skip-launchctl             Write LaunchAgent but do not call launchctl.
-  --skip-app-cli               Do not update Codex Desktop CODEX_CLI_PATH.
+  --skip-app-cli               Do not update ChatGPT Desktop CODEX_CLI_PATH.
   --skip-shim                  Do not update the codex shim.
   --skip-login                 Do not auto-login official when file auth is missing.
   --skip-update-check          Do not check for updates or auto-update internal.
-  --skip-plugin-repair         Do not install missing enabled plugins after switch.
+  --skip-plugin-repair         Do not install missing or refresh stale enabled plugins.
   --skip-verify                Do not verify the target profile after switch.
   --app-server-smoke           During verify, run target app-server startup smoke.
   --runtime-smoke              During verify, run target codex local runtime smoke.
@@ -109,6 +102,74 @@ truthy() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+python_candidate_path() {
+  local candidate="$1"
+  if [[ "$candidate" == */* ]]; then
+    [[ -x "$candidate" ]] || return 1
+    printf '%s\n' "$candidate"
+    return
+  fi
+  command -v "$candidate" 2>/dev/null
+}
+
+python_supports_config_document() {
+  local candidate="$1"
+  "$candidate" -c \
+    'import sys, tomllib; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+    >/dev/null 2>&1
+}
+
+resolve_python_bin() {
+  local raw candidate resolved seen
+  local candidates=(
+    python3
+    python3.13
+    python3.12
+    python3.11
+    /opt/homebrew/bin/python3
+    /opt/homebrew/bin/python3.13
+    /opt/homebrew/bin/python3.12
+    /opt/homebrew/bin/python3.11
+    /usr/local/bin/python3
+    /usr/local/bin/python3.13
+    /usr/local/bin/python3.12
+    /usr/local/bin/python3.11
+  )
+  if [[ "$PYTHON_BIN_RESOLVED" == 1 ]]; then
+    return 0
+  fi
+  if [[ "$PYTHON_BIN_EXPLICIT" == 1 ]]; then
+    raw="$PYTHON_BIN"
+    if ! resolved="$(python_candidate_path "$raw")" \
+      || ! python_supports_config_document "$resolved"; then
+      echo "CODEX_SWITCH_PYTHON must resolve to Python 3.11+ with tomllib: $raw" >&2
+      return 1
+    fi
+  else
+    resolved=""
+    seen="|"
+    for raw in "${candidates[@]}"; do
+      candidate="$(python_candidate_path "$raw" || true)"
+      [[ -n "$candidate" ]] || continue
+      case "$seen" in
+        *"|$candidate|"*) continue ;;
+      esac
+      seen="${seen}${candidate}|"
+      if python_supports_config_document "$candidate"; then
+        resolved="$candidate"
+        break
+      fi
+    done
+    if [[ -z "$resolved" ]]; then
+      echo "Python 3.11+ with tomllib not found; set CODEX_SWITCH_PYTHON to a valid interpreter" >&2
+      return 1
+    fi
+  fi
+  PYTHON_BIN="$resolved"
+  PYTHON_BIN_RESOLVED=1
+  export CODEX_SWITCH_PYTHON="$PYTHON_BIN"
 }
 
 self_update_lib_dir() {
@@ -167,6 +228,13 @@ version_prerelease() {
   fi
 }
 
+version_is_semver() {
+  local version="${1#v}"
+  [[
+    "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$
+  ]]
+}
+
 version_is_newer() {
   local current="$1"
   local candidate="$2"
@@ -201,75 +269,285 @@ version_is_newer() {
   [[ -n "$current_pre" && -n "$candidate_pre" && "$candidate_pre" > "$current_pre" ]]
 }
 
+SELF_UPDATE_ACTIVE_ROOT=""
+SELF_UPDATE_ACTIVE_VERSION=""
+SELF_UPDATE_ACTIVE_DIGEST=""
+SELF_UPDATE_TRUSTED_VERSION=""
+
+self_update_uses_default_latest() {
+  [[
+    -z "$SELF_UPDATE_SOURCE_DIR"
+    && -z "$SELF_UPDATE_TARBALL_URL"
+    && -z "$SELF_UPDATE_SOURCE_TARBALL_URL"
+    && -z "$SELF_UPDATE_VERSION"
+  ]]
+}
+
+resolve_trusted_self_update_version() {
+  local latest_tag=""
+  SELF_UPDATE_TRUSTED_VERSION=""
+  if [[ -n "$SELF_UPDATE_VERSION" ]]; then
+    if version_is_semver "$SELF_UPDATE_VERSION"; then
+      SELF_UPDATE_TRUSTED_VERSION="${SELF_UPDATE_VERSION#v}"
+      return 0
+    fi
+    return 2
+  fi
+  if ! self_update_uses_default_latest; then
+    return 2
+  fi
+  if [[ -n "$SELF_UPDATE_PROXY_URL" ]]; then
+    export https_proxy="${https_proxy:-$SELF_UPDATE_PROXY_URL}"
+    export http_proxy="${http_proxy:-$SELF_UPDATE_PROXY_URL}"
+  fi
+  if latest_tag="$(
+    latest_release_tag_from_url "$REPO_TARBALL_BASE/latest" 10
+  )"; then
+    :
+  else
+    echo "codex-switch self-update: could not resolve latest release version" >&2
+    return 1
+  fi
+  if ! version_is_semver "$latest_tag"; then
+    echo "codex-switch self-update: latest release tag is not semantic: ${latest_tag:-<empty>}" >&2
+    return 1
+  fi
+  SELF_UPDATE_VERSION="$latest_tag"
+  SELF_UPDATE_TRUSTED_VERSION="${latest_tag#v}"
+}
+
+self_update_version_gate() {
+  local lib_dir="$1"
+  local current_version="" resolve_status=0
+  current_version="$(bundle_version "$lib_dir/current")"
+  [[ -n "$current_version" ]] || return 0
+  if resolve_trusted_self_update_version; then
+    :
+  else
+    resolve_status=$?
+    if [[ "$resolve_status" -eq 2 ]]; then
+      return 0
+    fi
+    return "$resolve_status"
+  fi
+  if [[ "$current_version" == "$SELF_UPDATE_TRUSTED_VERSION" ]] \
+    || ! version_is_newer "$current_version" "$SELF_UPDATE_TRUSTED_VERSION"; then
+    echo "codex-switch self-update: already up to date $current_version" >&2
+    return 3
+  fi
+}
+
+self_update_trusted_modules_ready() {
+  local module
+  for module in codex_switch_release_bundle.py codex_switch_promotion.py; do
+    if [[ ! -f "$SCRIPT_DIR/$module" || -L "$SCRIPT_DIR/$module" ]]; then
+      echo "codex-switch self-update: trusted module is unavailable: $SCRIPT_DIR/$module" >&2
+      return 1
+    fi
+  done
+}
+
+create_self_update_workdir() {
+  local lib_dir="" workdir=""
+  lib_dir="$(self_update_lib_dir)"
+  if ! mkdir -p "$lib_dir"; then
+    echo "codex-switch self-update: could not create library directory: $lib_dir" >&2
+    return 1
+  fi
+  if ! workdir="$(mktemp -d "$lib_dir/.self-update.XXXXXX")"; then
+    echo "codex-switch self-update: could not create candidate staging directory" >&2
+    return 1
+  fi
+  printf '%s\n' "$workdir"
+}
+
+cleanup_self_update_workdir() {
+  local workdir="$1"
+  local lib_dir=""
+  lib_dir="$(self_update_lib_dir)"
+  if [[ "$workdir" != "$lib_dir"/.self-update.* ]]; then
+    echo "codex-switch self-update: refusing to clean unowned staging: $workdir" >&2
+    return 1
+  fi
+  if ! rm -rf "$workdir"; then
+    echo "codex-switch self-update: could not clean candidate staging: $workdir" >&2
+    return 1
+  fi
+}
+
 stage_self_update_from_source() {
   local source_dir="$1"
   local staged="$2"
-  if [[ ! -x "$source_dir/scripts/codex-switch" ]]; then
+  if [[
+    ! -d "$source_dir"
+    || -L "$source_dir"
+    || ! -f "$source_dir/scripts/codex-switch"
+    || -L "$source_dir/scripts/codex-switch"
+    || ! -x "$source_dir/scripts/codex-switch"
+  ]]; then
     echo "codex-switch self-update: invalid source directory: $source_dir" >&2
     return 1
   fi
-  rm -rf "$staged"
-  mkdir -p "$(dirname "$staged")"
-  cp -R "$source_dir" "$staged"
-  rm -rf "$staged/scripts/__pycache__"
+  if ! rm -rf "$staged"; then
+    return 1
+  fi
+  if ! mkdir -p "$(dirname "$staged")"; then
+    return 1
+  fi
+  if ! cp -pR "$source_dir" "$staged"; then
+    return 1
+  fi
+  if ! rm -rf "$staged/scripts/__pycache__"; then
+    return 1
+  fi
 }
 
-stage_self_update_from_packaged_source() {
+validate_self_update_downloaded_source() {
+  local source_dir="$1"
+  local path
+
+  for path in README.md SKILL.md VERSION run.sh; do
+    if [[ ! -f "$source_dir/$path" || -L "$source_dir/$path" ]]; then
+      echo "codex-switch self-update: downloaded source is missing required file: $path" >&2
+      return 1
+    fi
+  done
+  for path in agents docs evals scripts; do
+    if [[ ! -d "$source_dir/$path" || -L "$source_dir/$path" ]]; then
+      echo "codex-switch self-update: downloaded source is missing required directory: $path" >&2
+      return 1
+    fi
+  done
+  for path in run.sh scripts/codex-switch scripts/package-release.sh; do
+    if [[ ! -f "$source_dir/$path" || -L "$source_dir/$path" || ! -x "$source_dir/$path" ]]; then
+      echo "codex-switch self-update: downloaded source is missing required executable: $path" >&2
+      return 1
+    fi
+  done
+}
+
+stage_self_update_from_downloaded_source() {
   local source_dir="$1"
   local staged="$2"
-  local dist
+  local path
 
-  if [[ -x "$source_dir/scripts/package-release.sh" ]]; then
-    dist="$(mktemp -d)"
-    if CODEX_SWITCH_DIST_DIR="$dist" "$source_dir/scripts/package-release.sh" >/dev/null; then
-      if [[ -x "$dist/codex-switch/scripts/codex-switch" ]]; then
-        stage_self_update_from_source "$dist/codex-switch" "$staged"
-        rm -rf "$dist"
-        return
-      fi
-    fi
-    rm -rf "$dist"
+  if ! rm -rf "$staged"; then
+    return 1
   fi
+  if ! validate_self_update_downloaded_source "$source_dir"; then
+    return 1
+  fi
+  if ! mkdir -p "$(dirname "$staged")" "$staged"; then
+    if ! rm -rf "$staged"; then
+      echo "codex-switch self-update: could not clean source staging: $staged" >&2
+    fi
+    return 1
+  fi
+  for path in README.md SKILL.md VERSION run.sh agents docs evals scripts; do
+    if ! cp -pR "$source_dir/$path" "$staged/"; then
+      if ! rm -rf "$staged"; then
+        echo "codex-switch self-update: could not clean source staging: $staged" >&2
+      fi
+      return 1
+    fi
+  done
+  if ! rm -rf "$staged/scripts/__pycache__"; then
+    if ! rm -rf "$staged"; then
+      echo "codex-switch self-update: could not clean source staging: $staged" >&2
+    fi
+    return 1
+  fi
+}
 
-  stage_self_update_from_source "$source_dir" "$staged"
+resolve_self_update_archive_source() {
+  local tmp="$1"
+  local candidate="" entry
+  local count=0
+
+  if [[ -d "$tmp/codex-switch" && ! -L "$tmp/codex-switch" ]]; then
+    printf '%s\n' "$tmp/codex-switch"
+    return 0
+  fi
+  for entry in "$tmp"/*; do
+    if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+      continue
+    fi
+    if [[ -d "$entry" && ! -L "$entry" ]]; then
+      candidate="$entry"
+      count=$((count + 1))
+    fi
+  done
+  if [[ "$count" -ne 1 ]]; then
+    echo "codex-switch self-update: downloaded archive must contain exactly one source directory" >&2
+    return 1
+  fi
+  printf '%s\n' "$candidate"
 }
 
 stage_self_update_archive_url() {
   local url="$1"
   local staged="$2"
   local mode="$3"
-  local tmp src
-  tmp="$(mktemp -d)"
+  local tmp="" src="" tar_options="" status=0 cleanup_status=0
+  if ! tmp="$(mktemp -d)"; then
+    echo "codex-switch self-update: could not create archive staging directory" >&2
+    return 1
+  fi
+  tar_options="-xpzf"
 
   if [[ -n "$SELF_UPDATE_PROXY_URL" ]]; then
     export https_proxy="${https_proxy:-$SELF_UPDATE_PROXY_URL}"
     export http_proxy="${http_proxy:-$SELF_UPDATE_PROXY_URL}"
   fi
 
-  if ! curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"; then
-    rm -rf "$tmp"
-    return 1
-  fi
-  if ! tar -xzf "$tmp/codex-switch.tar.gz" -C "$tmp"; then
-    rm -rf "$tmp"
-    return 1
-  fi
-  if [[ -d "$tmp/codex-switch" ]]; then
-    src="$tmp/codex-switch"
+  status=0
+  if curl -fsSL "$url" -o "$tmp/codex-switch.tar.gz"; then
+    :
   else
-    src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    status=$?
   fi
-  if [[ -z "$src" || ! -x "$src/scripts/codex-switch" ]]; then
+  if [[ "$status" -eq 0 ]]; then
+    if tar "$tar_options" "$tmp/codex-switch.tar.gz" -C "$tmp"; then
+      :
+    else
+      status=$?
+    fi
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    if src="$(resolve_self_update_archive_source "$tmp")"; then
+      :
+    else
+      status=$?
+    fi
+  fi
+  if [[ "$status" -eq 0 && ( -z "$src" || ! -x "$src/scripts/codex-switch" ) ]]; then
     echo "codex-switch self-update: downloaded archive does not contain scripts/codex-switch" >&2
-    rm -rf "$tmp"
-    return 1
+    status=1
   fi
-  if [[ "$mode" == "source" ]]; then
-    stage_self_update_from_packaged_source "$src" "$staged"
+  if [[ "$status" -eq 0 ]]; then
+    if [[ "$mode" == "source" ]]; then
+      if stage_self_update_from_downloaded_source "$src" "$staged"; then
+        :
+      else
+        status=$?
+      fi
+    elif stage_self_update_from_source "$src" "$staged"; then
+      :
+    else
+      status=$?
+    fi
+  fi
+
+  cleanup_status=0
+  if rm -rf "$tmp"; then
+    :
   else
-    stage_self_update_from_source "$src" "$staged"
+    cleanup_status=$?
   fi
-  rm -rf "$tmp"
+  if [[ "$status" -ne 0 ]]; then
+    return "$status"
+  fi
+  return "$cleanup_status"
 }
 
 stage_self_update_from_tarball() {
@@ -284,59 +562,278 @@ stage_self_update_from_tarball() {
   source_url="$(self_update_source_tarball_url)"
   if [[ -n "$source_url" ]]; then
     echo "codex-switch self-update: release bundle unavailable; trying source archive fallback" >&2
-    stage_self_update_archive_url "$source_url" "$staged" "source"
-    return
+    if stage_self_update_archive_url "$source_url" "$staged" "source"; then
+      return
+    fi
   fi
 
   return 1
 }
 
-sync_self_update() {
-  local lib_dir target staged backup current_version next_version
-  lib_dir="$(self_update_lib_dir)"
-  target="$lib_dir/current"
-  staged="$lib_dir/current.self-update.$$"
-  backup="$lib_dir/current.previous.$$"
+canonicalize_self_update_candidate() {
+  local source_root="$1"
+  local workdir="$2"
+  local output_root="$workdir/bundle"
 
-  if [[ -n "$SELF_UPDATE_SOURCE_DIR" ]]; then
-    stage_self_update_from_source "$(expand_shell_path "$SELF_UPDATE_SOURCE_DIR")" "$staged"
-  else
-    stage_self_update_from_tarball "$staged"
+  if [[
+    -f "$source_root/bundle-manifest.json"
+    && ! -L "$source_root/bundle-manifest.json"
+  ]]; then
+    printf '%s\n' "$source_root"
+    return 0
   fi
-
-  if [[ ! -x "$staged/scripts/codex-switch" ]]; then
-    echo "codex-switch self-update: staged bundle is missing scripts/codex-switch" >&2
-    rm -rf "$staged"
+  if ! "$PYTHON_BIN" -B "$SCRIPT_DIR/codex_switch_release_bundle.py" \
+    --repo-root "$source_root" \
+    --output-root "$output_root" >/dev/null; then
     return 1
   fi
+  printf '%s\n' "$output_root/codex-switch"
+}
 
-  current_version="$(bundle_version "$target")"
-  next_version="$(bundle_version "$staged")"
-  if [[ -n "$current_version" && -n "$next_version" ]]; then
-    if [[ "$current_version" == "$next_version" ]] || ! version_is_newer "$current_version" "$next_version"; then
-      rm -rf "$staged"
+validate_self_update_candidate() {
+  local candidate_root="$1"
+  local expected_version="$2"
+  "$PYTHON_BIN" -I -B -c '
+import sys
+from pathlib import Path
+
+scripts_dir = Path(sys.argv[1])
+candidate_root = Path(sys.argv[2])
+expected_version = sys.argv[3] or None
+sys.path.insert(0, str(scripts_dir))
+from codex_switch_promotion import PromotionError, validate_candidate
+
+try:
+    candidate = validate_candidate(
+        candidate_root,
+        expected_version=expected_version,
+    )
+except PromotionError as error:
+    print(
+        f"codex-switch self-update: candidate validation failed "
+        f"({error.reason}): {error}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+print(
+    "\t".join(
+        (
+            candidate.version,
+            candidate.digest,
+            str(candidate.root),
+        )
+    )
+)
+' "$SCRIPT_DIR" "$candidate_root" "$expected_version"
+}
+
+parse_self_update_promotion_receipt() {
+  local receipt="$1"
+  local lib_dir="$2"
+  local expected_version="$3"
+  local expected_digest="$4"
+  "$PYTHON_BIN" -I -B -c '
+import json
+import os
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(sys.argv[1])
+except json.JSONDecodeError as error:
+    print(
+        f"codex-switch self-update: promotion receipt is invalid: {error}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+if not isinstance(payload, dict) or payload.get("outcome") != "promoted":
+    print(
+        "codex-switch self-update: promotion receipt outcome is invalid",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+run_id = payload.get("run_id")
+version = payload.get("version")
+digest = payload.get("digest")
+raw_root = payload.get("active_root")
+if (
+    not isinstance(run_id, str)
+    or not run_id
+    or version != sys.argv[3]
+    or digest != sys.argv[4]
+    or not isinstance(raw_root, str)
+    or not raw_root
+):
+    print(
+        "codex-switch self-update: promotion receipt fields are invalid",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+layout = Path(os.path.abspath(os.path.expanduser(sys.argv[2])))
+active_root = Path(raw_root)
+expected_root = layout / "releases" / digest
+if (
+    active_root.is_symlink()
+    or not active_root.is_dir()
+    or active_root.resolve() != expected_root.resolve()
+    or (active_root / "VERSION").read_text().strip() != version
+):
+    print(
+        "codex-switch self-update: promotion receipt root is invalid",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+print("\t".join((str(active_root.resolve()), version, digest, run_id)))
+' "$receipt" "$lib_dir" "$expected_version" "$expected_digest"
+}
+
+promote_self_update_candidate() {
+  local candidate_root="$1"
+  local candidate_version="$2"
+  local candidate_digest="$3"
+  local lib_dir="" receipt="" parsed="" active_root=""
+  local receipt_version="" receipt_digest="" run_id=""
+  local -a command
+  lib_dir="$(self_update_lib_dir)"
+  command=(
+    "$PYTHON_BIN"
+    -B
+    "$SCRIPT_DIR/codex_switch_promotion.py"
+    --candidate-root "$candidate_root"
+    --layout-root "$lib_dir"
+    --expected-version "$candidate_version"
+  )
+  if receipt="$("${command[@]}")"; then
+    :
+  else
+    return $?
+  fi
+  if parsed="$(parse_self_update_promotion_receipt \
+    "$receipt" \
+    "$lib_dir" \
+    "$candidate_version" \
+    "$candidate_digest")"; then
+    :
+  else
+    return $?
+  fi
+  IFS=$'\t' read -r active_root receipt_version receipt_digest run_id <<< "$parsed"
+  if [[
+    -z "$active_root"
+    || -z "$run_id"
+    || "$receipt_version" != "$candidate_version"
+    || "$receipt_digest" != "$candidate_digest"
+  ]]; then
+    echo "codex-switch self-update: promotion receipt is incomplete" >&2
+    return 1
+  fi
+  SELF_UPDATE_ACTIVE_ROOT="$active_root"
+  SELF_UPDATE_ACTIVE_VERSION="$receipt_version"
+  SELF_UPDATE_ACTIVE_DIGEST="$receipt_digest"
+}
+
+sync_self_update() {
+  local lib_dir="" workdir="" source_root="" candidate_root="" candidate_info=""
+  local current_version="" next_version="" next_digest="" validated_root=""
+  local expected_version="" status=0 cleanup_status=0 gate_status=0
+  SELF_UPDATE_ACTIVE_ROOT=""
+  SELF_UPDATE_ACTIVE_VERSION=""
+  SELF_UPDATE_ACTIVE_DIGEST=""
+  lib_dir="$(self_update_lib_dir)"
+  if self_update_version_gate "$lib_dir"; then
+    :
+  else
+    gate_status=$?
+    return "$gate_status"
+  fi
+  if ! resolve_python_bin; then
+    return 1
+  fi
+  if ! self_update_trusted_modules_ready; then
+    return 1
+  fi
+  if ! workdir="$(create_self_update_workdir)"; then
+    return 1
+  fi
+  source_root="$workdir/source"
+  status=0
+
+  if [[ -n "$SELF_UPDATE_SOURCE_DIR" ]]; then
+    if stage_self_update_from_source \
+      "$(expand_shell_path "$SELF_UPDATE_SOURCE_DIR")" \
+      "$source_root"; then
+      :
+    else
+      status=$?
+    fi
+  elif stage_self_update_from_tarball "$source_root"; then
+    :
+  else
+    status=$?
+  fi
+
+  if [[ "$status" -eq 0 ]]; then
+    if candidate_root="$(canonicalize_self_update_candidate \
+      "$source_root" \
+      "$workdir")"; then
+      :
+    else
+      status=$?
+    fi
+  fi
+  expected_version="${SELF_UPDATE_VERSION#v}"
+  if [[ "$status" -eq 0 ]]; then
+    if candidate_info="$(validate_self_update_candidate \
+      "$candidate_root" \
+      "$expected_version")"; then
+      IFS=$'\t' read -r next_version next_digest validated_root <<< "$candidate_info"
+    else
+      status=$?
+    fi
+  fi
+  if [[
+    "$status" -eq 0
+    && (
+      -z "$next_version"
+      || -z "$next_digest"
+      || -z "$validated_root"
+    )
+  ]]; then
+    echo "codex-switch self-update: candidate validation result is incomplete" >&2
+    status=1
+  fi
+
+  current_version="$(bundle_version "$lib_dir/current")"
+  if [[ "$status" -eq 0 && -n "$current_version" ]]; then
+    if [[ "$current_version" == "$next_version" ]] \
+      || ! version_is_newer "$current_version" "$next_version"; then
       echo "codex-switch self-update: already up to date $current_version" >&2
-      return 3
+      status=3
+    fi
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    if promote_self_update_candidate \
+      "$validated_root" \
+      "$next_version" \
+      "$next_digest"; then
+      echo "codex-switch self-update: synced implementation ${current_version:-<unknown>} -> $next_version" >&2
+    else
+      status=$?
     fi
   fi
 
-  rm -rf "$backup"
-  if [[ -e "$target" || -L "$target" ]]; then
-    mv "$target" "$backup"
+  cleanup_status=0
+  if cleanup_self_update_workdir "$workdir"; then
+    :
+  else
+    cleanup_status=$?
   fi
-  if mv "$staged" "$target"; then
-    rm -rf "$backup"
-    echo "codex-switch self-update: synced implementation ${current_version:-<unknown>} -> ${next_version:-<unknown>}" >&2
-    return 0
+  if [[ "$status" -eq 0 && "$cleanup_status" -ne 0 ]]; then
+    echo "codex-switch self-update: warning: promoted successfully but staging cleanup failed" >&2
+  elif [[ "$status" -ne 0 && "$cleanup_status" -ne 0 ]]; then
+    echo "codex-switch self-update: warning: failed to clean staging after update failure" >&2
   fi
-
-  rm -rf "$target"
-  if [[ -e "$backup" || -L "$backup" ]]; then
-    mv "$backup" "$target"
-  fi
-  rm -rf "$staged"
-  echo "codex-switch self-update: failed to replace implementation; restored previous copy" >&2
-  return 1
+  return "$status"
 }
 
 command_skips_self_update() {
@@ -348,7 +845,7 @@ command_skips_self_update() {
 
 maybe_self_update() {
   local cmd="$1"
-  local sync_status
+  local sync_status=0 exec_status=0
 
   if [[ "$SKIP_SELF_UPDATE" == 1 ]] || truthy "${CODEX_SWITCH_SKIP_SELF_UPDATE:-}"; then
     return 0
@@ -365,8 +862,20 @@ maybe_self_update() {
 
   echo "codex-switch self-update: checking latest release..." >&2
   if sync_self_update; then
+    if [[
+      -z "$SELF_UPDATE_ACTIVE_ROOT"
+      || ! -x "$SELF_UPDATE_ACTIVE_ROOT/scripts/codex-switch"
+    ]]; then
+      echo "codex-switch self-update: warning: promotion returned no runnable root; continuing with current implementation" >&2
+      return 0
+    fi
     export CODEX_SWITCH_SELF_UPDATE_REEXECED=1
-    exec "$SCRIPT_DIR/codex-switch" "${ORIGINAL_ARGS[@]}"
+    export CODEX_SWITCH_SKIP_SELF_UPDATE=1
+    exec "$SELF_UPDATE_ACTIVE_ROOT/scripts/codex-switch" "${ORIGINAL_ARGS[@]}" || {
+      exec_status=$?
+      echo "codex-switch self-update: failed to execute promoted implementation: $SELF_UPDATE_ACTIVE_ROOT" >&2
+      return "$exec_status"
+    }
   else
     sync_status=$?
     if [[ "$sync_status" != 3 ]]; then
@@ -376,10 +885,11 @@ maybe_self_update() {
 }
 
 run_switcher() {
+  resolve_python_bin
   if ((${#GLOBAL_ARGS[@]})); then
-    "$PYTHON_BIN" "$SWITCH_PY" "${GLOBAL_ARGS[@]}" "$@"
+    "$PYTHON_BIN" -B "$SWITCH_PY" "${GLOBAL_ARGS[@]}" "$@"
   else
-    "$PYTHON_BIN" "$SWITCH_PY" "$@"
+    "$PYTHON_BIN" -B "$SWITCH_PY" "$@"
   fi
 }
 
@@ -418,7 +928,8 @@ run_switch_step() {
 }
 
 print_active_result_summary() {
-  "$PYTHON_BIN" - "$STORE_DIR" <<'PY' || true
+  resolve_python_bin
+  "$PYTHON_BIN" -B - "$STORE_DIR" <<'PY' || true
 import json
 import os
 import sys
@@ -497,23 +1008,24 @@ print_final_result() {
   echo "Next steps:"
   case "$outcome" in
     SUCCESS)
-      echo "- Restart Codex Desktop if it was already running."
+      echo "- Restart ChatGPT if it was already running."
       echo "- Verify active state: codex-switch status"
       ;;
     "ACTION REQUIRED")
       if [[ "$failed_step" == "plugin repair" ]]; then
         echo "- Review the Plugin repair section above and fix the install error."
+        echo "- If it reports a running ChatGPT app-server, quit ChatGPT completely before retrying."
         echo "- Re-run plugin repair: codex-switch repair-plugins $profile"
         echo "- Re-run verification: codex-switch verify $profile --repair=safe"
         echo "- Re-run doctor: codex-switch doctor"
       elif [[ "$failed_step" == "verification" ]]; then
         echo "- Review the Verification section above and fix each listed issue."
         echo "- Re-run verification: codex-switch verify $profile --repair=safe"
-        echo "- If it mentions running Codex Desktop or app-server, quit Codex Desktop completely and reopen it."
+        echo "- If it mentions running ChatGPT or app-server, quit ChatGPT completely and reopen it."
         echo "- Re-run doctor: codex-switch doctor"
       else
         echo "- Review the Doctor section above and fix each listed issue."
-        echo "- If it mentions running Codex Desktop or app-server, quit Codex Desktop completely and reopen it."
+        echo "- If it mentions running ChatGPT or app-server, quit ChatGPT completely and reopen it."
         echo "- Re-run doctor: codex-switch doctor"
         echo "- Check active state: codex-switch status"
       fi
@@ -677,17 +1189,30 @@ switch_profile() {
       repair_status="passed"
     else
       repair_status=$?
-      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "not-run" "plugin repair"
-      return "$repair_status"
+      if [[ "$profile" != "internal" || "$INTERNAL_AUTO_UPDATED" != 1 ]]; then
+        print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "not-run" "plugin repair"
+        return "$repair_status"
+      fi
+      echo "Plugin repair failed; running the mandatory internal update compatibility verification before returning." >&2
     fi
   else
     print_section "Plugin repair"
     echo "Plugin repair: skipped by command option."
   fi
 
+  local auto_update_forced_verify=0
+  if [[ "$profile" == "internal" && "$INTERNAL_AUTO_UPDATED" == 1 ]] \
+    && [[ "$run_verify" != 1 ]]; then
+    run_verify=1
+    auto_update_forced_verify=1
+  fi
+
   local verify_status="skipped"
   if [[ "$run_verify" == 1 ]]; then
     print_section "Verification"
+    if [[ "$auto_update_forced_verify" == 1 ]]; then
+      echo "Verification: --skip-verify ignored because an internal update requires compatibility verification."
+    fi
     local verify_args=("$profile")
     if [[ "$app_server_smoke" == 1 ]] \
       || [[ "$profile" == "internal" && "$INTERNAL_AUTO_UPDATED" == 1 ]]; then
@@ -707,6 +1232,13 @@ switch_profile() {
     fi
     if run_switcher verify "${verify_args[@]}"; then
       verify_status="passed"
+      if [[ "$profile" == "internal" && "$INTERNAL_AUTO_UPDATED" == 1 ]]; then
+        if [[ "$repair_status" == "passed" || "$repair_status" == "skipped" ]]; then
+          echo "Auto-update: completed. Internal Codex is now ${INTERNAL_UPDATE_AFTER_VERSION:-<unavailable>}."
+        else
+          echo "Auto-update: compatibility verification passed; plugin repair still requires action."
+        fi
+      fi
     else
       verify_status=$?
       print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "not-run" "not-run" "verification"
@@ -715,6 +1247,11 @@ switch_profile() {
   else
     print_section "Verification"
     echo "Verification: skipped by command option."
+  fi
+
+  if [[ "$repair_status" != "passed" && "$repair_status" != "skipped" ]]; then
+    print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "not-run" "not-run" "plugin repair"
+    return "$repair_status"
   fi
 
   local doctor_status="skipped"
@@ -756,7 +1293,8 @@ switch_profile() {
 
 profile_codex_bin() {
   local profile="$1"
-  "$PYTHON_BIN" - "$STORE_DIR" "$profile" <<'PY'
+  resolve_python_bin
+  "$PYTHON_BIN" -B - "$STORE_DIR" "$profile" <<'PY'
 import json
 import os
 import sys
@@ -770,13 +1308,120 @@ try:
 except FileNotFoundError:
     print(f"missing manifest: {manifest_path}", file=sys.stderr)
     raise SystemExit(2)
-print(manifest.get("codex_bin") or "")
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    print(
+        f"{profile} profile manifest is invalid: {manifest_path}: {error}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if not isinstance(manifest, dict):
+    print(
+        f"{profile} profile manifest is invalid: {manifest_path}: "
+        "root must be an object",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+codex_bin = manifest.get("codex_bin")
+if not isinstance(codex_bin, str) or not codex_bin.strip():
+    print(
+        f"{profile} profile manifest is invalid: {manifest_path}: "
+        "codex_bin must be a non-empty string",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+print(codex_bin)
+PY
+}
+
+profile_advisory_codex_bin() {
+  local profile="$1"
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B - \
+    "$SCRIPT_DIR" \
+    "$STORE_DIR" \
+    "$profile" \
+    ${GLOBAL_ARGS[@]+"${GLOBAL_ARGS[@]}"} <<'PY'
+import os
+import sys
+from pathlib import Path
+
+script_dir = Path(sys.argv[1])
+store_root = Path(os.path.expandvars(sys.argv[2])).expanduser()
+profile = sys.argv[3]
+raw_args = sys.argv[4:]
+sys.path.insert(0, str(script_dir))
+
+from codex_switch_constants import DEFAULT_LAUNCH_AGENT_LABEL, SwitchError
+from codex_switch_official_release import resolve_profile_advisory_cli
+from codex_switch_store import Store
+
+
+def expanded(value: str) -> Path:
+    return Path(os.path.expandvars(value)).expanduser()
+
+
+official_home = Path.home() / ".codex"
+internal_home = None
+launch_agent = (
+    Path.home()
+    / "Library"
+    / "LaunchAgents"
+    / f"{DEFAULT_LAUNCH_AGENT_LABEL}.plist"
+)
+launch_label = DEFAULT_LAUNCH_AGENT_LABEL
+index = 0
+while index < len(raw_args):
+    option = raw_args[index]
+    if index + 1 >= len(raw_args):
+        print(f"{option} requires a value", file=sys.stderr)
+        raise SystemExit(2)
+    value = raw_args[index + 1]
+    if option in {"--official-codex-home", "--live-codex-home"}:
+        official_home = expanded(value)
+    elif option == "--internal-codex-home":
+        internal_home = expanded(value)
+    elif option == "--launch-agent-path":
+        launch_agent = expanded(value)
+    elif option == "--launch-agent-label":
+        launch_label = value
+    index += 2
+
+store = Store(
+    store_root,
+    official_codex_home=official_home,
+    launch_agent_path=launch_agent,
+    launch_agent_label=launch_label,
+    internal_codex_home=internal_home,
+)
+try:
+    print(resolve_profile_advisory_cli(store, profile))
+except (OSError, SwitchError, ValueError, TypeError) as error:
+    print(
+        f"{profile} advisory CLI resolution failed: {error}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+PY
+}
+
+profile_manifest_path() {
+  local profile="$1"
+  resolve_python_bin
+  "$PYTHON_BIN" -B - "$STORE_DIR" "$profile" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+store = Path(os.path.expandvars(sys.argv[1])).expanduser()
+profile = sys.argv[2]
+print(store / "profiles" / profile / "manifest.json")
 PY
 }
 
 profile_config_path() {
   local profile="$1"
-  "$PYTHON_BIN" - "$STORE_DIR" "$profile" <<'PY'
+  resolve_python_bin
+  "$PYTHON_BIN" -B - "$STORE_DIR" "$profile" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -789,7 +1434,8 @@ PY
 
 profile_auth_path() {
   local profile="$1"
-  "$PYTHON_BIN" - "$STORE_DIR" "$profile" <<'PY'
+  resolve_python_bin
+  "$PYTHON_BIN" -B - "$STORE_DIR" "$profile" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -840,7 +1486,17 @@ maybe_login_for_switch() {
 }
 
 extract_version() {
-  sed -nE 's/.*([0-9]+[.][0-9]+[.][0-9]+([-+][A-Za-z0-9.]+)?).*/\1/p' | head -n 1
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B -c '
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from codex_switch_update_policy import extract_semantic_version
+
+version = extract_semantic_version(sys.stdin.read())
+if version is not None:
+    print(version)
+' "$SCRIPT_DIR"
 }
 
 env_setup_command() {
@@ -858,8 +1514,13 @@ env_setup_command() {
 }
 
 run_env_setup() {
-  local env_setup
-  env_setup="$(env_setup_command)"
+  local env_setup status
+  if env_setup="$(env_setup_command)"; then
+    true
+  else
+    status=$?
+    return "$status"
+  fi
   if [[ "${1:-}" == "update-internal" ]]; then
     shift
     run_update_internal_env_setup "$env_setup" "$@"
@@ -880,24 +1541,509 @@ update_internal_args_have_version() {
   return 1
 }
 
+update_internal_args_have_dry_run() {
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "--dry-run" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+update_internal_args_have_install_dir() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --install-dir|--install-dir=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+NORMALIZED_INTERNAL_UPDATE_ARGS=()
+
+normalize_internal_update_arguments() {
+  local normalized_option option value
+  NORMALIZED_INTERNAL_UPDATE_ARGS=()
+  while (($#)); do
+    option="$1"
+    case "$option" in
+      --version|--codex-install-version|--install-dir|--internal-bin|--official-bin|--installer-url|--latest-url|--model|--azure-base-url|--codex-install-base-url)
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          echo "$option requires a non-option value" >&2
+          return 2
+        fi
+        value="$2"
+        normalized_option="$option"
+        case "$option" in
+          --version|--codex-install-version)
+            normalized_option="--version"
+            ;;
+        esac
+        NORMALIZED_INTERNAL_UPDATE_ARGS+=("$normalized_option" "$value")
+        shift 2
+        ;;
+      --version=*|--codex-install-version=*|--install-dir=*|--internal-bin=*|--official-bin=*|--installer-url=*|--latest-url=*|--model=*|--azure-base-url=*|--codex-install-base-url=*)
+        value="${option#*=}"
+        if [[ -z "$value" || "$value" == -* ]]; then
+          echo "${option%%=*} requires a non-option value" >&2
+          return 2
+        fi
+        normalized_option="${option%%=*}"
+        case "$normalized_option" in
+          --version|--codex-install-version)
+            normalized_option="--version"
+            ;;
+        esac
+        NORMALIZED_INTERNAL_UPDATE_ARGS+=("$normalized_option" "$value")
+        shift
+        ;;
+      *)
+        NORMALIZED_INTERNAL_UPDATE_ARGS+=("$option")
+        shift
+        ;;
+    esac
+  done
+}
+
+update_internal_requested_version() {
+  local value=""
+  while (($#)); do
+    case "$1" in
+      --version|--codex-install-version)
+        if [[ $# -lt 2 ]]; then
+          echo "$1 requires a value" >&2
+          return 2
+        fi
+        value="$2"
+        shift 2
+        ;;
+      --version=*|--codex-install-version=*)
+        value="${1#*=}"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$value" ]] || return 1
+  printf '%s\n' "$value"
+}
+
+update_internal_requested_install_dir() {
+  local value=""
+  while (($#)); do
+    case "$1" in
+      --install-dir)
+        if [[ $# -lt 2 ]]; then
+          echo "$1 requires a value" >&2
+          return 2
+        fi
+        value="$2"
+        shift 2
+        ;;
+      --install-dir=*)
+        value="${1#*=}"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$value" ]] || return 1
+  expand_shell_path "$value"
+}
+
+validate_internal_update_bound_install_dir() {
+  local requested_dir="$1"
+  local bound_bin="$2"
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B - "$requested_dir" "$bound_bin" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+requested = Path(os.path.expandvars(sys.argv[1])).expanduser()
+bound = Path(os.path.expandvars(sys.argv[2])).expanduser()
+try:
+    requested = requested.resolve(strict=True)
+    bound_parent = bound.parent.resolve(strict=True)
+except OSError as error:
+    print(
+        f"update-internal: install directory is unavailable: {error}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if requested != bound_parent:
+    print(
+        "update-internal: --install-dir must match the internal profile "
+        f"binary directory: expected {bound_parent}, observed {requested}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+PY
+}
+
+UPDATE_INTERNAL_FORWARD_ARGS=()
+
+update_internal_forward_arguments() {
+  UPDATE_INTERNAL_FORWARD_ARGS=()
+  while (($#)); do
+    case "$1" in
+      --install-dir|--internal-bin)
+        if [[ $# -lt 2 ]]; then
+          echo "$1 requires a value" >&2
+          return 2
+        fi
+        shift 2
+        ;;
+      --install-dir=*|--internal-bin=*)
+        shift
+        ;;
+      *)
+        UPDATE_INTERNAL_FORWARD_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+internal_update_candidate_dir_for_bound() {
+  local bound_bin="$1"
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B - "$bound_bin" <<'PY'
+import os
+import secrets
+import stat
+import sys
+from pathlib import Path
+
+bound = Path(os.path.expandvars(sys.argv[1])).expanduser()
+if not bound.is_absolute() or bound.name != "codex":
+    print(
+        f"update-internal: bound binary path is invalid: {bound}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+try:
+    bound_state = bound.lstat()
+    parent_state = bound.parent.lstat()
+except OSError as error:
+    print(
+        f"update-internal: bound binary is unavailable: {error}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if (
+    stat.S_ISLNK(bound_state.st_mode)
+    or not stat.S_ISREG(bound_state.st_mode)
+    or bound_state.st_mode & 0o111 == 0
+    or stat.S_ISLNK(parent_state.st_mode)
+    or not stat.S_ISDIR(parent_state.st_mode)
+):
+    print(
+        f"update-internal: bound binary route is unsafe: {bound}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+for _attempt in range(128):
+    candidate = (
+        bound.parent
+        / f".codex-internal-update-{secrets.token_hex(12)}"
+    )
+    if not os.path.lexists(candidate):
+        print(candidate)
+        raise SystemExit(0)
+print(
+    "update-internal: could not allocate a private candidate path",
+    file=sys.stderr,
+)
+raise SystemExit(1)
+PY
+}
+
+internal_update_backup_path_for_bound() {
+  local bound_bin="$1"
+  printf '%s/.codex-internal-backup\n' "$(dirname "$bound_bin")"
+}
+
+print_internal_update_promotion_dry_run() {
+  local bound_bin="$1"
+  local candidate_bin="$2"
+  local backup_bin="$3"
+  echo "[DRY-RUN] Parity checks:"
+  echo "[DRY-RUN]   Capability receipt: staged candidate"
+  echo "[DRY-RUN]   Parity receipt: staged candidate"
+  echo "[DRY-RUN]   Model catalog overlay: staged candidate"
+  echo "[DRY-RUN] Artifact set:"
+  echo "[DRY-RUN]   Projected profile config"
+  echo "[DRY-RUN]   Projected shared config when changed"
+  echo "[DRY-RUN]   Projected active runtime config when materialized"
+  echo "[DRY-RUN]   Managed launcher and internal manifest"
+  echo "[DRY-RUN] Promotion order:"
+  echo "[DRY-RUN]   $bound_bin -> $backup_bin"
+  echo "[DRY-RUN]   $candidate_bin -> $bound_bin"
+  echo "[DRY-RUN]   Runtime artifacts, launcher, then manifest"
+  echo "[DRY-RUN] Locked revalidation: bound binary, candidate binary, internal manifest, official reference, source catalog, capability receipt, and config inputs"
+  echo "[DRY-RUN] Bound app-server smoke: post-promotion only"
+}
+
+internal_update_version_is_valid() {
+  local version="$1"
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B -c '
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from codex_switch_update_policy import parse_semantic_version
+
+raise SystemExit(0 if parse_semantic_version(sys.argv[2]) is not None else 1)
+' "$SCRIPT_DIR" "$version"
+}
+
+internal_update_install_dir_for_profile_bin() {
+  local codex_bin="$1"
+  local context="$2"
+  if [[ "$(basename "$codex_bin")" != "codex" ]]; then
+    echo "$context: profile codex_bin basename must be codex: $codex_bin" >&2
+    return 2
+  fi
+  dirname "$codex_bin"
+}
+
+resolve_internal_update_target_bin() {
+  local install_dir profile_bin
+  if install_dir="$(update_internal_requested_install_dir "$@")"; then
+    printf '%s/codex\n' "${install_dir%/}"
+    return
+  fi
+  if [[ -n "${CODEX_INSTALL_DIR:-}" ]]; then
+    install_dir="$(expand_shell_path "$CODEX_INSTALL_DIR")"
+    printf '%s/codex\n' "${install_dir%/}"
+    return
+  fi
+  if profile_bin="$(profile_codex_bin internal 2>/dev/null)" \
+    && [[ -n "$profile_bin" ]]; then
+    printf '%s\n' "$profile_bin"
+    return
+  fi
+  printf '%s/.local/bin/codex\n' "$HOME"
+}
+
+internal_profile_home() {
+  local index
+  for ((index = 0; index < ${#GLOBAL_ARGS[@]}; index++)); do
+    if [[ "${GLOBAL_ARGS[$index]}" == "--internal-codex-home" ]]; then
+      expand_shell_path "${GLOBAL_ARGS[$((index + 1))]}"
+      return
+    fi
+  done
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B -c '
+import json
+import os
+import sys
+from pathlib import Path
+
+store = Path(os.path.expandvars(sys.argv[1])).expanduser()
+manifest_path = store / "profiles" / "internal" / "manifest.json"
+try:
+    manifest = json.loads(manifest_path.read_text())
+except FileNotFoundError:
+    manifest = {}
+raw_home = manifest.get("codex_home")
+home = (
+    Path(os.path.expandvars(str(raw_home))).expanduser()
+    if raw_home
+    else store / "homes" / "internal"
+)
+print(home)
+' "$STORE_DIR"
+}
+
+verify_internal_update_compatibility() {
+  local codex_bin="$1"
+  local home
+  if home="$(internal_profile_home)"; then
+    true
+  else
+    return $?
+  fi
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B -c '
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from codex_switch_verify import run_app_server_smoke
+
+code, output = run_app_server_smoke(sys.argv[2], Path(sys.argv[3]))
+if code != 0:
+    print(
+        f"update-internal: app-server smoke failed (exit {code}): {output}",
+        file=sys.stderr,
+    )
+    raise SystemExit(code if 0 < code < 256 else 1)
+print("App-server smoke: passed")
+' "$SCRIPT_DIR" "$codex_bin" "$home"
+}
+
+verify_internal_update_target() {
+  local codex_bin="$1"
+  local target_version="$2"
+  local context="$3"
+  local after after_version probe_status
+  if after="$("$codex_bin" --version 2>&1)"; then
+    true
+  else
+    probe_status=$?
+    echo "$context: version probe failed (exit $probe_status)." >&2
+    return "$probe_status"
+  fi
+  after_version="$(printf '%s\n' "$after" | extract_version)"
+  if [[ "$after_version" != "$target_version" ]]; then
+    echo "$context: failed postcondition; expected $target_version but observed ${after_version:-<unparseable>}." >&2
+    return 1
+  fi
+  printf '%s\n' "$after_version"
+}
+
 run_update_internal_env_setup() {
   local env_setup="$1"
   shift
-  local latest_url latest_tag latest_version fallback_version
-  if ! update_internal_args_have_version "$@"; then
-    latest_url="${CODEX_SWITCH_INTERNAL_LATEST_URL:-${CODEX_INTERNAL_LATEST_URL:-https://github.com/SDGLBL/codex/releases/latest}}"
-    fallback_version="$(internal_fallback_version)"
-    if latest_tag="$(latest_internal_tag_from_url "$latest_url")"; then
-      latest_version="$(printf '%s\n' "$latest_tag" | extract_version)"
-      if internal_version_blocked "$latest_version" && [[ -n "$fallback_version" ]]; then
-        echo "update-internal: latest internal release $latest_version is blocked; pinning install to $fallback_version."
-        echo "update-internal: pass --version explicitly to override this codex-switch policy."
-        "$env_setup" update-internal --version "$fallback_version" "$@"
-        return
-      fi
+  local helper_status target_version codex_bin
+  local profile_bin="" explicit_version=0
+  local profile_manifest=""
+  local requested_install_dir=""
+  local candidate_dir="" candidate_bin="" backup_bin=""
+  local helper_args=()
+  if profile_manifest="$(profile_manifest_path internal)"; then
+    true
+  else
+    return $?
+  fi
+  if normalize_internal_update_arguments "$@"; then
+    set -- ${NORMALIZED_INTERNAL_UPDATE_ARGS[@]+"${NORMALIZED_INTERNAL_UPDATE_ARGS[@]}"}
+  else
+    return $?
+  fi
+  if update_internal_args_have_version "$@"; then
+    explicit_version=1
+    if target_version="$(update_internal_requested_version "$@")"; then
+      true
+    else
+      return $?
+    fi
+  else
+    if check_internal_update; then
+      true
+    else
+      helper_status=$?
+      echo "update-internal: ordered update check failed; pass --version explicitly only after verifying the intended target." >&2
+      return "$helper_status"
+    fi
+    if [[ "$INTERNAL_UPDATE_UNCERTAIN" == 1 ]]; then
+      echo "update-internal: no safe automatic target; pass --version explicitly only after verifying the intended target." >&2
+      return 1
+    fi
+    if [[ "$INTERNAL_UPDATE_NEEDED" != 1 ]]; then
+      echo "update-internal: no automatic update required."
+      return 0
+    fi
+    target_version="$INTERNAL_UPDATE_TARGET_VERSION"
+  fi
+  if ! internal_update_version_is_valid "$target_version"; then
+    echo "update-internal: target version must be a semantic version: $target_version" >&2
+    return 2
+  fi
+
+  if [[ ! -e "$profile_manifest" && ! -L "$profile_manifest" ]]; then
+    echo "update-internal: the internal profile must exist before a parity-safe update." >&2
+    return 2
+  fi
+  if profile_bin="$(profile_codex_bin internal)"; then
+    codex_bin="$profile_bin"
+  else
+    helper_status=$?
+    return "$helper_status"
+  fi
+  if [[ "$(basename "$codex_bin")" != "codex" ]]; then
+    echo "update-internal: profile codex_bin basename must be codex: $codex_bin" >&2
+    return 2
+  fi
+
+  if requested_install_dir="$(update_internal_requested_install_dir "$@")"; then
+    if validate_internal_update_bound_install_dir \
+      "$requested_install_dir" \
+      "$codex_bin"; then
+      true
+    else
+      return $?
+    fi
+  elif [[ -n "${CODEX_INSTALL_DIR:-}" ]]; then
+    requested_install_dir="$(expand_shell_path "$CODEX_INSTALL_DIR")"
+    if validate_internal_update_bound_install_dir \
+      "$requested_install_dir" \
+      "$codex_bin"; then
+      true
+    else
+      return $?
     fi
   fi
-  "$env_setup" update-internal "$@"
+  if candidate_dir="$(internal_update_candidate_dir_for_bound "$codex_bin")"; then
+    true
+  else
+    return $?
+  fi
+  candidate_bin="${candidate_dir%/}/codex"
+  backup_bin="$(internal_update_backup_path_for_bound "$codex_bin")"
+
+  if update_internal_forward_arguments "$@"; then
+    true
+  else
+    return $?
+  fi
+
+  if [[ "$explicit_version" == 1 ]]; then
+    helper_args=(
+      ${UPDATE_INTERNAL_FORWARD_ARGS[@]+"${UPDATE_INTERNAL_FORWARD_ARGS[@]}"}
+    )
+  else
+    helper_args=(--version "$target_version")
+    helper_args+=(
+      ${UPDATE_INTERNAL_FORWARD_ARGS[@]+"${UPDATE_INTERNAL_FORWARD_ARGS[@]}"}
+    )
+  fi
+  helper_args+=(
+    --internal-bin "$codex_bin"
+    --install-dir "$candidate_dir"
+  )
+
+  if "$env_setup" update-internal "${helper_args[@]}"; then
+    helper_status=0
+  else
+    helper_status=$?
+    echo "update-internal: helper exited $helper_status." >&2
+    return "$helper_status"
+  fi
+  if update_internal_args_have_dry_run "$@"; then
+    print_internal_update_promotion_dry_run \
+      "$codex_bin" \
+      "$candidate_bin" \
+      "$backup_bin"
+    return 0
+  fi
+  run_switcher \
+    promote-internal-update \
+    --bound-bin "$codex_bin" \
+    --candidate-bin "$candidate_bin" \
+    --backup-bin "$backup_bin" \
+    --target-version "$target_version"
 }
 
 print_version() {
@@ -915,8 +2061,12 @@ print_version() {
 INTERNAL_PROFILE_CODEX_BIN=""
 INTERNAL_UPDATE_NEEDED=0
 INTERNAL_UPDATE_UNCERTAIN=0
+INTERNAL_UPDATE_CHECK_FATAL=0
 INTERNAL_AUTO_UPDATED=0
 INTERNAL_UPDATE_TARGET_VERSION=""
+INTERNAL_UPDATE_DECISION=""
+INTERNAL_UPDATE_DECISION_REASON=""
+INTERNAL_UPDATE_AFTER_VERSION=""
 
 internal_blocked_versions() {
   printf '%s\n' "${CODEX_SWITCH_INTERNAL_BLOCKED_VERSIONS-0.142.5}"
@@ -924,6 +2074,62 @@ internal_blocked_versions() {
 
 internal_fallback_version() {
   printf '%s\n' "${CODEX_SWITCH_INTERNAL_FALLBACK_VERSION-0.142.4}"
+}
+
+internal_update_policy_decision() {
+  local current_version="$1"
+  local latest_version="$2"
+  local blocked_versions="$3"
+  local fallback_version="$4"
+  resolve_python_bin
+  "$PYTHON_BIN" -I -B -c '
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from codex_switch_update_policy import decide_internal_update
+
+blocked = tuple(
+    item
+    for item in sys.argv[4].replace(",", " ").split()
+    if item
+)
+decision = decide_internal_update(
+    current_version=sys.argv[2],
+    latest_version=sys.argv[3],
+    blocked_versions=blocked,
+    fallback_version=sys.argv[5] or None,
+)
+print(decision.outcome)
+print(decision.target_version or "")
+print(decision.reason)
+' \
+    "$SCRIPT_DIR" \
+    "$current_version" \
+    "$latest_version" \
+    "$blocked_versions" \
+    "$fallback_version"
+}
+
+load_internal_update_decision() {
+  local decision_output="$1"
+  INTERNAL_UPDATE_DECISION="$(
+    printf '%s\n' "$decision_output" | sed -n '1p'
+  )"
+  INTERNAL_UPDATE_TARGET_VERSION="$(
+    printf '%s\n' "$decision_output" | sed -n '2p'
+  )"
+  INTERNAL_UPDATE_DECISION_REASON="$(
+    printf '%s\n' "$decision_output" | sed -n '3,$p'
+  )"
+  case "$INTERNAL_UPDATE_DECISION" in
+    up_to_date|upgrade|blocked_fallback|newer_current|failed)
+      return 0
+      ;;
+    *)
+      echo "Internal update policy returned an invalid outcome: ${INTERNAL_UPDATE_DECISION:-<empty>}" >&2
+      return 1
+      ;;
+  esac
 }
 
 version_in_list() {
@@ -946,12 +2152,109 @@ internal_version_blocked() {
   version_in_list "$version" "$blocked"
 }
 
-latest_internal_tag_from_url() {
+latest_release_tag_from_url() {
   local latest_url="$1"
+  local max_time="${2:-20}"
   local headers location
-  headers="$(curl -fsSLI --max-time 20 "$latest_url" 2>/dev/null)" || return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  headers="$(
+    curl -fsSLI --connect-timeout 3 --max-time "$max_time" "$latest_url" \
+      2>/dev/null
+  )" || return 1
   location="$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" { print $2 }' | tail -n 1 | tr -d '\r')"
+  [[ -n "$location" ]] || return 1
   printf '%s\n' "${location##*/}"
+}
+
+latest_internal_tag_from_url() {
+  latest_release_tag_from_url "$1" 20
+}
+
+official_stable_comparison_decision() {
+  local current_output="$1"
+  local stable_tag="$2"
+  if ! resolve_python_bin; then
+    return 1
+  fi
+  "$PYTHON_BIN" -I -B -c '
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from codex_switch_official_release import compare_to_official_stable
+
+comparison = compare_to_official_stable(sys.argv[2], sys.argv[3])
+print(comparison.outcome)
+print(comparison.current_version or "")
+print(comparison.stable_version or "")
+print("1" if comparison.current_is_prerelease else "0")
+print(comparison.reason)
+' "$SCRIPT_DIR" "$current_output" "$stable_tag"
+}
+
+print_official_stable_advisory() {
+  local profile="$1"
+  local codex_bin="$2"
+  local latest_url="${CODEX_SWITCH_OFFICIAL_LATEST_URL:-https://github.com/openai/codex/releases/latest}"
+  local current_output="" stable_tag="" decision_output=""
+  local outcome="" current_version="" stable_version=""
+  local current_is_prerelease="" reason="" current_status=0
+
+  if current_output="$("$codex_bin" --version 2>&1)"; then
+    true
+  else
+    current_status=$?
+    echo "Official stable comparison: unavailable (current version probe failed: exit $current_status)"
+    return 0
+  fi
+  if stable_tag="$(latest_release_tag_from_url "$latest_url" 8)"; then
+    true
+  else
+    echo "Official stable comparison: unavailable (release lookup failed)"
+    return 0
+  fi
+  if decision_output="$(
+    official_stable_comparison_decision "$current_output" "$stable_tag"
+  )"; then
+    true
+  else
+    echo "Official stable comparison: unavailable (comparison policy failed)"
+    return 0
+  fi
+  outcome="$(printf '%s\n' "$decision_output" | sed -n '1p')"
+  current_version="$(printf '%s\n' "$decision_output" | sed -n '2p')"
+  stable_version="$(printf '%s\n' "$decision_output" | sed -n '3p')"
+  current_is_prerelease="$(printf '%s\n' "$decision_output" | sed -n '4p')"
+  reason="$(printf '%s\n' "$decision_output" | sed -n '5,$p')"
+  if [[ "$outcome" == "unknown" ]]; then
+    echo "Official stable comparison: unavailable ($reason)"
+    return 0
+  fi
+  case "$outcome" in
+    behind) reason="behind upstream stable" ;;
+    matches) reason="matches upstream stable" ;;
+    ahead) reason="ahead of upstream stable" ;;
+    *)
+      echo "Official stable comparison: unavailable (comparison outcome is invalid)"
+      return 0
+      ;;
+  esac
+
+  echo "Official stable comparison ($profile):"
+  if [[ "$profile" == "internal" ]]; then
+    echo "Current internal CLI: $current_version"
+  else
+    echo "Current official CLI: $current_version"
+  fi
+  echo "Latest openai/codex stable: $stable_version ($stable_tag)"
+  echo "Status: $reason"
+  if [[ "$current_is_prerelease" == "1" ]]; then
+    echo "Current channel: prerelease or vendor build"
+  fi
+  if [[ "$profile" == "internal" ]]; then
+    echo "Advisory only: internal updates remain governed by the internal release source."
+  else
+    echo "Advisory only: ChatGPT.app remains responsible for the bundled official CLI."
+  fi
 }
 
 check_internal_update() {
@@ -959,8 +2262,12 @@ check_internal_update() {
   INTERNAL_PROFILE_CODEX_BIN=""
   INTERNAL_UPDATE_NEEDED=0
   INTERNAL_UPDATE_UNCERTAIN=0
+  INTERNAL_UPDATE_CHECK_FATAL=0
   INTERNAL_AUTO_UPDATED=0
   INTERNAL_UPDATE_TARGET_VERSION=""
+  INTERNAL_UPDATE_DECISION=""
+  INTERNAL_UPDATE_DECISION_REASON=""
+  INTERNAL_UPDATE_AFTER_VERSION=""
   codex_bin="$(profile_codex_bin internal)"
   INTERNAL_PROFILE_CODEX_BIN="$codex_bin"
   if [[ -z "$codex_bin" || ! -x "$codex_bin" ]]; then
@@ -968,81 +2275,132 @@ check_internal_update() {
     exit 2
   fi
 
-  local current current_version latest_url latest_tag latest_version fallback_version blocked_versions
-  current="$("$codex_bin" --version 2>/dev/null || true)"
+  local current current_version current_status latest_url latest_tag latest_version fallback_version blocked_versions
+  local decision_output
+  if current="$("$codex_bin" --version 2>&1)"; then
+    true
+  else
+    current_status=$?
+    INTERNAL_UPDATE_CHECK_FATAL=1
+    echo "Internal update check: current version probe failed (exit $current_status)." >&2
+    return "$current_status"
+  fi
   current_version="$(printf '%s\n' "$current" | extract_version)"
+  if [[ -z "$current_version" ]]; then
+    INTERNAL_UPDATE_CHECK_FATAL=1
+    echo "Internal update check: current version is not valid semantic version output." >&2
+    return 1
+  fi
   latest_url="${CODEX_SWITCH_INTERNAL_LATEST_URL:-https://github.com/SDGLBL/codex/releases/latest}"
   fallback_version="$(internal_fallback_version)"
   blocked_versions="$(internal_blocked_versions)"
 
   echo "Internal profile codex: $codex_bin"
   echo "Current: ${current:-<unavailable>}"
-  if ! latest_tag="$(latest_internal_tag_from_url "$latest_url")"; then
+  latest_tag=""
+  latest_version=""
+  if latest_tag="$(latest_internal_tag_from_url "$latest_url")"; then
+    latest_version="$(printf '%s\n' "$latest_tag" | extract_version)"
+    echo "Latest release tag: ${latest_tag:-<unknown>}"
+  else
     echo "Latest release: <unavailable from $latest_url>"
-    echo "Update: unable to compare versions"
-    echo "Run a dry-run update check with:"
-    echo "  codex-switch update-internal --dry-run"
+  fi
+
+  if decision_output="$(
+    internal_update_policy_decision \
+      "$current_version" \
+      "$latest_version" \
+      "$blocked_versions" \
+      "$fallback_version"
+  )"; then
+    true
+  else
+    INTERNAL_UPDATE_CHECK_FATAL=1
+    echo "Internal update policy failed; refusing automatic update." >&2
+    return 1
+  fi
+  if ! load_internal_update_decision "$decision_output"; then
+    INTERNAL_UPDATE_CHECK_FATAL=1
     return 1
   fi
 
-  latest_version="$(printf '%s\n' "$latest_tag" | extract_version)"
-  echo "Latest release tag: ${latest_tag:-<unknown>}"
-
-  if internal_version_blocked "$latest_version"; then
-    echo "Latest release status: blocked by codex-switch policy"
-    echo "Blocked internal releases: ${blocked_versions:-<none>}"
-    if [[ -n "$fallback_version" ]]; then
-      echo "Pinned fallback version: $fallback_version"
-    fi
-    if [[ -n "$fallback_version" && "$current_version" != "$fallback_version" ]]; then
+  case "$INTERNAL_UPDATE_DECISION" in
+    upgrade)
       INTERNAL_UPDATE_NEEDED=1
-      INTERNAL_UPDATE_TARGET_VERSION="$fallback_version"
-      echo "Update: available (pinned fallback)"
+      echo "Update: available (ordered upgrade to $INTERNAL_UPDATE_TARGET_VERSION)"
       echo "Preview:"
-      echo "  codex-switch update-internal --version $fallback_version --dry-run"
+      echo "  codex-switch update-internal --version $INTERNAL_UPDATE_TARGET_VERSION --dry-run"
       echo "Install:"
-      echo "  codex-switch update-internal --version $fallback_version"
-    else
-      echo "Update: skipped (latest $latest_version is blocked; keeping ${current_version:-current binary})"
-    fi
-  elif [[ -z "$current_version" || -z "$latest_version" ]]; then
-    INTERNAL_UPDATE_UNCERTAIN=1
-    echo "Update: available or unable to compare versions"
-    echo "Preview:"
-    echo "  codex-switch update-internal --dry-run"
-    echo "Install:"
-    echo "  codex-switch update-internal"
-  elif [[ "$current_version" != "$latest_version" ]]; then
-    INTERNAL_UPDATE_NEEDED=1
-    echo "Update: available"
-    echo "Preview:"
-    echo "  codex-switch update-internal --dry-run"
-    echo "Install:"
-    echo "  codex-switch update-internal"
-  else
-    echo "Update: not needed"
-  fi
+      echo "  codex-switch update-internal --version $INTERNAL_UPDATE_TARGET_VERSION"
+      ;;
+    blocked_fallback)
+      INTERNAL_UPDATE_NEEDED=1
+      echo "Current internal release status: blocked by codex-switch policy"
+      echo "Blocked internal releases: ${blocked_versions:-<none>}"
+      echo "Pinned fallback version: $INTERNAL_UPDATE_TARGET_VERSION"
+      echo "Update: available (blocked-current fallback)"
+      echo "Preview:"
+      echo "  codex-switch update-internal --version $INTERNAL_UPDATE_TARGET_VERSION --dry-run"
+      echo "Install:"
+      echo "  codex-switch update-internal --version $INTERNAL_UPDATE_TARGET_VERSION"
+      ;;
+    newer_current)
+      echo "Update: not needed (healthy current $current_version is newer than reported latest $latest_version)"
+      ;;
+    up_to_date)
+      echo "Update: not needed"
+      ;;
+    failed)
+      INTERNAL_UPDATE_UNCERTAIN=1
+      if internal_version_blocked "$latest_version"; then
+        echo "Latest release status: blocked by codex-switch policy"
+        echo "Blocked internal releases: ${blocked_versions:-<none>}"
+      fi
+      echo "Update: skipped (no safe automatic target: $INTERNAL_UPDATE_DECISION_REASON)"
+      case "$INTERNAL_UPDATE_DECISION_REASON" in
+        "blocked versions "*|"blocked current "*)
+          INTERNAL_UPDATE_CHECK_FATAL=1
+          return 1
+          ;;
+      esac
+      if [[ -z "$latest_version" ]]; then
+        echo "Run a dry-run update check with:"
+        echo "  codex-switch update-internal --dry-run"
+        return 1
+      fi
+      ;;
+  esac
 }
 
 check_official_update() {
   local codex_bin
-  codex_bin="$(profile_codex_bin openai-official)"
+  codex_bin="$(profile_advisory_codex_bin openai-official)"
   if [[ -z "$codex_bin" || ! -x "$codex_bin" ]]; then
     echo "official profile codex_bin is missing or not executable: ${codex_bin:-<empty>}" >&2
     exit 2
   fi
   echo "Official profile codex: $codex_bin"
   echo "Current: $("$codex_bin" --version 2>/dev/null || echo "<unavailable>")"
-  echo "Update: managed by Codex Desktop / Codex.app; codex-switch does not modify the app bundle."
+  echo "Update: managed by ChatGPT.app; codex-switch does not modify the app bundle."
+  print_official_stable_advisory openai-official "$codex_bin"
 }
 
 check_update() {
   local profile="internal"
+  local status=0
   if (($#)); then
     profile="$(normalize_profile "$1")"
   fi
   if [[ "$profile" == "internal" ]]; then
-    check_internal_update
+    if check_internal_update; then
+      status=0
+    else
+      status=$?
+    fi
+    if [[ -n "$INTERNAL_PROFILE_CODEX_BIN" ]]; then
+      print_official_stable_advisory internal "$INTERNAL_PROFILE_CODEX_BIN"
+    fi
+    return "$status"
   else
     check_official_update
   fi
@@ -1071,15 +2429,32 @@ run_update_check_for_switch() {
 
   echo "Checking Codex CLI update for $profile..."
   if [[ "$profile" == "internal" ]]; then
-    if ! check_internal_update; then
+    local check_status=0
+    if check_internal_update; then
+      check_status=0
+    else
+      check_status=$?
+      if [[ "$INTERNAL_UPDATE_CHECK_FATAL" == 1 ]]; then
+        return "$check_status"
+      fi
       echo "Update check did not complete; continuing with switch." >&2
-      return
+      if [[ -n "$INTERNAL_PROFILE_CODEX_BIN" ]]; then
+        print_official_stable_advisory internal "$INTERNAL_PROFILE_CODEX_BIN"
+      fi
+      return 0
     fi
     if [[ "$INTERNAL_UPDATE_NEEDED" == 1 ]]; then
-      run_internal_auto_update "$INTERNAL_PROFILE_CODEX_BIN"
+      local update_status=0
+      if run_internal_auto_update "$INTERNAL_PROFILE_CODEX_BIN"; then
+        update_status=0
+      else
+        update_status=$?
+        return "$update_status"
+      fi
     elif [[ "$INTERNAL_UPDATE_UNCERTAIN" == 1 ]]; then
-      echo "Auto-update: skipped because the current/latest versions could not be compared." >&2
+      echo "Auto-update: skipped because no safe automatic target was selected." >&2
     fi
+    print_official_stable_advisory internal "$INTERNAL_PROFILE_CODEX_BIN"
     return
   fi
 
@@ -1090,21 +2465,33 @@ run_update_check_for_switch() {
 
 run_internal_auto_update() {
   local codex_bin="$1"
-  local env_setup install_dir after
-  local update_args=()
-  env_setup="$(env_setup_command)"
-  install_dir="$(dirname "$codex_bin")"
-  if [[ -n "$INTERNAL_UPDATE_TARGET_VERSION" ]]; then
-    update_args+=(--version "$INTERNAL_UPDATE_TARGET_VERSION")
+  local env_setup helper_status
+  if env_setup="$(env_setup_command)"; then
+    true
+  else
+    helper_status=$?
+    echo "Auto-update: failed to resolve the internal update helper." >&2
+    return "$helper_status"
   fi
-  update_args+=(--install-dir "$install_dir")
+  if [[ -z "$INTERNAL_UPDATE_TARGET_VERSION" ]]; then
+    echo "Auto-update: failed because the intended target version is empty." >&2
+    return 2
+  fi
 
   echo "Auto-update: internal Codex update detected."
-  echo "Auto-update: running codex-switch update-internal ${update_args[*]}"
-  "$env_setup" update-internal "${update_args[@]}"
-  after="$("$codex_bin" --version 2>/dev/null || true)"
+  echo "Auto-update: running staged parity-safe internal promotion."
+  if run_update_internal_env_setup \
+    "$env_setup" \
+    --version "$INTERNAL_UPDATE_TARGET_VERSION"; then
+    helper_status=0
+  else
+    helper_status=$?
+    echo "Auto-update: failed; staged promotion exited $helper_status." >&2
+    return "$helper_status"
+  fi
   INTERNAL_AUTO_UPDATED=1
-  echo "Auto-update: completed. Internal Codex is now ${after:-<unavailable>}."
+  INTERNAL_UPDATE_AFTER_VERSION="$INTERNAL_UPDATE_TARGET_VERSION"
+  echo "Auto-update: installed $INTERNAL_UPDATE_AFTER_VERSION; parity handshake passed and post-switch verification is required before completion."
 }
 
 install_wrapper() {

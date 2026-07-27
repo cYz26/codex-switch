@@ -132,3 +132,37 @@ codex-switch --skip-self-update verify internal --responses-tool-smoke --report
 
 Archive remains unavailable because the archive gate is closed. No archive
 action was taken.
+
+## 2026-07-23 Reasoning Continuity Amendment
+
+The verifier now recognizes `Item with id 'rs_…' not found` as
+`responses_reasoning_item_unavailable`. Reports retain only the unavailable
+reasoning item ID plus allowlisted routing headers; arbitrary output and
+credential-like values are not copied.
+
+The local degraded-continuity fallback is implemented at the exact
+`thread/resume.params.history` boundary. It removes all top-level ResponseItem
+IDs and omits only reasoning entries whose `encrypted_content`, `content`, and
+`summary` are all empty. This preserves visible messages and tool history but
+cannot recover missing hidden reasoning.
+
+Verification:
+
+- Python 3.9 and 3.12 protocol tests: 17/17 each.
+- Python 3.9 and 3.12 app-proxy focused tests: 12/12 each.
+- Python 3.9 and 3.12 runtime suites: 53/53 each.
+- Python 3.9 and 3.12 profile suites: 127/127 each.
+- Strict validation passed for both
+  `internal-responses-resource-stickiness` and `schema-scoped-app-proxy`.
+- `py_compile`, dual-runtime imports, and `git diff --check` passed.
+- Thread `019f8e16-477d-79d3-b968-cf41d15446b4` replay retained 43 of
+  56 response items after removing 13 opaque reasoning entries; the source
+  rollout hash remained unchanged.
+
+After explicit user authorization, the canonical scoped rebind ran with
+`./scripts/codex-switch set-bin internal /Users/cY/.local/bin/codex`. The prior
+manifest and launcher are backed up at
+`/Users/cY/.codex-switch/backups/manual-20260723T103336Z-resume-proxy-rebind`.
+The committed launcher smoke passed and attested the requested backend. ChatGPT
+was not restarted, so the existing process still bypasses the proxy until a
+full quit/reopen. No install, rollout mutation, release, commit, or push ran.

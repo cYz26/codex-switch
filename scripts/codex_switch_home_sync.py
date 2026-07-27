@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import argparse
 from copy import deepcopy
+from dataclasses import dataclass
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from codex_switch_config import (
@@ -11,13 +14,15 @@ from codex_switch_config import (
     build_profile_seed_config_text,
     build_preserved_shared_config_text_from_text,
     is_profile_specific_table,
-    merge_missing_shared_config_defaults,
-    merge_preserved_shared_config_overlay,
+    merge_missing_non_usage_shared_config_defaults,
+    merge_preserved_shared_support_overlay,
     merge_shared_config_overlay,
+    replace_plugin_skill_usage_state,
     string_assignment_value,
 )
 from codex_switch_constants import PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE, SwitchError
 from codex_switch_io import atomic_write, ensure_private_dir
+from codex_switch_parity import ConfigProjection
 from codex_switch_toml_edit import top_level_assignment
 from codex_switch_toml_scan import toml_table_name
 from codex_switch_toml_validate import validate_toml_text
@@ -31,6 +36,8 @@ RUNTIME_STATE_NAMES = {
     "log",
     "tmp",
     ".tmp",
+    "ipc",
+    "mcp-oauth-locks",
     "process_manager",
     "node_repl",
     "shell_snapshots",
@@ -124,6 +131,13 @@ DESKTOP_GLOBAL_STATE_ATOM_RUNTIME_PREFIXES = (
     "remote-thread-summaries:",
     "thread-client-id-v1:",
 )
+
+
+@dataclass(frozen=True)
+class PlannedHomeWrite:
+    path: Path
+    payload: bytes
+    mode: int
 
 
 def is_runtime_state_name(name: str) -> bool:
@@ -299,6 +313,46 @@ def symlink_points_to_itself(path: Path) -> bool:
     return path.is_symlink() and absolute_symlink_target(path) == Path(os.path.abspath(path))
 
 
+def shareable_symlink_rejection_reason(
+    path: Path,
+    source_home: Path,
+    target_home: Path,
+) -> str | None:
+    if not path.is_symlink():
+        return None
+    raw_target = Path(os.readlink(path))
+    if not raw_target.is_absolute():
+        return "relative"
+    absolute_target = absolute_symlink_target(path)
+    if absolute_target == Path(os.path.abspath(path)):
+        return "self-referential"
+    try:
+        resolved_target = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return "dangling"
+    if path_is_within(resolved_target, source_home.resolve(strict=False)):
+        return "source-home"
+    if path_is_within(resolved_target, target_home.resolve(strict=False)):
+        return "target-home"
+    return None
+
+
+def should_remove_rejected_shareable_target(
+    target: Path,
+    source_home: Path,
+    target_home: Path,
+) -> bool:
+    return (
+        target.is_symlink()
+        and shareable_symlink_rejection_reason(
+            target,
+            source_home,
+            target_home,
+        )
+        is not None
+    )
+
+
 def unsafe_copytree_symlinks(target_home: Path):
     def ignore(directory: str, names: list[str]) -> set[str]:
         skipped: set[str] = set()
@@ -313,12 +367,16 @@ def unsafe_copytree_symlinks(target_home: Path):
 
 def copy_or_link_shared_entry(source: Path, target: Path, prefer_link: bool) -> None:
     if source.is_symlink():
-        if symlink_points_to_itself(source):
-            if symlink_points_to_itself(target) or symlink_points_within(target, target.parent):
-                remove_path(target)
-            return
-        if symlink_points_within(source, target.parent):
-            if symlink_points_within(target, target.parent):
+        if shareable_symlink_rejection_reason(
+            source,
+            source.parent,
+            target.parent,
+        ):
+            if should_remove_rejected_shareable_target(
+                target,
+                source.parent,
+                target.parent,
+            ):
                 remove_path(target)
             return
         link_target = os.readlink(source)
@@ -374,17 +432,21 @@ def sync_shared_support(source_home: Path, target_home: Path, prefer_link: bool)
 
 
 def stale_runtime_links(home: Path, source_home: Path) -> list[Path]:
+    del source_home
     if not home.exists():
         return []
-    stale: list[Path] = []
-    source_prefix = str(source_home)
-    for path in home.iterdir():
-        if not is_runtime_state_name(path.name) or not path.is_symlink():
-            continue
-        link_target = os.readlink(path)
-        if link_target.startswith(source_prefix):
-            stale.append(path)
-    return stale
+    return sorted(
+        (
+            path
+            for path in home.iterdir()
+            if path.is_symlink()
+            and (
+                is_runtime_state_name(path.name)
+                or is_non_shareable_home_entry_name(path.name)
+            )
+        ),
+        key=lambda path: path.name,
+    )
 
 
 def remove_stale_runtime_links(home: Path, source_home: Path) -> list[Path]:
@@ -575,9 +637,16 @@ def merge_shared_with_profile_seed(
     canonical_config: Path,
     profile_layer_configs: list[Path] | None = None,
     profile_shared_layer_configs: list[Path] | None = None,
+    shared_source_text_override: str | None = None,
+    profile_seed_text_override: str | None = None,
 ) -> str:
-    shared_source_text = ""
-    if shared_source_config.exists():
+    shared_source_text = shared_source_text_override or ""
+    if shared_source_text_override is not None:
+        validate_toml_text(
+            shared_source_text_override,
+            f"shared source config: {shared_source_config}",
+        )
+    elif shared_source_config.exists():
         shared_source_text = read_valid_config(
             shared_source_config,
             f"shared source config: {shared_source_config}",
@@ -587,15 +656,24 @@ def merge_shared_with_profile_seed(
         if shared_source_text
         else ""
     )
+    if profile_seed_text_override is not None:
+        validate_toml_text(
+            profile_seed_text_override,
+            f"projected profile config: {canonical_config}",
+        )
+        shared_text = merge_shared_config_overlay(
+            shared_text,
+            profile_seed_text_override,
+        )
     errors: list[str] = []
     target_runtime_text: str | None = None
-    if target_runtime_config.exists():
+    if profile_seed_text_override is None and target_runtime_config.exists():
         try:
             target_runtime_text = read_valid_config(
                 target_runtime_config,
                 f"last runtime config: {target_runtime_config}",
             )
-            shared_text = merge_missing_shared_config_defaults(
+            shared_text = merge_missing_non_usage_shared_config_defaults(
                 shared_text,
                 target_runtime_text,
             )
@@ -626,26 +704,44 @@ def merge_shared_with_profile_seed(
         try:
             profile_layer_text = read_valid_config(path, f"profile layer shared config: {path}")
             profile_layer_texts[path] = profile_layer_text
-            shared_text = merge_preserved_shared_config_overlay(shared_text, profile_layer_text)
+            shared_text = merge_preserved_shared_support_overlay(
+                shared_text,
+                profile_layer_text,
+            )
         except SwitchError as exc:
             errors.append(str(exc))
 
     candidates: list[tuple[Path, str, str | None]] = []
-    if target_runtime_text is not None:
-        try:
-            if not should_skip_managed_runtime_seed(
-                profile_name,
-                target_runtime_text,
-                profile_layer_texts,
-                shared_source_text,
-            ):
-                candidates.append((target_runtime_config, "last runtime config", target_runtime_text))
-        except SwitchError as exc:
-            errors.append(str(exc))
-    for path in profile_layers:
-        if path.exists():
-            candidates.append((path, "profile layer config", None))
-    candidates.append((canonical_config, "fallback canonical config", None))
+    if profile_seed_text_override is not None:
+        candidates.append(
+            (
+                canonical_config,
+                "projected canonical config",
+                profile_seed_text_override,
+            )
+        )
+    else:
+        if target_runtime_text is not None:
+            try:
+                if not should_skip_managed_runtime_seed(
+                    profile_name,
+                    target_runtime_text,
+                    profile_layer_texts,
+                    shared_source_text,
+                ):
+                    candidates.append(
+                        (
+                            target_runtime_config,
+                            "last runtime config",
+                            target_runtime_text,
+                        )
+                    )
+            except SwitchError as exc:
+                errors.append(str(exc))
+        for path in profile_layers:
+            if path.exists():
+                candidates.append((path, "profile layer config", None))
+        candidates.append((canonical_config, "fallback canonical config", None))
 
     for path, label, preloaded_text in candidates:
         try:
@@ -684,7 +780,10 @@ def merge_preserved_shared_defaults_from_text(
     preserved_text = build_preserved_shared_config_text_from_text(defaults_text, label)
     if not preserved_text.strip():
         return shared_text
-    return merge_missing_shared_config_defaults(shared_text, preserved_text)
+    return merge_missing_non_usage_shared_config_defaults(
+        shared_text,
+        preserved_text,
+    )
 
 
 def should_skip_managed_runtime_seed(
@@ -754,7 +853,44 @@ def build_internal_home_config(
     profile_name: str,
     target_runtime_config: Path,
     canonical_config: Path,
+    *,
+    shared_source_text_override: str | None = None,
+    config_projection: ConfigProjection | None = None,
 ) -> str:
+    profile_seed_text_override: str | None = None
+    if config_projection is not None:
+        if not isinstance(config_projection, ConfigProjection):
+            raise SwitchError("Internal home config projection is invalid.")
+        if profile_name != "internal":
+            raise SwitchError(
+                "Parity config projection is supported only for internal."
+            )
+        if not config_projection.healthy:
+            raise SwitchError("Parity config projection is unhealthy.")
+        if shared_source_text_override is not None:
+            raise SwitchError(
+                "Parity config projection cannot be combined with a shared "
+                "source text override."
+            )
+
+        canonical_profile = Path(os.path.abspath(canonical_config))
+        if config_projection.config_inputs.profile_config != canonical_profile:
+            raise SwitchError(
+                "Parity config projection does not match the internal profile."
+            )
+        shared_source_config = official_home / "config.toml"
+        try:
+            profile_seed_text_override = config_projection.payload_for(
+                canonical_profile
+            ).decode("utf-8")
+            shared_source_text_override = config_projection.payload_for(
+                shared_source_config
+            ).decode("utf-8")
+        except (KeyError, UnicodeDecodeError) as exc:
+            raise SwitchError(
+                "Parity config projection does not cover canonical home inputs."
+            ) from exc
+
     return merge_shared_with_profile_seed(
         official_home / "config.toml",
         profile_name,
@@ -773,6 +909,8 @@ def build_internal_home_config(
             / "openai-official"
             / plugin_support_snapshot_name("openai-official"),
         ],
+        shared_source_text_override=shared_source_text_override,
+        profile_seed_text_override=profile_seed_text_override,
     )
 
 
@@ -838,6 +976,25 @@ def refresh_profile_plugin_support_snapshot(
         runtime_config_path,
         f"runtime config for plugin support snapshot: {runtime_config_path}",
     )
+    snapshot_text = build_profile_plugin_support_snapshot_text(
+        profile_name,
+        runtime_text,
+        snapshot_paths,
+    )
+    for path in unique_paths(snapshot_paths):
+        atomic_write(path, snapshot_text.encode(), mode=0o600)
+    return snapshot_text
+
+
+def build_profile_plugin_support_snapshot_text(
+    profile_name: str,
+    runtime_text: str,
+    snapshot_paths: list[Path],
+) -> str:
+    validate_toml_text(
+        runtime_text,
+        f"runtime config for plugin support snapshot: {profile_name}",
+    )
     snapshot_text = build_preserved_shared_config_text_from_text(
         runtime_text,
         f"plugin support snapshot for {profile_name}",
@@ -854,13 +1011,195 @@ def refresh_profile_plugin_support_snapshot(
                 existing_text,
                 f"existing plugin support snapshot: {path}",
             )
-            snapshot_text = merge_missing_shared_config_defaults(
+            snapshot_text = merge_missing_non_usage_shared_config_defaults(
                 snapshot_text,
                 existing_snapshot_text,
             )
         except SwitchError:
             continue
-    snapshot_text = annotate_plugin_support_snapshot(snapshot_text, profile_name)
-    for path in unique_paths(snapshot_paths):
-        atomic_write(path, snapshot_text.encode(), mode=0o600)
-    return snapshot_text
+    return annotate_plugin_support_snapshot(snapshot_text, profile_name)
+
+
+def _planned_desktop_state_write(
+    source_path: Path,
+    source_data: dict[str, object],
+    target_path: Path,
+    target_data: dict[str, object],
+) -> PlannedHomeWrite | None:
+    if not desktop_global_state_settings_subset(source_data):
+        return None
+    merged = merge_desktop_global_state_settings(source_data, target_data)
+    if merged == target_data:
+        return None
+    mode = 0o600
+    if target_path.exists() and not target_path.is_symlink():
+        mode = target_path.stat().st_mode & 0o777
+    elif source_path.exists() and not source_path.is_symlink():
+        mode = source_path.stat().st_mode & 0o777
+    return PlannedHomeWrite(
+        path=target_path,
+        payload=(json.dumps(merged, indent=2, sort_keys=True) + "\n").encode(),
+        mode=mode,
+    )
+
+
+def _plan_bidirectional_desktop_state_writes(
+    live_home: Path,
+    app_home: Path,
+) -> tuple[PlannedHomeWrite, ...]:
+    live_path = desktop_global_state_path(live_home)
+    app_path = desktop_global_state_path(app_home)
+    live_data = read_json_object_if_valid(live_path)
+    app_data = read_json_object_if_valid(app_path)
+    writes: list[PlannedHomeWrite] = []
+
+    live_write = _planned_desktop_state_write(
+        app_path,
+        app_data,
+        live_path,
+        live_data,
+    )
+    if live_write is not None:
+        writes.append(live_write)
+        live_data = json.loads(live_write.payload)
+
+    app_write = _planned_desktop_state_write(
+        live_path,
+        live_data,
+        app_path,
+        app_data,
+    )
+    if app_write is not None:
+        writes.append(app_write)
+    return tuple(writes)
+
+
+def sync_profile_app_home_for_launch(
+    live_home: Path,
+    app_home: Path,
+    profile_config: Path,
+    profile_name: str,
+) -> tuple[Path, ...]:
+    live_config = live_home / "config.toml"
+    app_config = app_home / "config.toml"
+    read_valid_config(
+        profile_config,
+        f"launcher profile config: {profile_config}",
+    )
+    live_text = read_valid_config(
+        live_config,
+        f"launcher shared config: {live_config}",
+    )
+    app_text: str | None = None
+    updated_live_text = live_text
+    if app_config.exists():
+        app_text = read_valid_config(
+            app_config,
+            f"launcher runtime config: {app_config}",
+        )
+        updated_live_text = replace_plugin_skill_usage_state(
+            live_text,
+            app_text,
+            "internal Desktop plugin and skill usage sync",
+        )
+        updated_live_text = merge_shared_config_overlay(
+            updated_live_text,
+            app_text,
+        )
+        validate_toml_text(
+            updated_live_text,
+            f"launcher shared config: {live_config}",
+        )
+
+    target_config_text = build_internal_home_config(
+        live_home,
+        profile_name,
+        app_config,
+        profile_config,
+        shared_source_text_override=updated_live_text,
+    )
+    if (
+        profile_name == "internal"
+        and app_text is not None
+        and strip_managed_comments(target_config_text)
+        == strip_managed_comments(app_text)
+    ):
+        target_config_text = app_text
+    snapshot_paths = [
+        app_home / plugin_support_snapshot_name(profile_name),
+        profile_config.parent / plugin_support_snapshot_name(profile_name),
+    ]
+    snapshot_text = build_profile_plugin_support_snapshot_text(
+        profile_name,
+        target_config_text,
+        snapshot_paths,
+    )
+    desktop_writes = _plan_bidirectional_desktop_state_writes(
+        live_home,
+        app_home,
+    )
+    isolated_links = tuple(stale_runtime_links(app_home, live_home))
+    shared_sources = tuple(shared_support_entries(live_home))
+
+    ensure_private_dir(app_home)
+    mutated: list[Path] = []
+    for path in isolated_links:
+        if path.is_symlink():
+            path.unlink()
+            mutated.append(path)
+    for source in shared_sources:
+        target = app_home / source.name
+        before_target = os.readlink(target) if target.is_symlink() else None
+        before_exists = target.exists() or target.is_symlink()
+        copy_or_link_shared_entry(source, target, prefer_link=True)
+        after_target = os.readlink(target) if target.is_symlink() else None
+        if (
+            before_exists != (target.exists() or target.is_symlink())
+            or before_target != after_target
+        ):
+            mutated.append(target)
+    for write in desktop_writes:
+        atomic_write(write.path, write.payload, mode=write.mode)
+        mutated.append(write.path)
+    if app_text is not None:
+        atomic_write(live_config, updated_live_text.encode(), mode=0o600)
+        mutated.append(live_config)
+    atomic_write(app_config, target_config_text.encode(), mode=0o600)
+    mutated.append(app_config)
+    for snapshot_path in unique_paths(snapshot_paths):
+        atomic_write(snapshot_path, snapshot_text.encode(), mode=0o600)
+        mutated.append(snapshot_path)
+    auth_path = app_home / "auth.json"
+    if auth_path.exists() or auth_path.is_symlink():
+        remove_path(auth_path)
+        mutated.append(auth_path)
+    return tuple(mutated)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog=Path(argv[0]).name)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    prepare = subparsers.add_parser("prepare-launch")
+    prepare.add_argument("--live-home", required=True)
+    prepare.add_argument("--app-home", required=True)
+    prepare.add_argument("--profile-config", required=True)
+    prepare.add_argument("--profile-name", required=True)
+    args = parser.parse_args(argv[1:])
+    try:
+        if args.command == "prepare-launch":
+            sync_profile_app_home_for_launch(
+                Path(args.live_home).expanduser(),
+                Path(args.app_home).expanduser(),
+                Path(args.profile_config).expanduser(),
+                str(args.profile_name),
+            )
+            return 0
+    except (OSError, SwitchError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    parser.error(f"unsupported command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

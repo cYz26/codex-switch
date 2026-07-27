@@ -11,6 +11,17 @@ The service error is:
 The requested item was created under a different Azure OpenAI resource. Use the same resource that created the item to access it.
 ```
 
+The same upstream continuity defect can also surface as:
+
+```text
+Item with id 'rs_...' not found.
+```
+
+When the request uses `store=false`, reasoning items must carry returned
+`reasoning.encrypted_content` for stateless continuation. A bare `rs_` ID is a
+remote reference and can fail after resource rerouting or loss of upstream item
+state.
+
 Fresh threads can reproduce the same failure. That means the problem is not
 necessarily stale local conversation state or an old Desktop thread.
 
@@ -78,6 +89,12 @@ without exposing credentials.
 codex-switch cannot directly repair AIDP resource routing. The Desktop app
 proxy only handles app-server JSON-RPC between Desktop and the configured
 profile backend; it does not proxy model HTTP `/responses` traffic.
+
+For Desktop memory-history resume, codex-switch can prevent a known-bad replay
+from blocking the whole thread: it removes server-owned item IDs and omits only
+reasoning entries that have no encrypted content, content, or summary. This is
+a degraded-continuity fallback, not a substitute for the upstream fix; prior
+hidden reasoning is unavailable, while visible messages and tool history remain.
 
 The durable upstream repair is one of:
 

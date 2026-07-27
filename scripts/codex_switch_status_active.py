@@ -3,6 +3,11 @@ from __future__ import annotations
 from codex_switch_constants import SwitchError
 from codex_switch_io import read_json
 from codex_switch_paths import profile_app_cli_path
+from codex_switch_runtime_binding import (
+    RuntimeBindingError,
+    manifest_uses_canonical_binding,
+    resolve_store_runtime_binding,
+)
 from codex_switch_store import Store
 
 
@@ -32,7 +37,22 @@ def print_active_profile_status(store: Store) -> str | None:
                 manifest = store.load_manifest(active_profile)
                 print(f"Active configured CLI: {manifest.get('codex_bin', '')}")
                 print(f"Active configured App CLI: {profile_app_cli_path(manifest)}")
-            except SwitchError as exc:
+                if (
+                    active_profile in {"internal", "openai-official", "official"}
+                    and manifest_uses_canonical_binding(active_profile, manifest)
+                ):
+                    binding = resolve_store_runtime_binding(
+                        store,
+                        active_profile,
+                        manifest=manifest,
+                        active_record=active,
+                    )
+                    print(f"Expected binding CLI: {binding.shell_cli}")
+                    print(f"Expected binding App CLI: {binding.desktop_cli}")
+                    for finding in binding.findings:
+                        if finding.severity in {"error", "warning"}:
+                            print(f"Runtime binding finding: {finding.code}")
+            except (SwitchError, RuntimeBindingError) as exc:
                 print(f"Active profile manifest: <unavailable: {exc}>")
     else:
         print("Active profile: <none recorded>")

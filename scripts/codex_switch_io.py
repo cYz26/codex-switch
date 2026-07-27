@@ -35,17 +35,26 @@ def ensure_private_dir(path: Path) -> None:
 
 
 def atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
-    ensure_private_dir(path.parent)
+    if not path.parent.exists():
+        ensure_private_dir(path.parent)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as tmp:
             tmp.write(data)
             tmp.flush()
+            if mode is not None:
+                os.fchmod(tmp.fileno(), mode)
             os.fsync(tmp.fileno())
-        if mode is not None:
-            tmp_path.chmod(mode)
         os.replace(tmp_path, path)
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()

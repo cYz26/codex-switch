@@ -67,9 +67,18 @@ Add a small structured diagnostic object for smoke failures:
 - `model_request_ids`: unique `x-model-request-id` values found in output.
 - `tt_log_ids`: unique `x-tt-logid` values found in output.
 
+The diagnostic also recognizes `Item with id 'rs_…' not found`:
+
+- `kind`: `responses_reasoning_item_unavailable`;
+- `item_ids`: unique unavailable `rs_` identifiers;
+- `message`: stateless continuation requires encrypted reasoning content or
+  stable upstream item routing;
+- the same allowlisted routing headers remain available for upstream triage.
+
 The parser must be conservative:
 
 - It recognizes the exact resource mismatch service message.
+- It recognizes only `rs_` IDs from the exact item-not-found service message.
 - It extracts only known safe header fields.
 - It must not expose query parameters, API keys, authorization headers, bearer
   tokens, or arbitrary large raw output in structured report fields.

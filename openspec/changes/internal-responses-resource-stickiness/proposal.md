@@ -29,6 +29,9 @@ Desktop/tool-call workflow is broken.
 - Keep the smoke opt-in because it uses the model service.
 - Detect the Azure resource mismatch service message in smoke output and report
   it as an internal Responses resource-stickiness failure.
+- Detect `Item with id 'rs_…' not found` as a reasoning continuity failure;
+  record that `store=false` continuation requires returned encrypted reasoning
+  content or stable upstream item routing.
 - Extract and report sanitized routing evidence when available, including
   `x-account-id`, `x-account-deployment`, `x-model-request-id`, and
   `x-tt-logid`; never persist or print credentials.

@@ -1,0 +1,242 @@
+{
+  "features": [
+    {
+      "name": "item_ids",
+      "observed_dependencies": [
+        "thread/resume.params.history"
+      ],
+      "planned_disposition": "adapter_observed_path"
+    },
+    {
+      "name": "multi_agent_v2",
+      "planned_disposition": "final_typed_probe",
+      "required_probe": "typed_subagent_v2"
+    }
+  ],
+  "methods": [
+    {
+      "adapter_rule_ids": [],
+      "direction": "client_request",
+      "internal_schema_sha256": "c7bb889ffce831bda9988b0ff8cd21d26307a0640ce232f3cd88c2aad0780350",
+      "method": "account/login/start",
+      "normalized_internal_schema_sha256": "c7bb889ffce831bda9988b0ff8cd21d26307a0640ce232f3cd88c2aad0780350",
+      "normalized_official_schema_sha256": "9ee1c1845c95aead79d8576ad148dae40812ef7504c01f3e9dbab0db06e76e94",
+      "official_schema_sha256": "9ee1c1845c95aead79d8576ad148dae40812ef7504c01f3e9dbab0db06e76e94",
+      "optional_extension_ids": [
+        "amazon_bedrock"
+      ],
+      "planned_disposition": "optional_extension",
+      "reason_codes": [
+        "parity.protocol.enum_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "client_request",
+      "internal_schema_sha256": "fed545a509c5373f6b20d637e6fecc4e0159ba593a4c41dcc2861e2b522da983",
+      "method": "externalAgentConfig/import",
+      "normalized_internal_schema_sha256": "fed545a509c5373f6b20d637e6fecc4e0159ba593a4c41dcc2861e2b522da983",
+      "normalized_official_schema_sha256": "fefc184359f5e62b08965f02947e01289c10f22547d7caf1f29ec07ff032fb04",
+      "official_schema_sha256": "fefc184359f5e62b08965f02947e01289c10f22547d7caf1f29ec07ff032fb04",
+      "optional_extension_ids": [
+        "memory_provider_migration"
+      ],
+      "planned_disposition": "optional_extension",
+      "reason_codes": [
+        "parity.protocol.enum_incompatible",
+        "parity.protocol.items_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "client_request",
+      "internal_schema_sha256": "62854e4d78b8b1650b57f5a5d5bd02b8b45019267d9e8638e34107aee229e85e",
+      "method": "plugin/share/updateTargets",
+      "normalized_internal_schema_sha256": "62854e4d78b8b1650b57f5a5d5bd02b8b45019267d9e8638e34107aee229e85e",
+      "normalized_official_schema_sha256": "ed52c627514626c94a30ce7a8150d39344dd5bb7be64dcc45417134e2e2248a1",
+      "official_schema_sha256": "ed52c627514626c94a30ce7a8150d39344dd5bb7be64dcc45417134e2e2248a1",
+      "optional_extension_ids": [
+        "listed_discoverability"
+      ],
+      "planned_disposition": "optional_extension",
+      "reason_codes": [
+        "parity.protocol.enum_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "client_request",
+      "internal_schema_sha256": "cc1e41a2dc2e3199ce5ddb002110f4aba7bd474f474d2f0f0ccfdd11c2739206",
+      "method": "thread/realtime/start",
+      "normalized_internal_schema_sha256": "cc1e41a2dc2e3199ce5ddb002110f4aba7bd474f474d2f0f0ccfdd11c2739206",
+      "normalized_official_schema_sha256": "e1d4742bc1fede7aa522dad547ebc86e655a77bc5a305fb7a1d65c6f8228cdee",
+      "official_schema_sha256": "e1d4742bc1fede7aa522dad547ebc86e655a77bc5a305fb7a1d65c6f8228cdee",
+      "optional_extension_ids": [
+        "realtime_v3_handoff_initial_items"
+      ],
+      "planned_disposition": "optional_extension",
+      "reason_codes": [
+        "parity.protocol.enum_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [
+        "client_request.thread_resume_history_portability"
+      ],
+      "direction": "client_request",
+      "internal_schema_sha256": "5cdfe4d5e82e4883bd34e51e4d648110f4cb2bbffc6843b7da51f98a9a10d4fd",
+      "method": "thread/resume",
+      "normalized_internal_schema_sha256": "5cdfe4d5e82e4883bd34e51e4d648110f4cb2bbffc6843b7da51f98a9a10d4fd",
+      "normalized_official_schema_sha256": "c757c1b83790de16ab05fb06972dd72fa834c271edca72857fc3d49908fe5067",
+      "official_schema_sha256": "c757c1b83790de16ab05fb06972dd72fa834c271edca72857fc3d49908fe5067",
+      "optional_extension_ids": [
+        "input_audio"
+      ],
+      "planned_disposition": "adapter_transformed",
+      "reason_codes": [
+        "parity.protocol.enum_incompatible",
+        "parity.protocol.items_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "client_request",
+      "internal_schema_sha256": "3df948965f5ff576f76d423fabb6ece4828575fc54b5b0179e7e277918e11cb2",
+      "method": "turn/start",
+      "normalized_internal_schema_sha256": "3df948965f5ff576f76d423fabb6ece4828575fc54b5b0179e7e277918e11cb2",
+      "normalized_official_schema_sha256": "cc050a440131cf50e45858727b6888a6a8569091a560e22fc6da9b52dbb17d29",
+      "official_schema_sha256": "cc050a440131cf50e45858727b6888a6a8569091a560e22fc6da9b52dbb17d29",
+      "optional_extension_ids": [
+        "local_audio_and_audio"
+      ],
+      "planned_disposition": "optional_extension",
+      "reason_codes": [
+        "parity.protocol.enum_incompatible",
+        "parity.protocol.items_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "client_request",
+      "internal_schema_sha256": "4106041861e355b3aee80bcffa88377d2c1b8a6dbd0d4f10a03157a397563c65",
+      "method": "turn/steer",
+      "normalized_internal_schema_sha256": "4106041861e355b3aee80bcffa88377d2c1b8a6dbd0d4f10a03157a397563c65",
+      "normalized_official_schema_sha256": "97fcf150a9e85f0d99ef0df1c86139d0f29d48d7bf3e2ad1b16437f8c7c871dd",
+      "official_schema_sha256": "97fcf150a9e85f0d99ef0df1c86139d0f29d48d7bf3e2ad1b16437f8c7c871dd",
+      "optional_extension_ids": [
+        "local_audio_and_audio"
+      ],
+      "planned_disposition": "optional_extension",
+      "reason_codes": [
+        "parity.protocol.enum_incompatible",
+        "parity.protocol.items_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "server_notification",
+      "internal_schema_sha256": "52242502854ecb5f34a73ade84e9760c064a2c45bafd18e10a3d1d67c76a9dd2",
+      "method": "item/autoApprovalReview/completed",
+      "normalized_internal_schema_sha256": "52242502854ecb5f34a73ade84e9760c064a2c45bafd18e10a3d1d67c76a9dd2",
+      "normalized_official_schema_sha256": "52242502854ecb5f34a73ade84e9760c064a2c45bafd18e10a3d1d67c76a9dd2",
+      "official_schema_sha256": "d9ef2e2f60e6820d43670ab241c0c5e99ac6226edfa713275d28e1332a91f9ef",
+      "optional_extension_ids": [],
+      "planned_disposition": "native_equivalent",
+      "reason_codes": [
+        "parity.protocol.type_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "server_notification",
+      "internal_schema_sha256": "07eaa1f218c3f06a5698494150dc991808407806d8fd1e3f4482387c5fe4409a",
+      "method": "item/autoApprovalReview/started",
+      "normalized_internal_schema_sha256": "07eaa1f218c3f06a5698494150dc991808407806d8fd1e3f4482387c5fe4409a",
+      "normalized_official_schema_sha256": "07eaa1f218c3f06a5698494150dc991808407806d8fd1e3f4482387c5fe4409a",
+      "official_schema_sha256": "709c52ae763e76c97a6eab6dbb4f9290714df1ea82ea5b19e9001c9a0906b564",
+      "optional_extension_ids": [],
+      "planned_disposition": "native_equivalent",
+      "reason_codes": [
+        "parity.protocol.type_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "server_request",
+      "internal_schema_sha256": "381a00a145682ae9f2b4946b488d2999e017a63093438d7f078f845fdcb9ac1f",
+      "method": "item/commandExecution/requestApproval",
+      "normalized_internal_schema_sha256": "564d7b15c46397390500ae7871a94b1020127a5a589e93e60ce5aa255f4c1535",
+      "normalized_official_schema_sha256": "564d7b15c46397390500ae7871a94b1020127a5a589e93e60ce5aa255f4c1535",
+      "official_schema_sha256": "fb980ddcd7d4c87793e9a6e6c0094ef044f15ae73b0247f7e53b7c8303abd893",
+      "optional_extension_ids": [],
+      "planned_disposition": "native_equivalent",
+      "reason_codes": [
+        "parity.protocol.type_incompatible"
+      ]
+    },
+    {
+      "adapter_rule_ids": [],
+      "direction": "server_request",
+      "internal_schema_sha256": "2abc1ddc068a466da9451547b04a0e2e52f3d4bc2a867adc25ded37f02b6830c",
+      "method": "item/permissions/requestApproval",
+      "normalized_internal_schema_sha256": "2abc1ddc068a466da9451547b04a0e2e52f3d4bc2a867adc25ded37f02b6830c",
+      "normalized_official_schema_sha256": "2abc1ddc068a466da9451547b04a0e2e52f3d4bc2a867adc25ded37f02b6830c",
+      "official_schema_sha256": "637044439a0587ac76e3d426f29020896eac7838c706f81b80a15cd5c97835f5",
+      "optional_extension_ids": [],
+      "planned_disposition": "native_equivalent",
+      "reason_codes": [
+        "parity.protocol.type_incompatible"
+      ]
+    }
+  ],
+  "normalized_with": "nullable-anyof-to-type-union-v1",
+  "optional_queue": [
+    {
+      "category": "feature",
+      "finding_code": "parity.feature.optional_drift",
+      "identifier": "item_ids"
+    },
+    {
+      "category": "protocol",
+      "finding_code": "parity.protocol.optional_extension",
+      "identifier": "client_request:account/login/start#amazon_bedrock"
+    },
+    {
+      "category": "protocol",
+      "finding_code": "parity.protocol.optional_extension",
+      "identifier": "client_request:externalAgentConfig/import#memory_provider_migration"
+    },
+    {
+      "category": "protocol",
+      "finding_code": "parity.protocol.optional_extension",
+      "identifier": "client_request:plugin/share/updateTargets#listed_discoverability"
+    },
+    {
+      "category": "protocol",
+      "finding_code": "parity.protocol.optional_extension",
+      "identifier": "client_request:thread/realtime/start#realtime_v3_handoff_initial_items"
+    },
+    {
+      "category": "protocol",
+      "finding_code": "parity.protocol.optional_extension",
+      "identifier": "client_request:thread/resume#input_audio"
+    },
+    {
+      "category": "protocol",
+      "finding_code": "parity.protocol.optional_extension",
+      "identifier": "client_request:turn/start#local_audio_and_audio"
+    },
+    {
+      "category": "protocol",
+      "finding_code": "parity.protocol.optional_extension",
+      "identifier": "client_request:turn/steer#local_audio_and_audio"
+    }
+  ],
+  "saved_error_counts": {
+    "core_feature": 2,
+    "core_protocol": 8,
+    "total": 13,
+    "unclassified_protocol": 3
+  },
+  "schema_version": 1
+}

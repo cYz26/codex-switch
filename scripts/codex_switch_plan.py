@@ -30,6 +30,24 @@ def resolve_base_config_path(
     return base_config_path
 
 
+def transaction_switch_preview_lines(
+    *,
+    name: str,
+    target_home: Path,
+    backup_paths: list[Path],
+    mutation_actions: list[str],
+) -> tuple[str, ...]:
+    return (
+        f"switch to profile {name}",
+        "Home plan:",
+        f"- target home: {target_home}",
+        "Backup plan:",
+        *(f"- {path}" for path in backup_paths),
+        "Mutation plan:",
+        *(f"- {action}" for action in mutation_actions),
+    )
+
+
 def switch_plan_actions(
     store: Store,
     name: str,
@@ -75,7 +93,7 @@ def switch_plan_actions(
         if shell_bootstrap is not None:
             actions.append(f"ensure command-line codex PATH bootstrap: {shell_bootstrap}")
     if not skip_app_cli:
-        actions.append(f"set Codex Desktop {APP_CLI_ENV} to {app_cli_path or '<missing>'}")
+        actions.append(f"set ChatGPT Desktop {APP_CLI_ENV} to {app_cli_path or '<missing>'}")
         actions.append(f"write LaunchAgent {store.launch_agent_path}")
         if skip_launchctl:
             actions.append("skip launchctl apply")

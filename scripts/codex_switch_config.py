@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from codex_switch_constants import PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE
+from codex_switch_config_document import ConfigDocument
+from codex_switch_constants import PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE, SwitchError
 from codex_switch_toml_edit import (
     append_toml_block,
     top_level_assignment,
@@ -10,11 +11,9 @@ from codex_switch_toml_edit import (
 )
 from codex_switch_toml_scan import (
     extract_toml_table_block,
-    first_table_index,
     toml_table_name,
 )
 from codex_switch_toml_validate import validate_toml_text
-from codex_switch_toml_validate import commentless_line
 
 PROFILE_TABLE_PREFIXES = (
     "model_providers.",
@@ -28,12 +27,24 @@ PRESERVED_SHARED_TABLE_PREFIXES = (
     "plugins.",
     "hooks.state.",
 )
+PLUGIN_SKILL_USAGE_TABLES = (
+    "plugins",
+    "skills.config",
+)
+PLUGIN_SKILL_USAGE_TABLE_PREFIXES = (
+    "plugins.",
+    "skills.config.",
+)
 
 
 def is_profile_specific_table(table_name: str) -> bool:
     return table_name == "model_providers" or table_name == "profiles" or any(
         table_name.startswith(prefix) for prefix in PROFILE_TABLE_PREFIXES
     )
+
+
+def is_profile_specific_path(path: tuple[str, ...]) -> bool:
+    return bool(path) and path[0] in {"model_providers", "profiles"}
 
 
 def remove_top_level_assignment(text: str, key: str) -> str:
@@ -80,96 +91,83 @@ def is_preserved_shared_table(table_name: str) -> bool:
     )
 
 
-def matching_toml_table_blocks(text: str, predicate) -> list[str]:
-    blocks: list[str] = []
-    current: list[str] = []
-    current_matches = False
-    for line in text.splitlines():
-        table = toml_table_name(line)
-        if table:
-            if current_matches and current:
-                blocks.append("\n".join(current).rstrip() + "\n")
-            current = [line]
-            current_matches = predicate(table)
-            continue
-        if current:
-            current.append(line)
-    if current_matches and current:
-        blocks.append("\n".join(current).rstrip() + "\n")
-    return blocks
+def is_preserved_shared_path(path: tuple[str, ...]) -> bool:
+    return (
+        path[:2] == ("skills", "config")
+        or bool(path)
+        and path[0] in {"marketplaces", "plugins"}
+        or path[:2] == ("hooks", "state")
+    )
 
 
-def remove_matching_toml_table_blocks(text: str, predicate) -> str:
-    kept: list[str] = []
-    skipping = False
-    for line in text.splitlines():
-        table = toml_table_name(line)
-        if table:
-            skipping = predicate(table)
-        if not skipping:
-            kept.append(line)
-    return "\n".join(kept).rstrip() + "\n"
+def is_plugin_skill_usage_table(table_name: str) -> bool:
+    return table_name in PLUGIN_SKILL_USAGE_TABLES or any(
+        table_name.startswith(prefix)
+        for prefix in PLUGIN_SKILL_USAGE_TABLE_PREFIXES
+    )
+
+
+def is_plugin_skill_usage_path(path: tuple[str, ...]) -> bool:
+    return bool(path) and (
+        path[0] == "plugins" or path[:2] == ("skills", "config")
+    )
+
+
+def is_preserved_shared_support_table(table_name: str) -> bool:
+    return is_preserved_shared_table(table_name) and not is_plugin_skill_usage_table(
+        table_name
+    )
+
+
+def is_preserved_shared_support_path(path: tuple[str, ...]) -> bool:
+    return is_preserved_shared_path(path) and not is_plugin_skill_usage_path(path)
+
+
+def recovery_text_or_raise(result, label: str) -> str:
+    if result.diagnostics:
+        codes = ", ".join(
+            sorted({diagnostic.code for diagnostic in result.diagnostics})
+        )
+        raise SwitchError(f"{label}: Config Document diagnostics: {codes}")
+    return result.text
 
 
 def merge_preserved_shared_config_blocks(updated: str, preserve_source_text: str) -> str:
-    blocks = matching_toml_table_blocks(preserve_source_text, is_preserved_shared_table)
-    if not blocks:
-        return updated
-    merged = remove_matching_toml_table_blocks(updated, is_preserved_shared_table)
-    for block in blocks:
-        merged = append_toml_block(merged, block)
-    validate_toml_text(merged, "preserved shared config")
-    return merged
-
-
-def top_level_assignments(text: str) -> list[tuple[str, str]]:
-    lines = text.splitlines()
-    assignments: list[tuple[str, str]] = []
-    for line in lines[: first_table_index(lines)]:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key = stripped.split("=", 1)[0].strip()
-        if key:
-            assignments.append((key, stripped))
-    return assignments
+    current = ConfigDocument.parse(updated, "preserved shared config destination")
+    source = ConfigDocument.parse(
+        preserve_source_text,
+        "preserved shared config source",
+    ).select(
+        include_top_level=lambda _path: False,
+        include_table=lambda path, _is_array: is_preserved_shared_path(path),
+        label="selected preserved shared config source",
+    )
+    without_preserved = current.select(
+        include_top_level=lambda _path: True,
+        include_table=lambda path, _is_array: not is_preserved_shared_path(path),
+        label="preserved shared config destination without shared tables",
+    )
+    result = without_preserved.recover_missing_from(
+        source,
+        protected_paths=frozenset(),
+    )
+    return recovery_text_or_raise(result, "preserved shared config")
 
 
 def merge_toml_table_overlay(updated: str, overlay_text: str, predicate, label: str) -> str:
-    overlay_blocks = matching_toml_table_blocks(overlay_text, predicate)
-    if not overlay_blocks:
+    overlay = ConfigDocument.parse(overlay_text, f"{label} source").select(
+        include_top_level=lambda _path: False,
+        include_table=lambda path, _is_array: predicate(".".join(path)),
+        label=f"{label} selected source",
+    )
+    if not overlay.tables:
         return updated
-
-    merged_blocks: list[str] = matching_toml_table_blocks(updated, predicate)
-    table_indexes: dict[str, int] = {}
-    for index, block in enumerate(merged_blocks):
-        table = toml_table_name(block.splitlines()[0])
-        if table:
-            table_indexes[table] = index
-
-    for block in overlay_blocks:
-        table = toml_table_name(block.splitlines()[0])
-        if not table:
-            continue
-        if block.lstrip().startswith("[["):
-            if block not in merged_blocks:
-                merged_blocks.append(block)
-            continue
-        existing_index = table_indexes.get(table)
-        if existing_index is None:
-            table_indexes[table] = len(merged_blocks)
-            merged_blocks.append(block)
-        else:
-            merged_blocks[existing_index] = merge_table_assignments_overlay(
-                merged_blocks[existing_index],
-                block,
-            )
-
-    merged = remove_matching_toml_table_blocks(updated, predicate)
-    for block in merged_blocks:
-        merged = append_toml_block(merged, block)
-    validate_toml_text(merged, label)
-    return merged
+    current = ConfigDocument.parse(updated, f"{label} destination")
+    overlaid = current.replace_values_from(overlay)
+    return overlaid.recover_missing_from(
+        overlay,
+        protected_paths=frozenset(),
+    ).text
 
 
 def merge_preserved_shared_config_overlay(updated: str, overlay_text: str) -> str:
@@ -181,84 +179,57 @@ def merge_preserved_shared_config_overlay(updated: str, overlay_text: str) -> st
     )
 
 
+def merge_preserved_shared_support_overlay(updated: str, overlay_text: str) -> str:
+    return merge_toml_table_overlay(
+        updated,
+        overlay_text,
+        is_preserved_shared_support_table,
+        "preserved shared support overlay",
+    )
+
+
 def build_preserved_shared_config_text_from_text(text: str, label: str) -> str:
-    updated = ""
-    for block in matching_toml_table_blocks(text, is_preserved_shared_table):
-        updated = append_toml_block(updated, block)
-    validate_toml_text(updated, label)
-    return updated
+    return ConfigDocument.parse(text, label).select(
+        include_top_level=lambda _path: False,
+        include_table=lambda path, _is_array: is_preserved_shared_path(path),
+        label=f"{label} selected preserved shared config",
+    ).text
+
+
+def replace_plugin_skill_usage_state(
+    updated: str,
+    authoritative_text: str,
+    label: str,
+) -> str:
+    destination = ConfigDocument.parse(updated, f"{label} destination").select(
+        include_top_level=lambda _path: True,
+        include_table=lambda path, _is_array: not is_plugin_skill_usage_path(path),
+        label=f"{label} destination without usage state",
+    )
+    authoritative = ConfigDocument.parse(
+        authoritative_text,
+        f"{label} authoritative source",
+    ).select(
+        include_top_level=lambda _path: False,
+        include_table=lambda path, _is_array: is_plugin_skill_usage_path(path),
+        label=f"{label} selected authoritative usage state",
+    )
+    result = destination.recover_missing_from(
+        authoritative,
+        protected_paths=frozenset(),
+    )
+    return recovery_text_or_raise(result, label)
 
 
 def merge_shared_config_overlay(updated: str, overlay_text: str) -> str:
     overlay_shared = build_base_config_text_from_text(overlay_text, "shared config overlay")
-    merged = updated
-    for key, assignment in top_level_assignments(overlay_shared):
-        merged = upsert_top_level_assignment(merged, key, assignment)
-    merged = merge_toml_table_overlay(
-        merged,
-        overlay_shared,
-        lambda table: not is_profile_specific_table(table),
-        "shared config overlay",
-    )
-    validate_toml_text(merged, "shared config overlay")
-    return merged
-
-
-def is_array_toml_table_block(block: str) -> bool:
-    lines = block.splitlines()
-    return bool(lines) and lines[0].strip().startswith("[[")
-
-
-def table_assignment_lines(block: str) -> list[tuple[str, str]]:
-    assignments: list[tuple[str, str]] = []
-    for line in block.splitlines()[1:]:
-        bare = commentless_line(line).strip()
-        if not bare or bare.startswith("[") or "=" not in bare:
-            continue
-        key = bare.split("=", 1)[0].strip()
-        if key:
-            assignments.append((key, line.strip()))
-    return assignments
-
-
-def merge_missing_table_assignments(existing_block: str, defaults_block: str) -> str:
-    existing_keys = {key for key, _ in table_assignment_lines(existing_block)}
-    missing_lines = [
-        line
-        for key, line in table_assignment_lines(defaults_block)
-        if key not in existing_keys
-    ]
-    if not missing_lines:
-        return existing_block
-    return f"{existing_block.rstrip()}\n" + "\n".join(missing_lines) + "\n"
-
-
-def merge_table_assignments_overlay(existing_block: str, overlay_block: str) -> str:
-    overlay_assignments = table_assignment_lines(overlay_block)
-    if not overlay_assignments:
-        return existing_block
-
-    overlay_by_key = {key: line for key, line in overlay_assignments}
-    replaced: set[str] = set()
-    merged_lines: list[str] = []
-    for line in existing_block.splitlines():
-        bare = commentless_line(line).strip()
-        key = None
-        if bare and not bare.startswith("[") and "=" in bare:
-            key = bare.split("=", 1)[0].strip()
-        if key in overlay_by_key:
-            if key not in replaced:
-                merged_lines.append(overlay_by_key[key])
-                replaced.add(key)
-            continue
-        merged_lines.append(line)
-
-    for key, line in overlay_assignments:
-        if key not in replaced:
-            merged_lines.append(line)
-            replaced.add(key)
-
-    return "\n".join(merged_lines).rstrip() + "\n"
+    current = ConfigDocument.parse(updated, "shared config overlay destination")
+    overlay = ConfigDocument.parse(overlay_shared, "shared config overlay source")
+    overlaid = current.replace_values_from(overlay)
+    return overlaid.recover_missing_from(
+        overlay,
+        protected_paths=frozenset(),
+    ).text
 
 
 def merge_missing_shared_config_defaults(updated: str, defaults_text: str) -> str:
@@ -266,34 +237,30 @@ def merge_missing_shared_config_defaults(updated: str, defaults_text: str) -> st
         defaults_text,
         "missing shared config defaults",
     )
-    merged = updated
-    for key, assignment in top_level_assignments(defaults_shared):
-        if not top_level_assignment(merged, key):
-            merged = upsert_top_level_assignment(merged, key, assignment)
-
-    default_blocks = matching_toml_table_blocks(
+    current = ConfigDocument.parse(updated, "missing shared config destination")
+    defaults = ConfigDocument.parse(
         defaults_shared,
-        lambda table: not is_profile_specific_table(table),
+        "missing shared config defaults source",
     )
-    for defaults_block in default_blocks:
-        table = toml_table_name(defaults_block.splitlines()[0])
-        if not table:
-            continue
-        existing_blocks = matching_toml_table_blocks(merged, lambda name: name == table)
-        if is_array_toml_table_block(defaults_block):
-            if defaults_block not in existing_blocks:
-                merged = append_toml_block(merged, defaults_block)
-            continue
-        if not existing_blocks:
-            merged = append_toml_block(merged, defaults_block)
-            continue
-        existing_block = existing_blocks[0]
-        merged_block = merge_missing_table_assignments(existing_block, defaults_block)
-        if merged_block != existing_block:
-            merged = merged.replace(existing_block, merged_block, 1)
+    return current.recover_missing_from(
+        defaults,
+        protected_paths=frozenset(),
+    ).text
 
-    validate_toml_text(merged, "missing shared config defaults")
-    return merged
+
+def merge_missing_non_usage_shared_config_defaults(
+    updated: str,
+    defaults_text: str,
+) -> str:
+    defaults_without_usage = ConfigDocument.parse(
+        defaults_text,
+        "non-usage shared config defaults",
+    ).select(
+        include_top_level=lambda _path: True,
+        include_table=lambda path, _is_array: not is_plugin_skill_usage_path(path),
+        label="non-usage shared config defaults without usage state",
+    )
+    return merge_missing_shared_config_defaults(updated, defaults_without_usage.text)
 
 
 def profile_table_assignments(profile_block: str) -> list[tuple[str, str]]:
@@ -416,17 +383,14 @@ def build_profile_seed_config_text(
 
 
 def build_base_config_text_from_text(text: str, label: str) -> str:
-    updated = text
-    updated = remove_top_level_assignment(updated, "profile")
-    updated = remove_legacy_profile_tables(updated)
-    for key in PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE:
-        updated = remove_top_level_assignment(updated, key)
-    updated = remove_matching_toml_table_blocks(
-        updated,
-        is_profile_specific_table,
-    )
-    validate_toml_text(updated, label)
-    return updated
+    excluded_top_level = {"profile", *PROFILE_TOP_LEVEL_KEYS_FROM_PROFILE}
+    return ConfigDocument.parse(text, label).select(
+        include_top_level=lambda path: not (
+            len(path) == 1 and path[0] in excluded_top_level
+        ),
+        include_table=lambda path, _is_array: not is_profile_specific_path(path),
+        label=f"{label} shared base",
+    ).text
 
 
 def build_base_config_text(base_config_path: Path) -> str:

@@ -17,6 +17,7 @@ from codex_switch_core import (
 )
 from codex_switch_bindings import (
     cmd_login,
+    cmd_promote_internal_update,
     cmd_set_app_bin,
     cmd_set_bin,
     cmd_shim_env,
@@ -124,7 +125,7 @@ def add_init_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     init.add_argument("--codex-bin", help="OpenAI official profile Codex binary path.")
     init.add_argument(
         "--app-cli-path",
-        help="OpenAI official profile Desktop CODEX_CLI_PATH. Defaults to bundled Codex.app binary.",
+        help="OpenAI official profile Desktop CODEX_CLI_PATH. Defaults to the bundled ChatGPT.app Codex binary.",
     )
     init.add_argument("--capture-current", help="Also capture the current live ~/.codex profile.")
     init.add_argument(
@@ -202,8 +203,8 @@ def add_simple_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser])
     repair_plugins = sub.add_parser(
         "repair-plugins",
         help=(
-            "Refresh plugin catalogs and install enabled plugins that are "
-            "missing from a profile CODEX_HOME."
+            "Refresh plugin catalogs, install missing available plugins, and "
+            "refresh confirmed stale local caches in a profile CODEX_HOME."
         ),
     )
     repair_plugins.add_argument("name")
@@ -288,7 +289,7 @@ def add_set_bin_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         "--preserve-app-cli",
         action="store_true",
         help=(
-            "Only update the shell/profile codex_bin; leave the Codex Desktop "
+            "Only update the shell/profile codex_bin; leave the ChatGPT Desktop "
             "app_cli_path unchanged."
         ),
     )
@@ -298,11 +299,25 @@ def add_set_bin_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser])
 def add_set_app_bin_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     set_app_bin = sub.add_parser(
         "set-app-bin",
-        help="Bind Codex Desktop CODEX_CLI_PATH to a stored profile.",
+        help="Bind ChatGPT Desktop CODEX_CLI_PATH to a stored profile.",
     )
     set_app_bin.add_argument("name")
     set_app_bin.add_argument("app_cli_path")
     set_app_bin.set_defaults(func=cmd_set_app_bin)
+
+
+def add_internal_update_promotion_parser(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    promote = sub.add_parser(
+        "promote-internal-update",
+        help=argparse.SUPPRESS,
+    )
+    promote.add_argument("--bound-bin", required=True)
+    promote.add_argument("--candidate-bin", required=True)
+    promote.add_argument("--backup-bin", required=True)
+    promote.add_argument("--target-version", required=True)
+    promote.set_defaults(func=cmd_promote_internal_update)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -317,12 +332,20 @@ def build_parser() -> argparse.ArgumentParser:
     add_login_parser(sub)
     add_set_bin_parser(sub)
     add_set_app_bin_parser(sub)
+    add_internal_update_promotion_parser(sub)
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if sys.version_info < (3, 11):
+        print(
+            "codex-profile-switch: Python 3.11+ with tomllib is required "
+            "before any profile state mutation",
+            file=sys.stderr,
+        )
+        return 2
     try:
         args.func(args)
     except SwitchError as exc:

@@ -54,6 +54,33 @@ test-first execution, root-cause diagnosis, change review, completion proof,
 execution orchestration, architecture guidance, goal definition, and roadmap
 lifecycle.
 
+### Matt Methodology Contract
+
+DevFlow pins `mattpocock/skills` `v1.1.0` and may copy only these six
+project-local primitives when their capability is triggered:
+
+- `grilling`: decision resolution.
+- `tdd`: test-first execution.
+- `diagnosing-bugs`: root-cause diagnosis.
+- `code-review`: change review.
+- `codebase-design`: architecture alternatives and boundaries.
+- `domain-modeling`: domain concepts and invariants, only through the explicit
+  `domain-language-modeling` capability.
+
+DevFlow retains implementation planning, orchestration, completion proof, and
+all canonical writes. Do not invoke Matt skills that create their own end-to-end
+workflow, implementation queue, spec system, ticket system, or project setup.
+Project-local copies may apply only the checked-in deterministic adaptations
+that replace excluded upstream workflow handoffs with DevFlow/OpenSpec routes;
+vendored upstream bytes remain immutable provenance evidence. Missing or
+drifted required Matt resources fail closed; unrelated Matt skills never affect
+readiness.
+
+Stable capability mappings live in
+`dev/plugins/dev-flow/scripts/workflow_methodology.py`, and workflow-mode
+routing lives in `docs/routing.matrix.json`. Do not add project-selectable
+methodology variants.
+
 Until provider-state migration is explicitly approved and succeeds, the
 current mappings in Workflow Ownership and the project-local skill links remain
 the durable migration input. Do not interpret a missing `.dev-flow.json`, an
@@ -291,6 +318,27 @@ DevFlow workflow configuration needs refresh.
 - Ordinary skill-link refresh may use `activate_project_dependencies.py
   --refresh-project-skills`; legacy `.codex/skills` cleanup and conflict
   resolution require explicit approval.
+
+## Execution and Bounded Subagents
+
+Use `execute-task` for one approved ledger item at a time. Prefer test-first
+execution for business logic, bugs, refactors, and risky behavior.
+
+Delegate only when work is independently verifiable and materially benefits
+from parallelism. Before delegation, validate an Agent Task Contract containing
+Goal, Scope, Constraints, Verification, Evidence, and Human Gate.
+
+- Give every worker a unique ID and an explicit, disjoint write set.
+- Reject exact and parent/child path overlap across all active contracts.
+- The main agent owns OpenSpec, root control-plane files,
+  `.planning/devflow/**`, release metadata, generated `plugins/**`, integration,
+  and the final completion claim.
+- Workers stop on scope expansion, shared-file needs, dependency changes,
+  ambiguous deletion, failing production contracts, or new external effects.
+- The main agent reviews every worker diff and reruns integrated validation.
+
+Do not expand scope, add a dependency, or change a public contract without
+updating the canonical plan and approval boundary.
 
 ## Execution Rules
 
