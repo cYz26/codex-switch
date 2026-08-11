@@ -29,6 +29,10 @@ SELF_UPDATE_VERSION="${CODEX_SWITCH_SELF_UPDATE_VERSION:-${CODEX_SWITCH_VERSION:
 SELF_UPDATE_PROXY_URL="${CODEX_SWITCH_GITHUB_PROXY:-}"
 SKIP_SELF_UPDATE=0
 GLOBAL_ARGS=()
+SPLIT_KEEP_VERSION=0
+SPLIT_APP_PROFILE_OVERRIDE=0
+SPLIT_COMMAND_ARGS=()
+LAST_SWITCH_APP_ACTION=""
 
 usage() {
   cat <<'USAGE'
@@ -37,6 +41,7 @@ Usage:
 
 One-key commands:
   internal                 Auto-update internal CLI if needed, then switch.
+  split                    Use internal CLI with the official App.
   official                 Switch to the official profile after a dry-run plan.
   check-update [profile]   Read-only Codex CLI update check.
   update-internal          Install or update the internal Codex CLI.
@@ -45,7 +50,7 @@ One-key commands:
   version                  Print codex-switch version.
 
 Pass-through commands:
-  init | capture | switch | restore | status | list | doctor | repair-plugins | verify | shim-env
+  init | capture | switch | restore | status | list | doctor | repair-plugins | sync-shared | verify | shim-env
   login-internal | login-official
   login | set-bin | set-app-bin
   raw <codex_profile_switch.py args...>
@@ -59,7 +64,9 @@ Global options:
   --launch-agent-label <name>  LaunchAgent label.
   --skip-self-update           Do not sync installed codex-switch scripts.
 
-Switch options for internal/official:
+Switch options for internal/split/official:
+  --keep-version              Split only: skip codex-switch and internal updates.
+  --app-profile <profile>      Select a distinct App profile. Supported split: internal CLI + official App.
   --dry-run                    Only print the switch plan.
   --snapshot                   Use whole-file config snapshot mode.
   --shared-config-base <name>  Rebuild shared config from a stored profile.
@@ -80,6 +87,10 @@ Switch options for internal/official:
 
 Examples:
   codex-switch internal
+  codex-switch split
+  codex-switch split --keep-version
+  codex-switch internal --app-profile official
+  codex-switch sync-shared --dry-run
   codex-switch official --dry-run
   codex-switch check-update
   codex-switch update-internal --dry-run
@@ -102,6 +113,56 @@ truthy() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+normalize_split_command_args() {
+  local arg expects_value=0 passthrough=0
+  SPLIT_KEEP_VERSION=0
+  SPLIT_APP_PROFILE_OVERRIDE=0
+  SPLIT_COMMAND_ARGS=()
+  while (($#)); do
+    arg="$1"
+    shift
+    if [[ "$passthrough" == 1 ]]; then
+      SPLIT_COMMAND_ARGS+=("$arg")
+      continue
+    fi
+    if [[ "$expects_value" == 1 ]]; then
+      SPLIT_COMMAND_ARGS+=("$arg")
+      expects_value=0
+      continue
+    fi
+    if [[ "$expects_value" == 2 ]]; then
+      expects_value=0
+      continue
+    fi
+    case "$arg" in
+      --keep-version)
+        SPLIT_KEEP_VERSION=1
+        ;;
+      --app-profile)
+        SPLIT_APP_PROFILE_OVERRIDE=1
+        expects_value=2
+        ;;
+      --app-profile=*)
+        SPLIT_APP_PROFILE_OVERRIDE=1
+        ;;
+      --shared-config-base|--config-mode|--exec-smoke)
+        SPLIT_COMMAND_ARGS+=("$arg")
+        expects_value=1
+        ;;
+      --)
+        SPLIT_COMMAND_ARGS+=("$arg")
+        passthrough=1
+        ;;
+      *)
+        SPLIT_COMMAND_ARGS+=("$arg")
+        ;;
+    esac
+  done
+  if [[ "$SPLIT_KEEP_VERSION" == 1 ]]; then
+    SPLIT_COMMAND_ARGS+=(--skip-update-check)
+  fi
 }
 
 python_candidate_path() {
@@ -838,7 +899,7 @@ sync_self_update() {
 
 command_skips_self_update() {
   case "$1" in
-    -h|--help|help|version|--version|-v|install|shim-env) return 0 ;;
+    -h|--help|help|version|--version|-v|install|shim-env|sync-shared) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -887,9 +948,9 @@ maybe_self_update() {
 run_switcher() {
   resolve_python_bin
   if ((${#GLOBAL_ARGS[@]})); then
-    "$PYTHON_BIN" -B "$SWITCH_PY" "${GLOBAL_ARGS[@]}" "$@"
+    "$PYTHON_BIN" -u -B "$SWITCH_PY" "${GLOBAL_ARGS[@]}" "$@"
   else
-    "$PYTHON_BIN" -B "$SWITCH_PY" "$@"
+    "$PYTHON_BIN" -u -B "$SWITCH_PY" "$@"
   fi
 }
 
@@ -927,13 +988,57 @@ run_switch_step() {
   fi
 }
 
+run_switch_apply_step() {
+  local profile="$1"
+  shift
+  local action_capture=""
+  local step_status=0
+  LAST_SWITCH_APP_ACTION=""
+  if ! action_capture="$(
+    mktemp "${TMPDIR:-/tmp}/codex-switch-app-action.XXXXXX"
+  )"; then
+    echo "codex-switch: unable to create App-action capture" >&2
+    return 1
+  fi
+  if ! chmod 600 "$action_capture"; then
+    rm -f -- "$action_capture"
+    echo "codex-switch: unable to protect App-action capture" >&2
+    return 1
+  fi
+  if run_switch_step "$profile" apply "$@" | awk \
+    -v action_capture="$action_capture" '
+      /^App action: (preserve|rebind)$/ {
+        print $3 > action_capture
+        close(action_capture)
+      }
+      {
+        print
+        fflush()
+      }
+    '; then
+    step_status=0
+  else
+    step_status=$?
+  fi
+  if [[ -s "$action_capture" ]]; then
+    LAST_SWITCH_APP_ACTION="$(sed -n '1p' "$action_capture")"
+  fi
+  if ! rm -f -- "$action_capture"; then
+    echo "codex-switch: warning: failed to retire App-action capture" >&2
+  fi
+  return "$step_status"
+}
+
 print_active_result_summary() {
   resolve_python_bin
-  "$PYTHON_BIN" -B - "$STORE_DIR" <<'PY' || true
+  "$PYTHON_BIN" -B - "$STORE_DIR" "$SCRIPT_DIR" <<'PY' || true
 import json
 import os
 import sys
 from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+from codex_switch_selection import active_profile_selection
 
 store = Path(os.path.expandvars(sys.argv[1])).expanduser()
 active_path = store / "active.json"
@@ -946,7 +1051,17 @@ except Exception as exc:
     print(f"Active profile: <unavailable: {exc}>")
     raise SystemExit(0)
 
-print(f"Active profile: {active.get('profile', '<unknown>')}")
+try:
+    if not isinstance(active, dict):
+        raise ValueError("active record must be an object")
+    selection = active_profile_selection(active)
+except Exception as exc:
+    print(f"Active profile: <invalid: {exc}>")
+    raise SystemExit(0)
+
+print(f"Active profile: {selection.cli_profile}")
+print(f"CLI profile: {selection.cli_profile}")
+print(f"App profile: {selection.app_profile}")
 fields = (
     ("Backup", "backup_dir"),
     ("Shim", "shim_path"),
@@ -968,8 +1083,13 @@ print_final_result() {
   local doctor_status="$5"
   local status_status="$6"
   local failed_step="${7:-}"
+  local app_profile_override="${8:-}"
   local command_alias
+  local app_profile_suffix=""
   command_alias="$(profile_command_alias "$profile")"
+  if [[ -n "$app_profile_override" ]]; then
+    app_profile_suffix=" --app-profile $app_profile_override"
+  fi
 
   print_section "Final result"
   echo "Outcome: $outcome"
@@ -1008,7 +1128,10 @@ print_final_result() {
   echo "Next steps:"
   case "$outcome" in
     SUCCESS)
-      echo "- Restart ChatGPT if it was already running."
+      if [[ "$LAST_SWITCH_APP_ACTION" == "rebind" ]] \
+        || [[ -z "$LAST_SWITCH_APP_ACTION" && -z "$app_profile_override" ]]; then
+        echo "- Restart ChatGPT if it was already running."
+      fi
       echo "- Verify active state: codex-switch status"
       ;;
     "ACTION REQUIRED")
@@ -1031,11 +1154,11 @@ print_final_result() {
       fi
       ;;
     "DRY RUN OK")
-      echo "- Apply the switch: codex-switch $command_alias"
+      echo "- Apply the switch: codex-switch $command_alias$app_profile_suffix"
       ;;
     *)
       echo "- Fix the error printed above."
-      echo "- Preview again: codex-switch $command_alias --dry-run"
+      echo "- Preview again: codex-switch $command_alias$app_profile_suffix --dry-run"
       ;;
   esac
 }
@@ -1055,6 +1178,7 @@ switch_profile() {
   local exec_smoke=""
   local update_check=1
   local auto_login=1
+  local app_profile_override=""
   local switch_args=()
 
   while (($#)); do
@@ -1101,16 +1225,23 @@ switch_profile() {
       --skip-update-check|--no-update-check)
         update_check=0
         ;;
+      --keep-version)
+        echo "--keep-version is only supported with codex-switch split." >&2
+        return 2
+        ;;
       --skip-login|--no-login)
         auto_login=0
         ;;
       --snapshot)
         switch_args+=(--config-mode snapshot)
         ;;
-      --shared-config-base|--config-mode)
+      --shared-config-base|--config-mode|--app-profile)
         if [[ $# -lt 2 ]]; then
           echo "$1 requires a value" >&2
           exit 2
+        fi
+        if [[ "$1" == "--app-profile" ]]; then
+          app_profile_override="$2"
         fi
         switch_args+=("$1" "$2")
         shift
@@ -1134,22 +1265,22 @@ switch_profile() {
     plan_status=0
   else
     plan_status=$?
-    print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "dry-run plan"
+    print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "dry-run plan" "$app_profile_override"
     return "$plan_status"
   fi
   if [[ "$dry_run" == 1 ]]; then
-    print_final_result "$profile" "DRY RUN OK" "skipped" "not-run" "not-run" "not-run"
+    print_final_result "$profile" "DRY RUN OK" "skipped" "not-run" "not-run" "not-run" "" "$app_profile_override"
     return
   fi
 
   if [[ "$update_check" == 1 ]]; then
     print_section "Update check"
     local update_status=0
-    if run_update_check_for_switch "$profile"; then
+    if run_update_check_for_switch "$profile" "$app_profile_override"; then
       update_status=0
     else
       update_status=$?
-      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "update check"
+      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "update check" "$app_profile_override"
       return "$update_status"
     fi
   else
@@ -1164,7 +1295,7 @@ switch_profile() {
       login_status=0
     else
       login_status=$?
-      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "profile preparation"
+      print_final_result "$profile" "FAILED" "skipped" "not-run" "not-run" "not-run" "profile preparation" "$app_profile_override"
       return "$login_status"
     fi
   elif [[ "$profile" == "openai-official" ]]; then
@@ -1174,11 +1305,12 @@ switch_profile() {
 
   print_section "Switch"
   local switch_status=0
-  if run_switch_step "$profile" apply ${switch_args[@]+"${switch_args[@]}"}; then
+  if run_switch_apply_step "$profile" \
+    ${switch_args[@]+"${switch_args[@]}"}; then
     switch_status=0
   else
     switch_status=$?
-    print_final_result "$profile" "FAILED" "$switch_status" "not-run" "not-run" "not-run" "switch"
+    print_final_result "$profile" "FAILED" "$switch_status" "not-run" "not-run" "not-run" "switch" "$app_profile_override"
     return "$switch_status"
   fi
 
@@ -1190,10 +1322,14 @@ switch_profile() {
     else
       repair_status=$?
       if [[ "$profile" != "internal" || "$INTERNAL_AUTO_UPDATED" != 1 ]]; then
-        print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "not-run" "plugin repair"
+        print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "not-run" "plugin repair" "$app_profile_override"
         return "$repair_status"
       fi
-      echo "Plugin repair failed; running the mandatory internal update compatibility verification before returning." >&2
+      if [[ "$INTERNAL_AUTO_UPDATE_SCOPE" == "cli-only" ]]; then
+        echo "Plugin repair failed; running the mandatory internal CLI verification before returning." >&2
+      else
+        echo "Plugin repair failed; running the mandatory internal update compatibility verification before returning." >&2
+      fi
     fi
   else
     print_section "Plugin repair"
@@ -1211,14 +1347,23 @@ switch_profile() {
   if [[ "$run_verify" == 1 ]]; then
     print_section "Verification"
     if [[ "$auto_update_forced_verify" == 1 ]]; then
-      echo "Verification: --skip-verify ignored because an internal update requires compatibility verification."
+      if [[ "$INTERNAL_AUTO_UPDATE_SCOPE" == "cli-only" ]]; then
+        echo "Verification: --skip-verify ignored because an internal CLI update requires runtime verification."
+      else
+        echo "Verification: --skip-verify ignored because an internal update requires compatibility verification."
+      fi
     fi
     local verify_args=("$profile")
     if [[ "$app_server_smoke" == 1 ]] \
-      || [[ "$profile" == "internal" && "$INTERNAL_AUTO_UPDATED" == 1 ]]; then
+      || [[ "$profile" == "internal" \
+        && "$INTERNAL_AUTO_UPDATED" == 1 \
+        && "$INTERNAL_AUTO_UPDATE_SCOPE" != "cli-only" ]]; then
       verify_args+=(--app-server-smoke)
     fi
-    if [[ "$runtime_smoke" == 1 ]]; then
+    if [[ "$runtime_smoke" == 1 ]] \
+      || [[ "$profile" == "internal" \
+        && "$INTERNAL_AUTO_UPDATED" == 1 \
+        && "$INTERNAL_AUTO_UPDATE_SCOPE" == "cli-only" ]]; then
       verify_args+=(--runtime-smoke)
     fi
     if [[ -n "$exec_smoke" ]]; then
@@ -1235,13 +1380,15 @@ switch_profile() {
       if [[ "$profile" == "internal" && "$INTERNAL_AUTO_UPDATED" == 1 ]]; then
         if [[ "$repair_status" == "passed" || "$repair_status" == "skipped" ]]; then
           echo "Auto-update: completed. Internal Codex is now ${INTERNAL_UPDATE_AFTER_VERSION:-<unavailable>}."
+        elif [[ "$INTERNAL_AUTO_UPDATE_SCOPE" == "cli-only" ]]; then
+          echo "Auto-update: CLI verification passed; plugin repair still requires action."
         else
           echo "Auto-update: compatibility verification passed; plugin repair still requires action."
         fi
       fi
     else
       verify_status=$?
-      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "not-run" "not-run" "verification"
+      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "not-run" "not-run" "verification" "$app_profile_override"
       return "$verify_status"
     fi
   else
@@ -1250,7 +1397,7 @@ switch_profile() {
   fi
 
   if [[ "$repair_status" != "passed" && "$repair_status" != "skipped" ]]; then
-    print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "not-run" "not-run" "plugin repair"
+    print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "not-run" "not-run" "plugin repair" "$app_profile_override"
     return "$repair_status"
   fi
 
@@ -1277,11 +1424,11 @@ switch_profile() {
   if [[ "$verify_status" == "passed" || "$verify_status" == "skipped" ]] \
     && [[ "$doctor_status" == "passed" || "$doctor_status" == "skipped" ]] \
     && [[ "$status_status" == "printed" || "$status_status" == "skipped" ]]; then
-    print_final_result "$profile" "SUCCESS" "succeeded" "$verify_status" "$doctor_status" "$status_status"
+    print_final_result "$profile" "SUCCESS" "succeeded" "$verify_status" "$doctor_status" "$status_status" "" "$app_profile_override"
     return 0
   fi
 
-  print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "$doctor_status" "$status_status"
+  print_final_result "$profile" "ACTION REQUIRED" "succeeded" "$verify_status" "$doctor_status" "$status_status" "" "$app_profile_override"
   if [[ "$verify_status" != "passed" && "$verify_status" != "skipped" ]]; then
     return "$verify_status"
   fi
@@ -1523,7 +1670,7 @@ run_env_setup() {
   fi
   if [[ "${1:-}" == "update-internal" ]]; then
     shift
-    run_update_internal_env_setup "$env_setup" "$@"
+    run_update_internal_env_setup "$env_setup" full "$@"
     return
   fi
   "$env_setup" "$@"
@@ -1776,6 +1923,19 @@ print_internal_update_promotion_dry_run() {
   local bound_bin="$1"
   local candidate_bin="$2"
   local backup_bin="$3"
+  local promotion_scope="${4:-full}"
+  if [[ "$promotion_scope" == "cli-only" ]]; then
+    echo "[DRY-RUN] CLI-only checks:"
+    echo "[DRY-RUN]   Exact staged candidate version and SHA-256"
+    echo "[DRY-RUN] Artifact set:"
+    echo "[DRY-RUN]   Internal manifest only"
+    echo "[DRY-RUN] Promotion order:"
+    echo "[DRY-RUN]   $bound_bin -> $backup_bin"
+    echo "[DRY-RUN]   $candidate_bin -> $bound_bin"
+    echo "[DRY-RUN]   Digest-bound internal manifest"
+    echo "[DRY-RUN] Internal App readiness remains unverified"
+    return
+  fi
   echo "[DRY-RUN] Parity checks:"
   echo "[DRY-RUN]   Capability receipt: staged candidate"
   echo "[DRY-RUN]   Parity receipt: staged candidate"
@@ -1916,12 +2076,21 @@ verify_internal_update_target() {
 run_update_internal_env_setup() {
   local env_setup="$1"
   shift
+  local promotion_scope="$1"
+  shift
   local helper_status target_version codex_bin
   local profile_bin="" explicit_version=0
   local profile_manifest=""
   local requested_install_dir=""
   local candidate_dir="" candidate_bin="" backup_bin=""
   local helper_args=()
+  case "$promotion_scope" in
+    full|cli-only) ;;
+    *)
+      echo "update-internal: invalid promotion scope: $promotion_scope" >&2
+      return 2
+      ;;
+  esac
   if profile_manifest="$(profile_manifest_path internal)"; then
     true
   else
@@ -2035,15 +2204,21 @@ run_update_internal_env_setup() {
     print_internal_update_promotion_dry_run \
       "$codex_bin" \
       "$candidate_bin" \
-      "$backup_bin"
+      "$backup_bin" \
+      "$promotion_scope"
     return 0
   fi
-  run_switcher \
-    promote-internal-update \
-    --bound-bin "$codex_bin" \
-    --candidate-bin "$candidate_bin" \
-    --backup-bin "$backup_bin" \
+  local promotion_args=(
+    promote-internal-update
+    --bound-bin "$codex_bin"
+    --candidate-bin "$candidate_bin"
+    --backup-bin "$backup_bin"
     --target-version "$target_version"
+  )
+  if [[ "$promotion_scope" == "cli-only" ]]; then
+    promotion_args+=(--cli-only)
+  fi
+  run_switcher "${promotion_args[@]}"
 }
 
 print_version() {
@@ -2063,6 +2238,7 @@ INTERNAL_UPDATE_NEEDED=0
 INTERNAL_UPDATE_UNCERTAIN=0
 INTERNAL_UPDATE_CHECK_FATAL=0
 INTERNAL_AUTO_UPDATED=0
+INTERNAL_AUTO_UPDATE_SCOPE=""
 INTERNAL_UPDATE_TARGET_VERSION=""
 INTERNAL_UPDATE_DECISION=""
 INTERNAL_UPDATE_DECISION_REASON=""
@@ -2422,6 +2598,12 @@ skip_login_from_env() {
 
 run_update_check_for_switch() {
   local profile="$1"
+  local app_profile="${2:-}"
+  if [[ -z "$app_profile" ]]; then
+    app_profile="$profile"
+  else
+    app_profile="$(normalize_profile "$app_profile")"
+  fi
   if skip_update_check_from_env; then
     echo "Update check: skipped by CODEX_SWITCH_SKIP_UPDATE_CHECK."
     return
@@ -2445,7 +2627,9 @@ run_update_check_for_switch() {
     fi
     if [[ "$INTERNAL_UPDATE_NEEDED" == 1 ]]; then
       local update_status=0
-      if run_internal_auto_update "$INTERNAL_PROFILE_CODEX_BIN"; then
+      if run_internal_auto_update \
+        "$INTERNAL_PROFILE_CODEX_BIN" \
+        "$app_profile"; then
         update_status=0
       else
         update_status=$?
@@ -2465,7 +2649,12 @@ run_update_check_for_switch() {
 
 run_internal_auto_update() {
   local codex_bin="$1"
+  local app_profile="${2:-internal}"
+  local promotion_scope="full"
   local env_setup helper_status
+  if [[ "$app_profile" == "openai-official" ]]; then
+    promotion_scope="cli-only"
+  fi
   if env_setup="$(env_setup_command)"; then
     true
   else
@@ -2479,9 +2668,14 @@ run_internal_auto_update() {
   fi
 
   echo "Auto-update: internal Codex update detected."
-  echo "Auto-update: running staged parity-safe internal promotion."
+  if [[ "$promotion_scope" == "cli-only" ]]; then
+    echo "Auto-update: running staged CLI-only internal promotion."
+  else
+    echo "Auto-update: running staged parity-safe internal promotion."
+  fi
   if run_update_internal_env_setup \
     "$env_setup" \
+    "$promotion_scope" \
     --version "$INTERNAL_UPDATE_TARGET_VERSION"; then
     helper_status=0
   else
@@ -2490,8 +2684,13 @@ run_internal_auto_update() {
     return "$helper_status"
   fi
   INTERNAL_AUTO_UPDATED=1
+  INTERNAL_AUTO_UPDATE_SCOPE="$promotion_scope"
   INTERNAL_UPDATE_AFTER_VERSION="$INTERNAL_UPDATE_TARGET_VERSION"
-  echo "Auto-update: installed $INTERNAL_UPDATE_AFTER_VERSION; parity handshake passed and post-switch verification is required before completion."
+  if [[ "$promotion_scope" == "cli-only" ]]; then
+    echo "Auto-update: installed $INTERNAL_UPDATE_AFTER_VERSION; CLI promotion passed and post-switch runtime verification is required before completion."
+  else
+    echo "Auto-update: installed $INTERNAL_UPDATE_AFTER_VERSION; parity handshake passed and post-switch verification is required before completion."
+  fi
 }
 
 install_wrapper() {
@@ -2542,8 +2741,19 @@ if [[ -z "$cmd" ]]; then
 fi
 shift
 
+if [[ "$cmd" == "split" ]]; then
+  normalize_split_command_args "$@"
+  if [[ "$SPLIT_APP_PROFILE_OVERRIDE" == 1 ]]; then
+    echo "codex-switch split already selects the official App; do not pass --app-profile." >&2
+    exit 2
+  fi
+  if [[ "$SPLIT_KEEP_VERSION" == 1 ]]; then
+    SKIP_SELF_UPDATE=1
+  fi
+fi
+
 case "$cmd" in
-  internal|i|official|openai|openai-official|o)
+  internal|i|split|official|openai|openai-official|o)
     case "${1:-}" in
       -h|--help|help) SKIP_SELF_UPDATE=1 ;;
     esac
@@ -2554,6 +2764,10 @@ maybe_self_update "$cmd"
 case "$cmd" in
   internal|i)
     switch_profile internal "$@"
+    ;;
+  split)
+    switch_profile internal --app-profile official \
+      ${SPLIT_COMMAND_ARGS[@]+"${SPLIT_COMMAND_ARGS[@]}"}
     ;;
   official|openai|openai-official|o)
     switch_profile openai-official "$@"
@@ -2588,7 +2802,7 @@ case "$cmd" in
   login-official)
     run_switcher login openai-official "$@"
     ;;
-  init|capture|switch|restore|status|list|doctor|repair-plugins|verify|shim-env|login|set-bin|set-app-bin)
+  init|capture|switch|restore|status|list|doctor|repair-plugins|sync-shared|verify|shim-env|login|set-bin|set-app-bin)
     run_switcher "$cmd" "$@"
     ;;
   raw)

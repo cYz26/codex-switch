@@ -1,6 +1,6 @@
 ---
 name: codex-switch
-description: Use when the user wants Codex to initialize, inspect, log in to, or switch local Codex profiles, official/internal auth, CODEX_HOME snapshots, profile-specific codex CLI binaries, or Codex Desktop CODEX_CLI_PATH bindings without manually running codex-switch commands.
+description: Use when managing Codex official/internal profiles, auth snapshots, CLI/App binary bindings, internal updates, or the supported internal-CLI/official-App split.
 metadata:
   short-description: Manage Codex profile switching
 ---
@@ -24,6 +24,9 @@ and installed as a single public CLI: `codex-switch`.
 It also owns internal Codex CLI checks and updates. The `internal` one-key
 command automatically runs `codex-switch update-internal` when it detects that
 the internal profile's bound CLI is older than the latest internal release.
+The `split` preset performs the same ordered detection but promotes the selected
+binary as a digest-bound CLI-only generation; it does not claim internal App
+compatibility. Direct `update-internal` retains the full Desktop-parity path.
 Normal official/internal update checks additionally show a non-blocking
 comparison with the latest stable `openai/codex` release. That advisory never
 selects an internal install target, and prereleases are not the default
@@ -36,6 +39,7 @@ Use for requests like:
 - "initialize Codex profile switching"
 - "switch to OpenAI official profile"
 - "switch back to internal profile"
+- "use the internal CLI while ChatGPT uses the official Codex"
 - "check which Codex profile, CLI, and app binary I am using"
 - "bind openai-official to this codex binary"
 - "run codex login in the official profile"
@@ -51,6 +55,10 @@ Prefer the wrapper:
 ```bash
 scripts/codex-switch status
 scripts/codex-switch internal --dry-run
+scripts/codex-switch split
+scripts/codex-switch split --keep-version --dry-run
+scripts/codex-switch internal --app-profile official
+scripts/codex-switch sync-shared --dry-run
 scripts/codex-switch official
 scripts/codex-switch check-update
 scripts/codex-switch update-internal --dry-run
@@ -62,6 +70,10 @@ been installed into PATH, use:
 ```bash
 codex-switch status
 codex-switch internal
+codex-switch split
+codex-switch split --keep-version
+codex-switch internal --app-profile official
+codex-switch sync-shared --dry-run
 codex-switch official
 codex-switch update-internal
 ```
@@ -134,6 +146,63 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
    profile config does not break newer Codex login. Use `--skip-login` for
    non-interactive scripts. Use `--skip-update-check` when both update probes
    and the upstream stable advisory should be omitted.
+   For the supported independent mode, run `scripts/codex-switch split`, the
+   concise preset for
+   `scripts/codex-switch internal --app-profile official`. Normal `split`
+   retains codex-switch self-update and internal update detection. Use
+   `split --keep-version` when a controlled activation must retain both current
+   versions; it skips no repair, verification, App-effect, or CAS check. The
+   preview reports `App action: preserve` when the active identity,
+   LaunchAgent, GUI environment, and running owner already match the canonical
+   official binding; apply then leaves the App, official Home, and Desktop
+   global state untouched while synchronizing the internal CLI side. Only
+   `App action: rebind` requires fully quitting ChatGPT/Codex App and keeping it
+   closed; running or unprovable App/app-server state then fails before backup.
+   Apply reports counted allowlisted support progress. The fixed preset rejects
+   `--app-profile`. In split mode, Plugin preparation and runtime/exec
+   verification remain on `internal`, while Desktop observation uses
+   `openai-official`; internal App parity is reported as not applicable. If an
+   ordered internal update is selected, promotion commits only the stable CLI
+   binary plus its digest/version manifest generation and then forces bounded
+   CLI runtime smoke. It neither rewrites Desktop/parity artifacts nor requires
+   the official App to exit. CLI-only promotion and final runtime smoke validate
+   the same managed shell generation: promotion probes a private freshly
+   rendered shim before commit, and final smoke uses the actual store shim.
+   Executable digests use a stable streaming read with an independent 2 GiB
+   safety bound instead of the 16 MiB config/receipt reader. Apply keeps both the
+   Python producer and action filter unbuffered. Omitting `--app-profile` from
+   the explicit profile command preserves synchronized behavior and the full
+   internal-App parity
+   path. Successful `App action: preserve` output has no App restart step;
+   `rebind` retains the restart guidance.
+   In split mode, the next functional managed internal CLI invocation also
+   reconciles the official App's Plugin/Skill desired generation and proves an
+   independent internal cache before backend execution. It flushes a
+   source-attestation line to stderr first and, when target materialization is
+   needed, a second line with the target profile and Plugin count before the
+   target catalog/backend call. Help/version remain read-only, and an unchanged
+   committed generation makes no target materializer or network call. For
+   `portable_exact`, treat a catalog record's version as installed target state:
+   authorize an update only from a safely resolved source whose selector
+   manifest and tree exactly match the desired identity, then re-attest the
+   independent target artifact. Let the native backend own whether prior
+   installed versions remain, are replaced, or are removed; `codex-switch`
+   itself never directly copies, links, deletes, garbage-collects, or recreates
+   Plugin cache artifacts. Report safe
+   manifest/tree drift as `shared_configuration.materialization.source_mismatch`
+   and reserve `unsafe_cache` for unsafe structure. For `backend_managed`,
+   attest the desired official source independently from the compatible
+   internal target, reconcile every pending selector through the internal
+   backend, then use one fresh batch catalog to require a unique installed
+   target key and attest that target's manifest/tree/Skill roots. Keep revision
+   cache keys distinct from manifest versions. Report valid-catalog target
+   proof failures as `shared_configuration.materialization.unverified_target`
+   and catalog command/schema failures as `unverified_catalog`. This
+   internal-CLI reconciliation may run while the official App remains open and
+   does not mutate it. After a CLI-originated
+   change is captured, quit the official App and use
+   `scripts/codex-switch sync-shared` to apply its pending App projection; use
+   `--dry-run` for a zero-write preview.
 3. For login, run `scripts/codex-switch login-official` or
    `scripts/codex-switch login-internal`.
 4. For CLI binding, run `scripts/codex-switch set-bin <profile> <absolute-path>`.
@@ -145,6 +214,10 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
    profile's relationship to the latest stable `openai/codex` release.
 
 ## Internal Parity Contract
+
+Apply this contract only when the App owner is `internal`. For
+internal-CLI/official-App split mode, keep CLI/config/Plugin checks active but
+do not collect or repair internal App parity.
 
 - Resolve the official parity reference from the canonical Runtime Binding for
   the current verified ChatGPT Desktop bundled CLI. Do not substitute PATH,
@@ -175,6 +248,11 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
   handshake passes. Failure restores last-known-good without success or restart
   output; durable success retires the backup before printing one
   `Restart required` notice. Use `--dry-run` for a zero-mutation plan.
+- Treat split auto-update as a narrower CLI-only promotion. Require an exact
+  version and SHA-256-bound generation, leave existing Desktop evidence
+  untouched, and mark internal App readiness unverified. A later request to use
+  internal as the App owner must fail before mutation until a full rebind
+  succeeds and clears that marker.
 - Do not infer live Desktop acceptance from source tests, update success, or
   rebind success. Stop for explicit authorization before any acceptance that
   installs/rebinds live state, fully quits and reopens ChatGPT, creates a real
@@ -186,6 +264,29 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
 - Treat `auth.json` as a secret. Never print its contents.
 - Do not modify the ChatGPT Desktop app bundle; bind to its verified bundled
   CLI path instead.
+- Treat `split` / `internal --app-profile official` as one transactional
+  selection. Do not emulate it with `--skip-app-cli` or a later `set-app-bin`,
+  do not pass `--app-profile` to the fixed `split` preset, and do not combine
+  the explicit `--app-profile` form with `--skip-app-cli`.
+- In that split, the shared capability layer owns only the generationed,
+  secret-screened `marketplaces.*`, `plugins.*`, and `skills.config` desired
+  state. Keep both plugin caches as independent real directories; never link
+  the two caches.
+- Generic Home support shares exactly `AGENTS.md`, `prompts/`, `rules/`, and
+  `skills/`. Every other name is ignored and an existing unknown target is
+  preserved.
+- Personal standalone Skills may use the official personal Skills root through
+  one validated internal link. Plugin-contributed Skills stay in each target
+  cache, and project-local `.agents/skills` stay worktree-owned.
+- Treat both `pending-materialization.json` and `pending-commit.json` as private
+  terminal recovery evidence. Read-only commands report them; only a later
+  locked functional apply may selectively recover them before new planning.
+  External shared-Plugin materializer commands inherit the active store-lock
+  lease, so an orphan backend blocks recovery until it has exited.
+- Treat models/providers/auth, MCP/apps/connectors, permissions/trust,
+  UI/feature/memory preferences, automations, sessions/history/databases, and
+  derived runtime state as profile-local or deferred until a separate
+  field-level compatibility and secret review approves them.
 - Do not clear live auth when the target profile lacks `auth.json` unless the
   user explicitly asks for `--clear-missing-auth`.
 - For `official`, prefer the one-key command's first-run auto-login; use
@@ -194,12 +295,14 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
 - Do not embed profile-specific model/provider/auth keys into live
   `~/.codex/config.toml`. Switching writes the selected profile layer to
   `<profile>.config.toml` and keeps live `config.toml` as a shared base.
-- Preserve non-auth workstation config across profile switches, including
-  plugin marketplaces, enabled plugins, skill config, hook trust state,
-  projects, MCP servers, UI preferences, and feature flags.
-- For the internal Desktop wrapper at
-  `~/.codex-switch/bin/codex-internal-app`, switching should refresh the
-  wrapper from the current codex-switch scripts so its app-home config is
+- Outside the supported split, the legacy same-profile switch-time merge
+  preserves non-auth workstation config such as hook trust, projects, MCP
+  servers, UI preferences, and feature flags. That legacy preservation is not
+  canonical App/CLI shared ownership and `sync-shared` must not copy those
+  surfaces.
+- When the App profile itself is `internal`, switching should refresh the
+  legacy Desktop wrapper at `~/.codex-switch/bin/codex-internal-app` from the
+  current codex-switch scripts so its app-home config is
   rebuilt from shared `config.toml` plus `internal.config.toml`, not copied from
   a stale profile snapshot. Before each Desktop launch, the wrapper should
   write app-home non-auth shared config changes back to shared `config.toml` so

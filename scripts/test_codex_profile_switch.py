@@ -8,12 +8,14 @@ import inspect
 import json
 import os
 import plistlib
+import select
 import shlex
 import shutil
 import tarfile
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections import Counter
 from contextlib import redirect_stdout
@@ -24,6 +26,7 @@ from pathlib import Path
 import codex_switch_bindings as bindings_module
 import codex_switch_doctor as doctor_module
 import codex_switch_status as status_module
+import codex_switch_switching as switching_module
 import codex_switch_verify as verify_module
 try:
     import release_auto
@@ -204,6 +207,8 @@ def write_required_release_modules(scripts_dir: Path) -> None:
         "codex_switch_runtime_binding.py",
         "codex_switch_app_proxy.py",
         "codex_switch_home_sync.py",
+        "codex_switch_selection.py",
+        "codex_switch_shared_configuration.py",
     ):
         (scripts_dir / name).write_text("VALUE = 1\n")
 
@@ -642,11 +647,23 @@ def write_fake_internal_update_promotion_driver(path: Path) -> None:
         "real_switcher = Path(os.environ['CODEX_SWITCH_TEST_REAL_SWITCHER'])\n"
         "if 'promote-internal-update' not in argv:\n"
         "    if '--store-dir' in argv and 'verify' in argv and 'internal' in argv:\n"
+        "        verify_log = os.environ.get('CODEX_SWITCH_TEST_VERIFY_ARGS_LOG')\n"
+        "        if verify_log:\n"
+        "            Path(verify_log).write_text(' '.join(argv) + '\\n')\n"
         "        store = Path(argv[argv.index('--store-dir') + 1])\n"
         "        marker = store / '.fake-internal-update-parity-verified'\n"
+        "        cli_marker = store / '.fake-internal-update-cli-verified'\n"
+        "        if cli_marker.is_file():\n"
+        "            if '--runtime-smoke' in argv:\n"
+        "                print('Runtime smoke: passed')\n"
+        "            print('Internal App parity: not applicable (App profile: openai-official)')\n"
+        "            print('Verification passed for internal')\n"
+        "            raise SystemExit(0)\n"
         "        if marker.is_file():\n"
         "            if '--app-server-smoke' in argv:\n"
         "                print('App-server smoke: passed')\n"
+        "            if '--runtime-smoke' in argv:\n"
+        "                print('Runtime smoke: passed')\n"
         "            print('Parity health: healthy')\n"
         "            print('Verification passed for internal')\n"
         "            raise SystemExit(0)\n"
@@ -659,6 +676,9 @@ def write_fake_internal_update_promotion_driver(path: Path) -> None:
         "        delegate_python, '-B', str(real_switcher), *argv\n"
         "    ]))\n"
         "\n"
+        "promotion_log = os.environ.get('CODEX_SWITCH_TEST_PROMOTION_ARGS_LOG')\n"
+        "if promotion_log:\n"
+        "    Path(promotion_log).write_text(' '.join(argv) + '\\n')\n"
         "sys.path.insert(0, str(real_switcher.parent))\n"
         "from codex_switch_update_policy import extract_semantic_version\n"
         "from codex_switch_verify import run_app_server_smoke\n"
@@ -670,6 +690,7 @@ def write_fake_internal_update_promotion_driver(path: Path) -> None:
         "bound = Path(option('--bound-bin'))\n"
         "candidate = Path(option('--candidate-bin'))\n"
         "target_version = option('--target-version')\n"
+        "cli_only = '--cli-only' in argv\n"
         "probe = subprocess.run(\n"
         "    [str(candidate), '--version'],\n"
         "    check=False,\n"
@@ -695,28 +716,37 @@ def write_fake_internal_update_promotion_driver(path: Path) -> None:
         "    )\n"
         "    raise SystemExit(1)\n"
         "store = Path(option('--store-dir'))\n"
-        "manifest = json.loads(\n"
-        "    (store / 'profiles' / 'internal' / 'manifest.json').read_text()\n"
-        ")\n"
-        "internal_home = Path(\n"
-        "    manifest.get('codex_home') or store / 'homes' / 'internal'\n"
-        ")\n"
-        "code, output = run_app_server_smoke(str(candidate), internal_home)\n"
-        "if code != 0:\n"
-        "    print(\n"
-        "        f'update-internal: app-server smoke failed (exit {code}): {output}',\n"
-        "        file=sys.stderr,\n"
+        "if not cli_only:\n"
+        "    manifest = json.loads(\n"
+        "        (store / 'profiles' / 'internal' / 'manifest.json').read_text()\n"
         "    )\n"
-        "    raise SystemExit(code if 0 < code < 256 else 1)\n"
+        "    internal_home = Path(\n"
+        "        manifest.get('codex_home') or store / 'homes' / 'internal'\n"
+        "    )\n"
+        "    code, output = run_app_server_smoke(str(candidate), internal_home)\n"
+        "    if code != 0:\n"
+        "        print(\n"
+        "            f'update-internal: app-server smoke failed (exit {code}): {output}',\n"
+        "            file=sys.stderr,\n"
+        "        )\n"
+        "        raise SystemExit(code if 0 < code < 256 else 1)\n"
         "temporary = bound.with_name(f'.{bound.name}.profile-update-{os.getpid()}')\n"
         "shutil.copy2(candidate, temporary)\n"
         "os.replace(temporary, bound)\n"
-        "(store / '.fake-internal-update-parity-verified').write_text(\n"
+        "marker_name = (\n"
+        "    '.fake-internal-update-cli-verified'\n"
+        "    if cli_only\n"
+        "    else '.fake-internal-update-parity-verified'\n"
+        ")\n"
+        "(store / marker_name).write_text(\n"
         "    target_version + '\\n'\n"
         ")\n"
         "print(f'update-internal: verified installed version {target_version}.')\n"
-        "print('App-server smoke: passed')\n"
-        "print('update-internal: capability and parity receipts verified.')\n",
+        "if cli_only:\n"
+        "    print('update-internal: CLI generation verified; internal App readiness is unverified.')\n"
+        "else:\n"
+        "    print('App-server smoke: passed')\n"
+        "    print('update-internal: capability and parity receipts verified.')\n",
     )
 
 
@@ -764,6 +794,18 @@ def write_fake_capability_codex(path: Path) -> None:
 
 
 class CodexProfileSwitchTests(unittest.TestCase):
+    def test_switch_help_exposes_explicit_app_profile_selection(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "switch", "--help"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("--app-profile", result.stdout)
+
     def make_workspace(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp_dir = tempfile.TemporaryDirectory()
         root = Path(temp_dir.name)
@@ -836,7 +878,10 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 mock.patch.object(
                     module,
                     "print_active_profile_status",
-                    return_value="internal",
+                    return_value=SimpleNamespace(
+                        cli_profile="internal",
+                        app_profile="internal",
+                    ),
                 ),
                 mock.patch.object(module, "print_shell_codex_status"),
                 mock.patch.object(module, "print_app_codex_status"),
@@ -859,6 +904,11 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 mock.patch.object(
                     module,
                     "active_runtime_binding_for_observation",
+                    return_value=SimpleNamespace(profile="internal"),
+                ),
+                mock.patch.object(
+                    module,
+                    "active_cli_runtime_binding_for_parity",
                     return_value=SimpleNamespace(profile="internal"),
                 ),
                 mock.patch.object(
@@ -1297,6 +1347,46 @@ class CodexProfileSwitchTests(unittest.TestCase):
         env.pop("CODEX_CLI_PATH", None)
         env["PATH"] = f"{path_dir}{os.pathsep}{env.get('PATH', '')}"
         return internal.resolve(), official, env
+
+    def run_verified_split_switch(
+        self,
+        root: Path,
+        official_codex: Path,
+        *,
+        dry_run: bool,
+    ) -> str:
+        store = Store(
+            root / "store",
+            root / "live",
+            root / "agent.plist",
+            "com.openai.codex-cli-path",
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                switching_module,
+                "resolve_store_runtime_binding",
+                return_value=SimpleNamespace(desktop_cli=official_codex),
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP": "1"},
+            ),
+            redirect_stdout(output),
+        ):
+            switching_module.switch_profile(
+                store,
+                "internal",
+                dry_run,
+                False,
+                "shared",
+                None,
+                False,
+                False,
+                True,
+                "official",
+            )
+        return output.getvalue()
 
     def prepare_internal_plugin_profile(
         self,
@@ -1982,6 +2072,63 @@ class CodexProfileSwitchTests(unittest.TestCase):
 
             self.assertIn("old-switcher:status", result.stdout)
             self.assertNotIn("self-update", result.stderr)
+            self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_local_wrapper_split_preserves_normal_self_update(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root)
+            tarball = self.make_remote_wrapper_tarball(root)
+            env = self.self_update_env(root, tarball)
+
+            result = subprocess.run(
+                [str(local_wrapper), "split", "--dry-run"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            self.assertIn("synced-wrapper:split --dry-run", result.stdout)
+            self.assertIn("codex-switch self-update: checking latest release", result.stderr)
+            self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
+
+    def test_local_wrapper_split_keep_version_skips_self_update_and_retains_workflow(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            local_wrapper = self.make_installed_wrapper(root)
+            tarball = self.make_remote_wrapper_tarball(root)
+            env = self.self_update_env(root, tarball)
+            env["CODEX_SWITCH_HOME"] = str(root / "store")
+
+            result = subprocess.run(
+                [str(local_wrapper), "split", "--keep-version"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertNotIn("self-update", result.stderr)
+            self.assertNotIn("synced-wrapper", output)
+            self.assertIn("Update check: skipped by command option.", output)
+            self.assertIn(
+                "old-switcher:switch internal --dry-run --app-profile official",
+                output,
+            )
+            self.assertIn(
+                "old-switcher:switch internal --app-profile official",
+                output,
+            )
+            self.assertIn("old-switcher:repair-plugins internal", output)
+            self.assertIn("old-switcher:verify internal", output)
+            self.assertIn("old-switcher:doctor", output)
+            self.assertIn("old-switcher:status", output)
             self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
 
     def test_local_wrapper_does_not_self_update_to_older_release(self) -> None:
@@ -2762,6 +2909,9 @@ class CodexProfileSwitchTests(unittest.TestCase):
             shim = root / "store" / "bin" / "codex"
             self.assertIn(f'exec "{official_codex}" "$@"', shim.read_text())
             active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual("openai-official", active["profile"])
+            self.assertEqual("openai-official", active["cli_profile"])
+            self.assertEqual("openai-official", active["app_profile"])
             self.assertEqual(active["app_cli_path"], str(official_codex))
             agent = plistlib.loads((root / "agent.plist").read_bytes())
             self.assertEqual(agent["ProgramArguments"][-1], str(official_codex))
@@ -2778,9 +2928,220 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             active = json.loads((root / "store" / "active.json").read_text())
             internal_app = root / "store" / "bin" / "codex-internal-app"
+            self.assertEqual("internal", active["profile"])
+            self.assertEqual("internal", active["cli_profile"])
+            self.assertEqual("internal", active["app_profile"])
             self.assertEqual(active["app_cli_path"], str(internal_app))
             agent = plistlib.loads((root / "agent.plist").read_bytes())
             self.assertEqual(agent["ProgramArguments"][-1], str(internal_app))
+
+    def test_split_switch_preview_names_cli_and_app_profiles(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            preview_output = self.run_verified_split_switch(
+                root,
+                official_codex,
+                dry_run=True,
+            )
+            self.assertIn("CLI profile: internal", preview_output)
+            self.assertIn("App profile: openai-official", preview_output)
+            self.assertIn(f"CLI binary: {internal_codex}", preview_output)
+            self.assertIn(f"App binary: {official_codex}", preview_output)
+
+    def test_split_switch_resolves_verified_official_binding_for_legacy_manifest(
+        self,
+    ) -> None:
+        manifests = {
+            "internal": {"name": "internal"},
+            "openai-official": {
+                "name": "openai-official",
+                "codex_bin": "/tmp/legacy-official",
+                "app_cli_path": "/tmp/legacy-official",
+            },
+        }
+        store = SimpleNamespace(load_manifest=lambda name: manifests[name])
+        verified_cli = Path("/verified/ChatGPT.app/Contents/Resources/codex")
+        receipt = SimpleNamespace(preview_lines=("switch preview",))
+
+        with (
+            mock.patch.object(
+                switching_module,
+                "manifest_uses_canonical_binding",
+                return_value=False,
+            ),
+            mock.patch.object(
+                switching_module,
+                "resolve_store_runtime_binding",
+                return_value=SimpleNamespace(desktop_cli=verified_cli),
+            ) as resolve_binding,
+            mock.patch(
+                "codex_switch_transaction.execute_transaction",
+                return_value=receipt,
+            ) as execute,
+            redirect_stdout(io.StringIO()),
+        ):
+            switching_module._switch_profile_unlocked(
+                store,
+                "internal",
+                True,
+                False,
+                "snapshot",
+                None,
+                False,
+                False,
+                True,
+                "official",
+            )
+
+        self.assertEqual(1, resolve_binding.call_count)
+        self.assertEqual("openai-official", resolve_binding.call_args.args[1])
+        request = execute.call_args.args[1]
+        self.assertEqual(
+            str(verified_cli),
+            request.options["canonical_app_cli_path"],
+        )
+
+    def test_internal_app_selection_rejects_cli_only_generation_before_transaction(
+        self,
+    ) -> None:
+        backend = Path("/tmp/codex-switch-cli-only-backend")
+        manifest = {
+            "name": "internal",
+            "codex_bin": str(backend),
+            "internal_cli_generation": {
+                "schema_version": 1,
+                "scope": "cli-only",
+                "backend_sha256": "a" * 64,
+                "backend_version": "2.0.0",
+            },
+            "internal_app_readiness": "unverified",
+        }
+        store = SimpleNamespace(load_manifest=lambda _name: manifest)
+
+        with (
+            mock.patch.object(
+                switching_module,
+                "resolve_store_runtime_binding",
+                return_value=SimpleNamespace(
+                    desktop_cli=Path("/tmp/codex-internal-app")
+                ),
+            ),
+            mock.patch(
+                "codex_switch_transaction.execute_transaction"
+            ) as execute,
+            self.assertRaisesRegex(
+                SwitchError,
+                "internal.app_readiness.unverified",
+            ),
+        ):
+            switching_module._switch_profile_unlocked(
+                store,
+                "internal",
+                True,
+                False,
+                "snapshot",
+                None,
+                False,
+                False,
+                True,
+                None,
+            )
+
+        execute.assert_not_called()
+
+    def test_split_switch_uses_internal_cli_and_official_app_atomically(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+
+            self.run_verified_split_switch(
+                root,
+                official_codex,
+                dry_run=False,
+            )
+
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual("internal", active["profile"])
+            self.assertEqual("internal", active["cli_profile"])
+            self.assertEqual("openai-official", active["app_profile"])
+            self.assertEqual(str(official_codex), active["app_cli_path"])
+            self.assertEqual(
+                root / "store" / "homes" / "internal",
+                Path(active["codex_home"]),
+            )
+            shim = (root / "store" / "bin" / "codex").read_text()
+            self.assertIn("exec-internal-shell", shim)
+            self.assertIn(str(internal_codex), shim)
+            agent = plistlib.loads((root / "agent.plist").read_bytes())
+            self.assertEqual(str(official_codex), agent["ProgramArguments"][-1])
+
+    def test_unsupported_split_request_preserves_committed_switch_state(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _internal_codex, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--skip-launchctl",
+                env=env,
+            )
+            protected_paths = (
+                root / "store" / "active.json",
+                root / "store" / "bin" / "codex",
+                root / "agent.plist",
+            )
+            before = {path: path.read_bytes() for path in protected_paths}
+
+            rejected = self.run_switcher(
+                root,
+                "switch",
+                "openai-official",
+                "--app-profile",
+                "internal",
+                "--skip-launchctl",
+                env=env,
+                check=False,
+            )
+
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn(
+                "selection.unsupported",
+                rejected.stdout + rejected.stderr,
+            )
+            self.assertEqual(
+                before,
+                {path: path.read_bytes() for path in protected_paths},
+            )
 
     def test_status_reports_shell_codex_alignment(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -2931,6 +3292,169 @@ class CodexProfileSwitchTests(unittest.TestCase):
                         output.index(protocol_queue),
                         output,
                     )
+
+    def test_split_diagnostics_make_internal_app_parity_not_applicable(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            store = Store(
+                root / "store",
+                root / "live",
+                root / "agent.plist",
+            )
+            store.ensure()
+            internal_profile = store.profile_dir("internal")
+            internal_profile.mkdir(parents=True)
+            store.manifest_path("internal").write_text("{}\n")
+            official_profile = store.profile_dir("openai-official")
+            official_profile.mkdir(parents=True)
+            store.manifest_path("openai-official").write_text("{}\n")
+            store.active_path.write_text(
+                json.dumps(
+                    {
+                        "profile": "internal",
+                        "cli_profile": "internal",
+                        "app_profile": "openai-official",
+                    }
+                )
+                + "\n"
+            )
+            report = self.make_parity_diagnostic_report(
+                root,
+                findings=(),
+            )
+            expected = (
+                "Internal App parity: not applicable "
+                "(App profile: openai-official)"
+            )
+
+            status_output = io.StringIO()
+            with (
+                mock.patch.object(status_module, "make_store", return_value=store),
+                mock.patch.object(
+                    status_module,
+                    "print_active_profile_status",
+                    return_value=SimpleNamespace(
+                        cli_profile="internal",
+                        app_profile="openai-official",
+                    ),
+                ),
+                mock.patch.object(status_module, "print_shell_codex_status"),
+                mock.patch.object(status_module, "print_app_codex_status"),
+                mock.patch.object(
+                    status_module,
+                    "selection_uses_shared_configuration",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    status_module,
+                    "collect_parity_report",
+                    return_value=report,
+                ) as status_collect,
+                redirect_stdout(status_output),
+            ):
+                status_module.cmd_status(SimpleNamespace())
+            self.assertEqual(0, status_collect.call_count)
+            self.assertIn(expected, status_output.getvalue())
+
+            doctor_output = io.StringIO()
+            parity_binding = SimpleNamespace(profile="internal")
+            with (
+                mock.patch.object(doctor_module, "make_store", return_value=store),
+                mock.patch.object(
+                    doctor_module,
+                    "active_runtime_binding_for_observation",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    doctor_module,
+                    "collect_store_runtime_observation",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    doctor_module,
+                    "active_shared_configuration_report",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    doctor_module,
+                    "collect_doctor_problems",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    doctor_module,
+                    "manifest_uses_canonical_binding",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    doctor_module,
+                    "resolve_store_runtime_binding",
+                    return_value=parity_binding,
+                ),
+                mock.patch.object(
+                    doctor_module,
+                    "collect_parity_report",
+                    return_value=report,
+                ) as doctor_collect,
+                redirect_stdout(doctor_output),
+            ):
+                doctor_module.cmd_doctor(SimpleNamespace())
+            self.assertEqual(0, doctor_collect.call_count)
+            self.assertIn(expected, doctor_output.getvalue())
+            self.assertIn("Doctor passed", doctor_output.getvalue())
+
+            verify_output = io.StringIO()
+            verify_args = SimpleNamespace(
+                name="internal",
+                repair="none",
+                app_server_smoke=False,
+                runtime_smoke=False,
+                exec_smoke=None,
+                responses_tool_smoke=False,
+                report=False,
+            )
+            with (
+                mock.patch.object(verify_module, "make_store", return_value=store),
+                mock.patch.object(
+                    verify_module,
+                    "selection_uses_shared_configuration",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    verify_module,
+                    "manifest_uses_canonical_binding",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    verify_module,
+                    "collect_store_runtime_observation",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    verify_module,
+                    "collect_active_state_problems",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    verify_module,
+                    "collect_runtime_config_problems",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    verify_module,
+                    "collect_parity_report",
+                    return_value=report,
+                ) as verify_collect,
+                redirect_stdout(verify_output),
+            ):
+                verify_module.cmd_verify(verify_args)
+            self.assertEqual(0, verify_collect.call_count)
+            self.assertIn(expected, verify_output.getvalue())
+            self.assertIn(
+                "Verification passed for internal",
+                verify_output.getvalue(),
+            )
 
     def test_read_only_parity_diagnostics_preserve_owned_artifacts(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -3112,8 +3636,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
             (live_home / "auth.json").write_text('{"official":"auth"}\n')
             (live_home / "sessions").mkdir()
             (live_home / "history.jsonl").write_text("official history\n")
-            (live_home / "stable-support").mkdir()
-            (live_home / "stable-support" / "tool.json").write_text("{}\n")
+            (live_home / "rules").mkdir()
+            (live_home / "rules" / "tool.json").write_text("{}\n")
 
             self.run_switcher(
                 root,
@@ -3271,20 +3795,20 @@ class CodexProfileSwitchTests(unittest.TestCase):
             target_home = root / "target"
             source_home.mkdir()
             target_home.mkdir()
-            (target_home / "shared-tool").mkdir()
-            (target_home / "shared-tool" / "state.json").write_text("{}\n")
-            (source_home / "shared-tool").symlink_to(target_home / "shared-tool")
-            (source_home / "shared-cache").symlink_to(target_home / "shared-cache")
-            (target_home / "shared-cache").symlink_to(target_home / "shared-cache")
+            (target_home / "prompts").mkdir()
+            (target_home / "prompts" / "state.json").write_text("{}\n")
+            (source_home / "prompts").symlink_to(target_home / "prompts")
+            (source_home / "rules").symlink_to(target_home / "rules")
+            (target_home / "rules").symlink_to(target_home / "rules")
 
             mutated = sync_shared_support(source_home, target_home, prefer_link=False)
 
-            self.assertIn(target_home / "shared-tool", mutated)
-            self.assertFalse((target_home / "shared-tool").is_symlink())
-            self.assertEqual("{}\n", (target_home / "shared-tool" / "state.json").read_text())
-            self.assertIn(target_home / "shared-cache", mutated)
-            self.assertFalse((target_home / "shared-cache").exists())
-            self.assertFalse((target_home / "shared-cache").is_symlink())
+            self.assertIn(target_home / "prompts", mutated)
+            self.assertFalse((target_home / "prompts").is_symlink())
+            self.assertEqual("{}\n", (target_home / "prompts" / "state.json").read_text())
+            self.assertIn(target_home / "rules", mutated)
+            self.assertFalse((target_home / "rules").exists())
+            self.assertFalse((target_home / "rules").is_symlink())
 
     def test_shared_support_sync_does_not_propagate_source_self_symlink(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -3313,16 +3837,16 @@ class CodexProfileSwitchTests(unittest.TestCase):
             target_home = root / "target"
             source_home.mkdir()
             target_home.mkdir()
-            source_tool = source_home / "tool"
+            source_tool = source_home / "rules"
             source_tool.mkdir()
             (source_tool / "settings.json").write_text("{}\n")
             (source_tool / "nested-loop").symlink_to(
-                target_home / "tool" / "nested-loop"
+                target_home / "rules" / "nested-loop"
             )
 
             sync_shared_support(source_home, target_home, prefer_link=False)
 
-            target_tool = target_home / "tool"
+            target_tool = target_home / "rules"
             self.assertTrue(target_tool.is_dir())
             self.assertEqual("{}\n", (target_tool / "settings.json").read_text())
             self.assertFalse((target_tool / "nested-loop").exists())
@@ -3488,7 +4012,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 official_state["selected-remote-host-id"],
             )
 
-    def test_internal_switch_syncs_pets_settings_support(self) -> None:
+    def test_internal_switch_syncs_rules_support_and_ignores_unknown_pets(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -3497,6 +4021,9 @@ class CodexProfileSwitchTests(unittest.TestCase):
             pets = live_home / "pets"
             pets.mkdir()
             (pets / "settings.json").write_text('{"enabled":true}\n')
+            rules = live_home / "rules"
+            rules.mkdir()
+            (rules / "settings.json").write_text('{"enabled":true}\n')
             plugins = live_home / "plugins"
             plugins.mkdir()
             (plugins / "cache-marker").write_text("do not sync\n")
@@ -3520,10 +4047,11 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
 
             internal_home = root / "store" / "homes" / "internal"
-            self.assertTrue((internal_home / "pets" / "settings.json").exists())
+            self.assertFalse((internal_home / "pets").exists())
+            self.assertTrue((internal_home / "rules").is_symlink())
             self.assertEqual(
                 '{"enabled":true}\n',
-                (internal_home / "pets" / "settings.json").read_text(),
+                (internal_home / "rules" / "settings.json").read_text(),
             )
             self.assertFalse((internal_home / "plugins" / "cache-marker").exists())
 
@@ -3551,8 +4079,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 "version.json",
             ):
                 (live_home / name).write_text(f"{name}\n")
-            (live_home / "stable-support").mkdir()
-            (live_home / "stable-support" / "tool.json").write_text("{}\n")
+            (live_home / "rules").mkdir()
+            (live_home / "rules" / "tool.json").write_text("{}\n")
 
             self.run_switcher(
                 root,
@@ -3574,7 +4102,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             dry_output = dry_run.stdout + dry_run.stderr
             self.assertIn(
-                str(root / "store" / "homes" / "openai-official" / "stable-support"),
+                str(root / "store" / "homes" / "openai-official" / "rules"),
                 dry_output,
             )
             for name in (
@@ -3615,7 +4143,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
 
             official_home = root / "store" / "homes" / "openai-official"
-            self.assertTrue((official_home / "stable-support" / "tool.json").exists())
+            self.assertTrue((official_home / "rules" / "tool.json").exists())
             for name in (
                 "agent-kb",
                 "plugins",
@@ -7216,7 +7744,9 @@ class CodexProfileSwitchTests(unittest.TestCase):
 
             output = result.stdout + result.stderr
             self.assertEqual(0, result.returncode)
-            self.assertIn("Switch options for internal/official:", output)
+            self.assertIn("split                    Use internal CLI", output)
+            self.assertIn("Switch options for internal/split/official:", output)
+            self.assertIn("--keep-version", output)
             self.assertNotIn("Dry-run plan", output)
             self.assertFalse((root / "store").exists())
 
@@ -8302,17 +8832,15 @@ class CodexProfileSwitchTests(unittest.TestCase):
             _, official_codex, env = self.prepare_profiles(root)
             live_home = root / "live"
             (live_home / "config.toml").write_text("[features]\nmemory = true\n")
-            external = root / "external-share"
-            external.mkdir()
-            (external / "settings.json").write_text("{}\n")
+            external = root / "external-agents.md"
+            external.write_text("# External safe support\n")
             (live_home / "live-share").mkdir()
             relative_target = root / "relative-share"
             relative_target.mkdir()
-            (live_home / "relative-share").symlink_to(Path("../relative-share"))
-            (live_home / "dangling-share").symlink_to(root / "missing-share")
-            (live_home / "live-home-share").symlink_to(live_home / "live-share")
-            (live_home / "self-share").symlink_to(live_home / "self-share")
-            (live_home / "external-share").symlink_to(external)
+            (live_home / "prompts").symlink_to(Path("../relative-share"))
+            (live_home / "rules").symlink_to(root / "missing-share")
+            (live_home / "skills").symlink_to(live_home / "live-share")
+            (live_home / "AGENTS.md").symlink_to(external)
 
             self.run_switcher(
                 root,
@@ -8330,24 +8858,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest))
             app_home = root / "store" / "homes" / "internal"
             app_home.mkdir(parents=True, exist_ok=True)
-            (app_home / "target-state").write_text("target\n")
-            (live_home / "target-home-share").symlink_to(
-                app_home / "target-state"
-            )
-            target_home_alias = root / "target-home-alias"
-            target_home_alias.symlink_to(app_home, target_is_directory=True)
-            (live_home / "target-home-alias-share").symlink_to(
-                target_home_alias / "target-state"
-            )
 
             self.run_switcher(root, "switch", "internal", "--skip-launchctl")
             unsafe_names = {
-                "relative-share",
-                "dangling-share",
-                "live-home-share",
-                "target-home-share",
-                "target-home-alias-share",
-                "self-share",
+                "prompts",
+                "rules",
+                "skills",
             }
             switch_state = {
                 name: (app_home / name).is_symlink() for name in unsafe_names
@@ -8356,8 +8872,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 {name: False for name in unsafe_names},
                 switch_state,
             )
-            self.assertTrue((app_home / "external-share").is_symlink())
-            self.assertEqual(str(external), os.readlink(app_home / "external-share"))
+            self.assertTrue((app_home / "AGENTS.md").is_symlink())
+            self.assertEqual(str(external), os.readlink(app_home / "AGENTS.md"))
 
             subprocess.run(
                 [str(app_wrapper), "--version"],
@@ -8371,7 +8887,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 name: (app_home / name).is_symlink() for name in unsafe_names
             }
             self.assertEqual(switch_state, launcher_state)
-            self.assertTrue((app_home / "external-share").is_symlink())
+            self.assertTrue((app_home / "AGENTS.md").is_symlink())
 
     def test_internal_desktop_wrapper_preflights_config_before_home_mutation(
         self,
@@ -8831,7 +9347,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             self.assertFalse((app_home / ".credentials.json").exists())
 
-    def test_internal_desktop_wrapper_syncs_pets_settings_support(self) -> None:
+    def test_internal_desktop_wrapper_syncs_rules_and_ignores_unknown_pets(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             _, official_codex, env = self.prepare_profiles(root)
@@ -8841,6 +9357,9 @@ class CodexProfileSwitchTests(unittest.TestCase):
             pets = live_home / "pets"
             pets.mkdir()
             (pets / "settings.json").write_text('{"enabled":true}\n')
+            rules = live_home / "rules"
+            rules.mkdir()
+            (rules / "settings.json").write_text('{"enabled":true}\n')
             self.run_switcher(
                 root,
                 "init",
@@ -8858,12 +9377,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.run_switcher(root, "switch", "internal", "--skip-launchctl")
             app_wrapper = root / "store" / "bin" / "codex-internal-app"
             app_home = root / "store" / "homes" / "internal"
-            if (app_home / "pets").exists() or (app_home / "pets").is_symlink():
-                if (app_home / "pets").is_symlink():
-                    (app_home / "pets").unlink()
+            if (app_home / "rules").exists() or (app_home / "rules").is_symlink():
+                if (app_home / "rules").is_symlink():
+                    (app_home / "rules").unlink()
                 else:
-                    shutil.rmtree(app_home / "pets")
-            (pets / "settings.json").write_text('{"enabled":false}\n')
+                    shutil.rmtree(app_home / "rules")
+            (rules / "settings.json").write_text('{"enabled":false}\n')
 
             subprocess.run(
                 [str(app_wrapper), "--version"],
@@ -8874,11 +9393,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 env=env,
             )
 
-            self.assertTrue((app_home / "pets").is_symlink())
+            self.assertTrue((app_home / "rules").is_symlink())
             self.assertEqual(
                 '{"enabled":false}\n',
-                (app_home / "pets" / "settings.json").read_text(),
+                (app_home / "rules" / "settings.json").read_text(),
             )
+            self.assertFalse((app_home / "pets").exists())
 
     def test_internal_desktop_wrapper_isolates_response_runtime_state(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -9123,6 +9643,395 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertIn("Outcome: DRY RUN OK", output)
             self.assertNotIn("unbound variable", output)
 
+    def test_wrapper_split_shortcut_routes_supported_pairing(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            active_path = root / "store" / "active.json"
+            active_before = active_path.read_bytes() if active_path.exists() else None
+
+            result = self.run_wrapper(
+                root,
+                "split",
+                "--dry-run",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn("Outcome: DRY RUN OK", output)
+            self.assertIn("CLI profile: internal", output)
+            self.assertIn("App profile: openai-official", output)
+            self.assertEqual(
+                active_before,
+                active_path.read_bytes() if active_path.exists() else None,
+            )
+
+    def test_packaged_wrapper_split_keep_version_preview_uses_no_checkout_code(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            receipt = build_release_bundle(
+                Path(__file__).parents[1],
+                root / "release",
+            )
+            packaged_wrapper = receipt.package_dir / "scripts" / "codex-switch"
+            packaged_env = dict(env)
+            packaged_env.pop("PYTHONPATH", None)
+            packaged_env.pop("CODEX_SWITCH_SCRIPT", None)
+            packaged_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
+
+            result = subprocess.run(
+                [
+                    str(packaged_wrapper),
+                    "--store-dir",
+                    str(root / "store"),
+                    "--live-codex-home",
+                    str(root / "live"),
+                    "--launch-agent-path",
+                    str(root / "agent.plist"),
+                    "split",
+                    "--keep-version",
+                    "--dry-run",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=packaged_env,
+                cwd=root,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn("Outcome: DRY RUN OK", output)
+            self.assertIn("CLI profile: internal", output)
+            self.assertIn("App profile: openai-official", output)
+            self.assertEqual(
+                hashlib.sha256(WRAPPER.read_bytes()).hexdigest(),
+                hashlib.sha256(packaged_wrapper.read_bytes()).hexdigest(),
+            )
+
+    def test_wrapper_keep_version_is_rejected_outside_split(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--keep-version",
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(2, result.returncode, output)
+            self.assertIn(
+                "--keep-version is only supported with codex-switch split.",
+                output,
+            )
+            self.assertNotIn("Dry-run plan", output)
+            self.assertFalse((root / "store").exists())
+
+    def test_wrapper_split_rejects_app_profile_override(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            result = self.run_wrapper(
+                root,
+                "split",
+                "--app-profile",
+                "internal",
+                "--dry-run",
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(2, result.returncode, output)
+            self.assertIn(
+                "codex-switch split already selects the official App; "
+                "do not pass --app-profile.",
+                output,
+            )
+            self.assertNotIn("Dry-run plan", output)
+            self.assertFalse((root / "store").exists())
+
+    def test_wrapper_one_key_split_reports_both_profiles_after_apply(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _internal_codex, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            switch_args_log = root / "split-switch-args.jsonl"
+            fake_switcher = root / "split-switcher.py"
+            fake_switcher.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "store = Path(args[args.index('--store-dir') + 1])\n"
+                "with Path(os.environ['CODEX_SWITCH_SPLIT_ARGS_LOG']).open('a') as log:\n"
+                "    log.write(json.dumps(args) + '\\n')\n"
+                "if '--dry-run' in args:\n"
+                "    print('CLI profile: internal')\n"
+                "    print('App profile: openai-official')\n"
+                "    print('App action: preserve')\n"
+                "    raise SystemExit(0)\n"
+                "store.mkdir(parents=True, exist_ok=True)\n"
+                "active = {\n"
+                "    'profile': 'internal',\n"
+                "    'cli_profile': 'internal',\n"
+                "    'app_profile': 'openai-official',\n"
+                "    'codex_home': str(store / 'homes' / 'internal'),\n"
+                f"    'app_cli_path': {str(official_codex)!r},\n"
+                "}\n"
+                "(store / 'active.json').write_text(json.dumps(active))\n"
+                "print('App action: preserve')\n"
+                "print('Switched to profile internal')\n"
+            )
+            fake_switcher.chmod(0o755)
+            env["CODEX_SWITCH_SCRIPT"] = str(fake_switcher)
+            env["CODEX_SWITCH_SPLIT_ARGS_LOG"] = str(switch_args_log)
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--app-profile",
+                "official",
+                "--skip-update-check",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                "--skip-login",
+                "--skip-launchctl",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn("Update check: skipped by command option.", output)
+            self.assertIn("Plugin repair: skipped by command option.", output)
+            final_result = output.rsplit("== Final result ==", 1)[-1]
+            self.assertIn("Profile: internal", final_result)
+            self.assertIn("CLI profile: internal", final_result)
+            self.assertIn("App profile: openai-official", final_result)
+            self.assertNotIn("Restart ChatGPT", final_result)
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual("internal", active["cli_profile"])
+            self.assertEqual("openai-official", active["app_profile"])
+            forwarded = [json.loads(line) for line in switch_args_log.read_text().splitlines()]
+            self.assertEqual(2, len(forwarded))
+            for args in forwarded:
+                self.assertEqual("official", args[args.index("--app-profile") + 1])
+
+    def test_wrapper_apply_progress_is_visible_before_switcher_exits(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _internal_codex, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            release = root / "release-progress-switcher"
+            fake_switcher = root / "progress-switcher.py"
+            fake_switcher.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys, time\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "store = Path(args[args.index('--store-dir') + 1])\n"
+                f"release = Path({str(release)!r})\n"
+                "print('CLI profile: internal')\n"
+                "print('App profile: openai-official')\n"
+                "print('App action: preserve')\n"
+                "if '--dry-run' in args:\n"
+                "    raise SystemExit(0)\n"
+                "print('Applying shared support [1/2]')\n"
+                "deadline = time.monotonic() + 5.0\n"
+                "while not release.exists() and time.monotonic() < deadline:\n"
+                "    time.sleep(0.01)\n"
+                "if not release.exists():\n"
+                "    raise SystemExit(43)\n"
+                "store.mkdir(parents=True, exist_ok=True)\n"
+                "active = {\n"
+                "    'profile': 'internal',\n"
+                "    'cli_profile': 'internal',\n"
+                "    'app_profile': 'openai-official',\n"
+                "    'codex_home': str(store / 'homes' / 'internal'),\n"
+                f"    'app_cli_path': {str(official_codex)!r},\n"
+                "}\n"
+                "(store / 'active.json').write_text(json.dumps(active))\n"
+                "print('Applying shared support [2/2]')\n"
+            )
+            fake_switcher.chmod(0o755)
+            env["CODEX_SWITCH_SCRIPT"] = str(fake_switcher)
+            clean_env = dict(env)
+            clean_env.pop("CODEX_CLI_PATH", None)
+            clean_env.pop("CODEX_SWITCH_HOME", None)
+            clean_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
+            command = [
+                str(WRAPPER),
+                "--store-dir",
+                str(root / "store"),
+                "--live-codex-home",
+                str(root / "live"),
+                "--launch-agent-path",
+                str(root / "agent.plist"),
+                "internal",
+                "--app-profile",
+                "official",
+                "--skip-update-check",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                "--skip-login",
+                "--skip-launchctl",
+            ]
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=clean_env,
+                cwd=root,
+            )
+            self.assertIsNotNone(process.stdout)
+            progress = b"Applying shared support [1/2]"
+            observed = bytearray()
+            deadline = time.monotonic() + 2.0
+            try:
+                while progress not in observed and time.monotonic() < deadline:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    ready, _, _ = select.select(
+                        [process.stdout],
+                        [],
+                        [],
+                        remaining,
+                    )
+                    if not ready:
+                        break
+                    chunk = os.read(process.stdout.fileno(), 4096)
+                    if not chunk:
+                        break
+                    observed.extend(chunk)
+                was_visible_while_running = (
+                    progress in observed and process.poll() is None
+                )
+            finally:
+                release.write_text("continue\n")
+                try:
+                    remaining_output, _ = process.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    remaining_output, _ = process.communicate()
+            complete_output = bytes(observed) + remaining_output
+            self.assertTrue(
+                was_visible_while_running,
+                complete_output.decode(errors="replace"),
+            )
+            self.assertEqual(
+                0,
+                process.returncode,
+                complete_output.decode(errors="replace"),
+            )
+
+    def test_wrapper_split_rebind_retains_app_restart_guidance(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            _internal_codex, official_codex, env = self.prepare_profiles(root)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+            )
+            fake_switcher = root / "split-rebind-switcher.py"
+            fake_switcher.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "store = Path(args[args.index('--store-dir') + 1])\n"
+                "print('CLI profile: internal')\n"
+                "print('App profile: openai-official')\n"
+                "print('App action: rebind')\n"
+                "if '--dry-run' in args:\n"
+                "    raise SystemExit(0)\n"
+                "store.mkdir(parents=True, exist_ok=True)\n"
+                "active = {\n"
+                "    'profile': 'internal',\n"
+                "    'cli_profile': 'internal',\n"
+                "    'app_profile': 'openai-official',\n"
+                "    'codex_home': str(store / 'homes' / 'internal'),\n"
+                f"    'app_cli_path': {str(official_codex)!r},\n"
+                "}\n"
+                "(store / 'active.json').write_text(json.dumps(active))\n"
+                "print('Switched to profile internal')\n"
+            )
+            fake_switcher.chmod(0o755)
+            env["CODEX_SWITCH_SCRIPT"] = str(fake_switcher)
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--app-profile",
+                "official",
+                "--skip-update-check",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                "--skip-login",
+                "--skip-launchctl",
+                env=env,
+                check=False,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            final_result = output.rsplit("== Final result ==", 1)[-1]
+            self.assertIn(
+                "Restart ChatGPT if it was already running.",
+                final_result,
+            )
+
     def test_wrapper_prints_final_action_required_when_doctor_fails(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
@@ -9226,6 +10135,288 @@ class CodexProfileSwitchTests(unittest.TestCase):
             )
             active = json.loads((root / "store" / "active.json").read_text())
             self.assertEqual(active["profile"], "internal")
+
+    def test_wrapper_split_still_runs_internal_update_check(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = "http://127.0.0.1:1/latest"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "internal",
+                "--app-profile",
+                "official",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("Checking Codex CLI update for internal", output)
+            self.assertIn(f"Internal profile codex: {internal_codex}", output)
+            self.assertIn(
+                "Update check did not complete; continuing with switch.",
+                output,
+            )
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual("internal", active["cli_profile"])
+            self.assertEqual("openai-official", active["app_profile"])
+
+    def test_wrapper_split_shortcut_still_runs_internal_update_check(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = "http://127.0.0.1:1/latest"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "split",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertIn("Checking Codex CLI update for internal", output)
+            self.assertIn(f"Internal profile codex: {internal_codex}", output)
+            self.assertIn(
+                "Update check did not complete; continuing with switch.",
+                output,
+            )
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual("internal", active["cli_profile"])
+            self.assertEqual("openai-official", active["app_profile"])
+
+    def test_wrapper_split_keep_version_skips_internal_update_check(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            env["CODEX_SWITCH_INTERNAL_LATEST_URL"] = "http://127.0.0.1:1/latest"
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "split",
+                "--keep-version",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-verify",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                check=False,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn("Update check: skipped by command option.", output)
+            self.assertNotIn("Checking Codex CLI update for internal", output)
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual("internal", active["cli_profile"])
+            self.assertEqual("openai-official", active["app_profile"])
+
+    def test_wrapper_split_auto_update_uses_cli_only_promotion_and_runtime_smoke(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            updated_codex = root / "updated-codex"
+            write_fake_app_server_smoke_codex(
+                updated_codex,
+                version="codex-cli 1.1.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            promotion_args = root / "promotion-args.txt"
+            verify_args = root / "verify-args.txt"
+            write_fake_script(
+                fake_tools / "curl",
+                "#!/usr/bin/env sh\n"
+                "cat <<'EOF'\n"
+                "HTTP/2 302\n"
+                "location: https://github.com/SDGLBL/codex/releases/tag/internal-rust-v1.1.0\n"
+                "EOF\n",
+            )
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=updated_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            env["CODEX_SWITCH_TEST_PROMOTION_ARGS_LOG"] = str(promotion_args)
+            env["CODEX_SWITCH_TEST_VERIFY_ARGS_LOG"] = str(verify_args)
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "split",
+                "--skip-launchctl",
+                "--skip-plugin-repair",
+                "--skip-doctor",
+                "--no-status",
+                env=env,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertIn(
+                "Auto-update: running staged CLI-only internal promotion",
+                output,
+            )
+            self.assertIn("--cli-only", shlex.split(promotion_args.read_text()))
+            verification_argv = shlex.split(verify_args.read_text())
+            self.assertIn("--runtime-smoke", verification_argv)
+            self.assertNotIn("--app-server-smoke", verification_argv)
+            self.assertIn("Runtime smoke: passed", output)
+            self.assertNotIn("App-server smoke: passed", output)
+            self.assert_staged_update_helper_args(
+                update_args,
+                bound_bin=internal_codex,
+                version="1.1.0",
+            )
+
+    def test_wrapper_direct_update_internal_retains_full_promotion(self) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            internal_codex, official_codex, env = self.prepare_profiles(root)
+            write_fake_app_server_smoke_codex(
+                internal_codex,
+                version="codex-cli 1.0.0",
+            )
+            updated_codex = root / "updated-codex"
+            write_fake_app_server_smoke_codex(
+                updated_codex,
+                version="codex-cli 1.1.0",
+            )
+            fake_tools = root / "fake-tools"
+            fake_tools.mkdir()
+            update_args = root / "update-args.txt"
+            promotion_args = root / "promotion-args.txt"
+            write_fake_staged_update_helper(
+                fake_tools / "codex-env-setup",
+                candidate_source=updated_codex,
+                args_log=update_args,
+            )
+            env["PATH"] = f"{fake_tools}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SWITCH_ENV_SETUP"] = str(fake_tools / "codex-env-setup")
+            env["CODEX_SWITCH_TEST_PROMOTION_ARGS_LOG"] = str(promotion_args)
+            self.enable_fake_internal_update_promotion(root, env)
+            self.run_switcher(
+                root,
+                "init",
+                "--app-cli-path",
+                str(official_codex),
+                "--capture-current",
+                "internal",
+                env=env,
+                python_executable=(
+                    shutil.which("python3.12")
+                    or shutil.which("python3.11")
+                    or sys.executable
+                ),
+            )
+
+            result = self.run_wrapper(
+                root,
+                "update-internal",
+                "--version",
+                "1.1.0",
+                env=env,
+                allow_switch_script=True,
+            )
+
+            output = result.stdout + result.stderr
+            self.assertEqual(0, result.returncode, output)
+            self.assertNotIn(
+                "--cli-only",
+                shlex.split(promotion_args.read_text()),
+            )
+            self.assertIn(
+                "update-internal: capability and parity receipts verified.",
+                output,
+            )
 
     def test_internal_check_compares_with_official_stable_without_helper(self) -> None:
         temp_dir, root = self.make_workspace()
@@ -11297,6 +12488,56 @@ class CodexProfileSwitchTests(unittest.TestCase):
                             "source_mode": before[source_catalog][2],
                         },
                     )
+
+    def test_full_internal_rebind_drops_cli_only_metadata_before_parity(
+        self,
+    ) -> None:
+        temp_dir, root = self.make_workspace()
+        with temp_dir:
+            store, _source_catalog, args, _observed_paths = (
+                self.internal_rebind_fixture(root)
+            )
+            manifest_path = store.manifest_path("internal")
+            manifest = json.loads(manifest_path.read_text())
+            manifest["internal_cli_generation"] = {
+                "schema_version": 1,
+                "scope": "cli-only",
+                "backend_sha256": "a" * 64,
+                "backend_version": "1.0.0",
+            }
+            manifest["internal_app_readiness"] = "unverified"
+            manifest_path.write_text(json.dumps(manifest) + "\n")
+            observed: list[dict[str, object]] = []
+
+            def stop_after_candidate(candidate: object, **_kwargs: object) -> object:
+                observed.append(dict(candidate.internal_manifest))
+                raise SwitchError("captured full rebind candidate")
+
+            with (
+                mock.patch.object(
+                    bindings_module,
+                    "prepare_capability_receipt_artifact",
+                    return_value=SimpleNamespace(
+                        receipt=SimpleNamespace(schema_sha256="b" * 64),
+                        payload=b"{}\n",
+                        payload_sha256="c" * 64,
+                    ),
+                ),
+                mock.patch.object(
+                    bindings_module,
+                    "prepare_parity_bundle",
+                    side_effect=stop_after_candidate,
+                ),
+                self.assertRaisesRegex(
+                    SwitchError,
+                    "captured full rebind candidate",
+                ),
+            ):
+                cmd_set_bin(args)
+
+            self.assertEqual(1, len(observed))
+            self.assertNotIn("internal_cli_generation", observed[0])
+            self.assertNotIn("internal_app_readiness", observed[0])
 
     def test_one_key_internal_auto_update_propagates_helper_exit_17(self) -> None:
         temp_dir, root = self.make_workspace()

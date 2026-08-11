@@ -1,0 +1,28 @@
+{
+  "plugins": {
+    "dev-flow": {
+      "lastSyncedAt": "2026-08-04T09:12:56.951546+00:00",
+      "managedFiles": [],
+      "projectLocalSkills": [
+        "ai-native-tech-plan",
+        "capability-research",
+        "claude-code-delegate",
+        "project-orchestrator",
+        "project-setup",
+        "feature-intake",
+        "change-plan",
+        "execute-task",
+        "verify-and-archive",
+        "workflow-doctor",
+        "checkpoint-compact",
+        "context-health-check",
+        "context-tool-audit",
+        "codex-updater",
+        "dev-flow-refresh",
+        "plugin-project-migration"
+      ],
+      "version": "0.3.0+codex.20260529145038"
+    }
+  },
+  "schemaVersion": "1.0"
+}

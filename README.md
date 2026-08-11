@@ -35,6 +35,10 @@ from that archive and does not execute archive-owned scripts while staging it.
 ```bash
 codex-switch status
 codex-switch internal
+codex-switch split
+codex-switch split --keep-version
+codex-switch internal --app-profile official
+codex-switch sync-shared --dry-run
 codex-switch official
 codex-switch restore <backup-id> --dry-run
 codex-switch check-update
@@ -44,7 +48,76 @@ codex-switch env check-internal
 
 `codex-switch internal` checks the internal profile's bound Codex CLI and
 automatically delegates to `codex-switch update-internal` when a newer internal
-release is detected.
+release is detected. That synchronized internal-App command retains the full
+Desktop compatibility promotion described below.
+
+To keep the shell on the internal CLI while ChatGPT Desktop uses the official
+bundled CLI, run:
+
+```bash
+codex-switch split
+```
+
+This is the only supported cross-profile pairing. Without `--app-profile`, App
+and CLI remain synchronized exactly as before. The split command prepares and
+verifies the internal CLI/home, keeps an already healthy official App binding
+unchanged, and commits the explicit owners in one recoverable transaction. If
+the App surface is stale or incomplete, the same command instead plans a
+recoverable rebind. Use
+`status` to see both owners; `doctor` and `verify internal` check each surface
+against its own binding. Internal App parity is explicitly reported as not
+applicable because the App owner is official. `codex-switch split` is the
+concise preset for
+`codex-switch internal --app-profile official`; normal invocation retains both
+codex-switch self-update and internal update detection. When that detection
+selects a newer internal binary, `split` uses an atomic CLI-only promotion: it
+validates and records the exact version and SHA-256, leaves Desktop/parity
+artifacts untouched, marks internal App readiness unverified, and runs bounded
+local CLI runtime verification through the managed shell shim. Executable
+SHA-256 validation uses a stable streaming read under an independent 2 GiB
+safety bound; the 16 MiB config/receipt artifact limit is not applied to the
+backend and the complete executable is never buffered as one payload. It does
+not run an internal app-server smoke or require the official App to exit.
+Before commit, promotion renders a private copy of the real internal shim and
+executes its `--version` path; failure restores the previous binary and manifest.
+Final split smoke separately executes the actual post-switch store shim.
+Direct `codex-switch update-internal` remains the explicit full Desktop-parity
+update path. For a controlled switch
+that keeps both currently installed versions, use
+`codex-switch split --keep-version`. This option does not skip Plugin repair,
+verify, Doctor, status, App-effect derivation, or transaction validation. Add
+`--dry-run` to either form for a preview; the plan reports an App action of
+`preserve` or `rebind`. A healthy canonical official App may remain
+running for `preserve`, and the transaction does not rewrite its LaunchAgent,
+GUI environment, Home, processes, or Desktop global state. Only `rebind`
+requires fully quitting ChatGPT/Codex App and keeping it closed until the
+switch completes. The final result omits App restart guidance for `preserve`
+and retains it only for a reported `rebind`. A running App/app-server or
+unreadable process inventory on that path fails before backup and mutation. The
+fixed `split` preset rejects `--app-profile`; use the explicit long form only
+when diagnosing its underlying interface. Do not combine `--app-profile` with
+`--skip-app-cli`. During apply, counted `current/total/name` lines report each
+planned shared-support entry. Both the Python producer and the action-capture
+filter run unbuffered, so progress remains visible while synchronization is
+still running; a late binding write during a required rebind is still caught by
+final CAS and journal rollback.
+
+In this split, Plugin and Skill usage has one generationed desired-state layer,
+while the App and CLI keep separate runtime configs and separate plugin caches.
+When the official App adds, updates, disables, or removes a Plugin or configured
+Skill, the next functional managed internal CLI invocation reconciles that
+generation and proves the internal cache before running the requested Codex
+command. `codex --help` and `codex --version` remain read-only.
+
+Changes left by an internal CLI session are captured at the next functional CLI
+preflight. They are not written underneath a running official App. Preview or
+apply the pending App projection with:
+
+```bash
+codex-switch sync-shared --dry-run
+# Quit the official App completely before the apply form:
+codex-switch sync-shared
+```
 
 Normal `check-update`, `internal`, and `official` flows also compare the
 selected profile CLI with the latest stable `openai/codex` release. The output
@@ -117,20 +190,20 @@ defaulting to `~/.codex`, and uses the current verified ChatGPT Desktop bundled
 CLI when it is available. `codex-switch internal` prepares and activates a
 managed internal home at `~/.codex-switch/homes/internal` by default. The shell
 shim and Codex Desktop binding are switched to the target profile's effective
-home.
+home unless the explicit internal-CLI/official-App split above is selected.
 
-Only shareable non-auth configuration and stable support files move between the
-official and internal homes. Auth files, sessions, history, logs, sqlite state,
-temporary/browser/process state, and profile-specific model/provider layers are
-not shared across modes. Codex-switch also excludes bulky or credential-like
-support state such as `agent-kb`, `plugins`, `computer-use`, `cache`,
-`model-catalogs`, `.credentials.json`, global state files, installation/version
-markers, and vendor/update caches from generic cross-home sync plans. Desktop
-settings stored in `.codex-global-state.json` are merged as a sanitized settings
-subset; prompt history, thread permissions, queued follow-ups, remote thread
-summaries, credentials, and remote routing identifiers stay profile-local. The
-Desktop Settings Pets support directory `pets/` is treated as stable settings
-support and can sync across homes.
+Generic cross-home support sync uses one exact V1 allowlist: global
+`AGENTS.md`, `prompts/`, `rules/`, and personal standalone `skills/`. Unknown
+top-level entries, including `pets/`, are ignored; an existing same-named
+target is preserved rather than deleted. Auth files, sessions, history, logs,
+sqlite state, temporary/browser/process state, profile-specific model/provider
+layers, `agent-kb`, `plugins`, `computer-use`, caches, credentials, global-state
+temporary/backup variants, installation/version markers, and vendor/update
+caches are never admitted by generic Home selection. Desktop settings stored
+in the canonical `.codex-global-state.json` are handled separately as a
+sanitized settings subset; prompt history, thread permissions, queued
+follow-ups, remote thread summaries, credentials, and remote routing
+identifiers stay profile-local.
 Shared support sync also refuses to copy self-referential symlinks or symlinks
 that point back into the target home, so profile switches do not create symlink
 loops.
@@ -140,6 +213,12 @@ Internal Codex binary upgrades are compatibility checkpoints. When
 profile's configured `codex_bin`, re-check internal Desktop compatibility
 instead of assuming the existing shim still applies.
 
+The exception is the CLI-only generation published automatically by
+`codex-switch split`: it is accepted only by the managed internal shell path.
+Selecting internal as the App owner fails before backup or App mutation until a
+successful full `update-internal`/`set-bin internal` rebind publishes fresh
+Desktop evidence and clears the CLI-only marker.
+
 ```bash
 codex-switch --skip-self-update status
 codex-switch internal --skip-update-check
@@ -147,6 +226,12 @@ codex-switch --skip-self-update verify internal --responses-tool-smoke --report
 ```
 
 ### Internal parity and staged updates
+
+This section applies when the App owner is `internal`. In the supported
+internal-CLI/official-App split, status, Doctor, and verify continue checking
+the internal CLI and official App bindings but print
+`Internal App parity: not applicable (App profile: openai-official)` instead of
+collecting or repairing an internal Desktop parity receipt.
 
 Internal parity uses the current verified ChatGPT Desktop bundled CLI resolved
 by the canonical Runtime Binding as its official reference. A Codex binary on
@@ -195,7 +280,7 @@ creating a real provider-backed typed `explorer` Subagent task, and attesting
 launcher, proxy, backend, receipt, overlay, and config ownership require
 explicit authorization at the Human Gate before they run.
 
-For each internal binary upgrade, verify the actual Desktop App bundle binary,
+For each internal binary upgrade intended to serve the internal App, verify the actual Desktop App bundle binary,
 the internal `codex_bin`, the generated app wrapper, and the running
 app-server path. Re-compare Desktop bundle and internal app-server schemas when
 request compatibility may have changed, then update or remove proxy
@@ -290,9 +375,102 @@ target profile without copying another profile's `plugins/` directory.
 state and reports this command if enabled plugins are missing, including after
 low-level
 `codex-switch switch <profile>` invocations that bypass the one-key
-post-switch flow. `codex-switch internal --help` and
-`codex-switch official --help` are pure help paths and do not run update,
-switch, plugin repair, doctor, or status steps.
+post-switch flow. `codex-switch internal --help`,
+`codex-switch split --help`, and `codex-switch official --help` are pure help
+paths and do not run update, switch, Plugin repair, Doctor, or status steps.
+
+For the supported internal-CLI/official-App split, the continuous shared layer
+is intentionally narrower than the legacy switch-time merge. It owns only
+secret-screened `marketplaces.*`, `plugins.*`, and `skills.config` semantics.
+The official personal `skills/` directory is the canonical personal-Skill root;
+the internal home may use one validated link to it. Plugin-contributed Skills
+stay inside each profile's independently materialized plugin cache, and their
+absolute paths are rendered for that cache. Project-local `.agents/skills`
+remain owned by the shared worktree. Disable/remove changes usage only:
+`codex-switch` invokes no plugin-remove and directly deletes no cache artifact.
+This is not a retention promise; installed-version cache lifecycle belongs to
+the native backend.
+
+The next functional internal CLI invocation prints a flushed source-attestation
+line to stderr before it scans the shared Plugin identities. If the generation
+needs target work, it prints a second line with the target profile and enabled
+Plugin count before querying the target catalog/backend. These messages make a
+cold bootstrap visible; `--help` and `--version` remain read-only, and a
+committed unchanged generation still performs no target materializer call or
+network operation.
+
+For a local `portable_exact` Plugin, a catalog record's reported version is the
+target's installed state, not source-version authority. A safely resolved
+newer source is accepted only when its selector manifest and complete tree
+exactly match the desired identity; the target backend may then update its own
+independent cache, may replace its prior installed version, and must have the
+result attested again before backend execution. `codex-switch` itself never
+copies, links, deletes, garbage-collects, or recreates those cache artifacts. A
+safe manifest/tree drift reports
+`shared_configuration.materialization.source_mismatch`; `unsafe_cache` remains
+reserved for unsafe paths, links, file kinds, cache identities, or traversal.
+
+For `backend_managed` Plugins, the official source identity and the internal
+installed target identity are deliberately independent. The source manifest
+and tree must still match the desired generation, but a pending generation
+always reconciles through the internal backend even when an older internal
+cache is already inspectable. Native add/update owns whether that prior version
+is retained, replaced, or removed. After all such adds finish, preflight reads
+one fresh target catalog for the batch, requires one installed target cache key
+per selector, and independently attests that cache's selector manifest, tree, and
+contributed Skill roots. Revision cache keys may differ from the manifest
+version; both are recorded in the receipt. A valid catalog without provable
+installed target state reports
+`shared_configuration.materialization.unverified_target`, while command/JSON/
+schema failure remains `unverified_catalog`. This CLI-side reconciliation does
+not require quitting or modifying the official App; only an explicit pending
+CLI-to-App `sync-shared` apply requires the App to be stopped.
+
+Each ready receipt is re-attested against the target cache; the sidecar never
+trusts an old receipt after its manifest/tree/Skill roots disappear or drift.
+Before an external target backend can materialize a Plugin, a private durable
+materialization intent binds the exact target config and allowed selector
+activations; an official target also receives a fail-closed stopped-App check
+before that call. Shared publication then uses the prepared commit journal,
+source/target CAS, and a post-materialization stopped-App check. `state.json`
+is the commit point; a later functional preflight recovers either interrupted
+intent under the store lock, while status/Doctor/verify only report the
+recovery boundary. Every external materializer command inherits that store
+lock lease, so a backend that survives parent `SIGKILL` keeps new applies
+fail-closed until it exits; only then may a later apply classify a late
+selector write and retire the intent.
+
+These recovery journals are local rollback evidence, not shared desired state.
+To restore an interrupted write exactly they temporarily contain target
+`config.toml` bytes, including any profile-local values already in that file.
+They stay inside the private codex-switch store (`0700` directories, `0600`
+files), are never projected or copied to the other profile, and are deleted
+after committed cleanup or successful recovery. Canonical
+`state.json` and immutable generation files remain secret-screened. The
+recovery files use Base64 only as JSON-safe encoding; it is not encryption.
+
+The broader configuration review is deliberately fail-closed:
+
+| Configuration surface | Ownership in App/CLI split | Synchronization rule |
+| --- | --- | --- |
+| Plugin selectors, non-secret marketplace descriptors, configured Skills | Shared desired state | Three-way generation reconcile; divergent edits conflict |
+| Global Home support (`AGENTS.md`, `prompts/`, `rules/`, `skills/`) | Exact V1 generic allowlist | Plan only these four names; preserve and ignore every unknown target |
+| Personal standalone Skills | Official personal Skills root | One validated internal directory link |
+| Plugin-contributed Skills and plugin code | Per-profile cache | Independently materialize and attest; never share/symlink caches |
+| Project-local Skills | Repository worktree | Naturally shared by opening the same project; no profile migration |
+| Repository project instructions/config (`AGENTS.md`, `.agents/skills`) | Repository worktree | Naturally shared; never copied into either profile home |
+| Desktop `.codex-global-state.json` | App/profile-local | Excluded from split planning and sync; synchronized same-profile switches retain their existing explicit settings projection |
+| Model, provider, endpoint, reasoning, personality | Profile-local | Never copied by the shared desired-state layer |
+| Auth, credentials, tokens, OAuth, sessions, history, SQLite, logs | Profile-local/private | Never projected or synchronized; opaque target-config bytes may exist only in the private terminal recovery journal |
+| MCP server/App/connector declarations | Deferred candidate | Require field-level protocol/version review; secret env, tokens, and OAuth remain private |
+| Hook commands and hook trust | Deferred candidate | Require digest-bound executable/path and permission review before sharing |
+| UI/TUI/Desktop preferences, features/agents, memories settings | Deferred | Share only after per-field cross-version compatibility review |
+| Project trust, permissions, sandbox/approval, cloud/account/update state | Profile/host-local | Do not synchronize implicitly |
+| Automations, process/browser/thread routing, catalogs and caches | Runtime-local/derived | Never synchronize as configuration |
+
+`status`, `doctor`, and `verify internal` read the same shared-generation report.
+They report pending, conflict, unsafe cache, personal-Skill ownership, and
+materialization findings without repairing them.
 
 Profile-level plugin repair does not refresh project-local DevFlow/OpenSpec
 configuration, generated guidance, or skill links. Run project refresh

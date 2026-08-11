@@ -19,6 +19,10 @@ from codex_switch_config import (
     merge_shared_config_overlay,
 )
 from codex_switch_constants import SwitchError
+from codex_switch_home_sync import (
+    merge_shared_with_profile_seed,
+    strip_managed_comments,
+)
 
 
 WRAPPER = Path(__file__).with_name("codex-switch")
@@ -55,6 +59,72 @@ def remove_exact_scalar_assignment(
 
 
 class ConfigDocumentTests(unittest.TestCase):
+    def test_managed_runtime_render_is_byte_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            shared_config = root / "shared.toml"
+            runtime_config = root / "runtime.toml"
+            canonical_config = root / "profile.toml"
+            shared_config.write_text(
+                "# user-owned shared comment\n"
+                "\n"
+                "[features]\n"
+                "hooks = true\n"
+            )
+            canonical_config.write_text(
+                'model = "internal-model"\n'
+                'model_provider = "azure"\n'
+                "\n"
+                "[model_providers.azure]\n"
+                'name = "Azure"\n'
+                "\n"
+                "[model_providers.azure.query_params]\n"
+                'api-version = "v1"\n'
+            )
+
+            first = merge_shared_with_profile_seed(
+                shared_config,
+                "internal",
+                runtime_config,
+                canonical_config,
+            )
+            runtime_config.write_text(first)
+            second = merge_shared_with_profile_seed(
+                shared_config,
+                "internal",
+                runtime_config,
+                canonical_config,
+            )
+            runtime_config.write_text(second)
+            third = merge_shared_with_profile_seed(
+                shared_config,
+                "internal",
+                runtime_config,
+                canonical_config,
+            )
+
+            self.assertEqual(second, third)
+
+    def test_managed_comment_cleanup_preserves_unrelated_user_spacing(self) -> None:
+        text = (
+            "# codex-switch: generated heading\n"
+            "\n"
+            "[features]\n"
+            "hooks = true\n"
+            "\n"
+            "\n"
+            "# user-owned separator\n"
+            "[desktop]\n"
+            'theme = "dark"\n'
+        )
+
+        cleaned = strip_managed_comments(text)
+
+        self.assertIn(
+            "hooks = true\n\n\n# user-owned separator\n[desktop]",
+            cleaned,
+        )
+
     def test_parse_preserves_valid_text_and_reports_semantic_paths(self) -> None:
         module = config_document_module()
         text = (

@@ -1,0 +1,22 @@
+{
+  "authorityContractSha256": "sha256:3a70a83edf781ecdbef569f08794169694f73edab76f09d9da76bd0baf522858",
+  "decision": "AWAIT_HUMAN",
+  "evidenceSha256": "sha256:aebe017a54d3a8a642eee58b1682e86e4cbdf5e6a366d6421f825f09b9e7ed61",
+  "gateKey": "sha256:5cb2dc7b977b55b5541c7dccc6cdf6e36b1255998c829d82eecf9e64e6bfb7df",
+  "invalidations": [
+    "completion_contract:retained_older_plugin_artifacts"
+  ],
+  "kind": "devflow-authority-gate-receipt",
+  "materialDelta": true,
+  "missingAuthority": [
+    "decision:internal_plugin_cache_version_retention"
+  ],
+  "nextQuestion": "是否确认将契约调整为：codex-switch 不直接操作缓存，但原生 plugin add 可以替换其旧版本？",
+  "reasonCodes": [
+    "required_contract_conflicts_with_native_backend_lifecycle"
+  ],
+  "receiptPath": ".planning/devflow/authority-gates/5cb2dc7b977b55b5541c7dccc6cdf6e36b1255998c829d82eecf9e64e6bfb7df.json",
+  "requestSha256": "sha256:aabfa0e0712e291f21fe16bcc3b9e0445e1407cbabee614b29aff177aebaade3",
+  "schemaVersion": "1.0",
+  "status": "recorded"
+}

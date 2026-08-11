@@ -29,6 +29,7 @@ from codex_switch_list import cmd_list
 from codex_switch_plugins import cmd_repair_plugins
 from codex_switch_status import cmd_status
 from codex_switch_restore import cmd_restore
+from codex_switch_shared_configuration import cmd_sync_shared
 from codex_switch_switching import (
     cmd_switch,
 )
@@ -183,6 +184,13 @@ def add_switch_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     switch.add_argument("--skip-shim", action="store_true")
     switch.add_argument("--skip-app-cli", action="store_true")
     switch.add_argument(
+        "--app-profile",
+        help=(
+            "Select a distinct ChatGPT Desktop profile. The supported split is "
+            "internal CLI with official App profile."
+        ),
+    )
+    switch.add_argument(
         "--skip-launchctl",
         action="store_true",
         help="Write the LaunchAgent but do not call launchctl. Useful in isolated tests.",
@@ -218,6 +226,23 @@ def add_simple_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         ),
     )
     repair_plugins.set_defaults(func=cmd_repair_plugins)
+
+    sync_shared = sub.add_parser(
+        "sync-shared",
+        help=(
+            "Preview or apply shared Plugin and Skill desired state between "
+            "the official App and internal CLI profiles."
+        ),
+    )
+    sync_shared.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the reconciliation plan without changing config, cache, "
+            "or state."
+        ),
+    )
+    sync_shared.set_defaults(func=cmd_sync_shared)
 
     verify = sub.add_parser("verify", help="Verify an active target profile switch.")
     verify.add_argument("name")
@@ -317,6 +342,7 @@ def add_internal_update_promotion_parser(
     promote.add_argument("--candidate-bin", required=True)
     promote.add_argument("--backup-bin", required=True)
     promote.add_argument("--target-version", required=True)
+    promote.add_argument("--cli-only", action="store_true", help=argparse.SUPPRESS)
     promote.set_defaults(func=cmd_promote_internal_update)
 
 

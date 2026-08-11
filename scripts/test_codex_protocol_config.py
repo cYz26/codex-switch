@@ -361,7 +361,7 @@ def prepare_generated_proxy_chain(
         "[desktop]\n"
         'followUpQueueMode = "off"\n'
     )
-    (live_home / "shared-support.txt").write_text("shared\n")
+    (live_home / "AGENTS.md").write_text("shared\n")
 
     store = Store(
         root / "store",
@@ -2101,7 +2101,7 @@ class ProtocolAdapterTests(unittest.TestCase):
             self.assertEqual(metadata["codex_home"], str(app_home))
             self.assertEqual(metadata["pythonpath"], "/original/proxy-chain")
             self.assertEqual(
-                (app_home / "shared-support.txt").read_text(),
+                (app_home / "AGENTS.md").read_text(),
                 "shared\n",
             )
             self.assertIn(

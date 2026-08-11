@@ -8,11 +8,13 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -67,6 +69,8 @@ REQUIRED_PATHS = [
     "scripts/codex_switch_runtime_binding.py",
     "scripts/codex_switch_app_proxy.py",
     "scripts/codex_switch_home_sync.py",
+    "scripts/codex_switch_selection.py",
+    "scripts/codex_switch_shared_configuration.py",
     "scripts/package-release.sh",
     MANIFEST_NAME,
 ]
@@ -80,6 +84,8 @@ REQUIRED_PYTHON_MODULES = [
     "codex_switch_runtime_binding.py",
     "codex_switch_app_proxy.py",
     "codex_switch_home_sync.py",
+    "codex_switch_selection.py",
+    "codex_switch_shared_configuration.py",
 ]
 EXECUTABLE_EXPECTATIONS = {
     "run.sh": "0755",
@@ -203,6 +209,8 @@ def write_required_python_modules(scripts_dir: Path) -> None:
         "codex_switch_runtime_binding.py",
         "codex_switch_app_proxy.py",
         "codex_switch_home_sync.py",
+        "codex_switch_selection.py",
+        "codex_switch_shared_configuration.py",
     ):
         (scripts_dir / name).write_text("VALUE = 1\n")
 
@@ -343,6 +351,18 @@ class CodexUpdateReleaseTests(unittest.TestCase):
         )
         subprocess.run(["git", "tag", tag], cwd=repo, check=True)
         return release_auto.resolve_commit(repo, "HEAD")
+
+    def test_release_bundle_requires_independent_selection_module(self) -> None:
+        module = load_bundle_module()
+
+        self.assertIn(
+            "codex_switch_selection.py",
+            module.REQUIRED_PYTHON_MODULES,
+        )
+        self.assertIn(
+            "codex_switch_shared_configuration.py",
+            module.REQUIRED_PYTHON_MODULES,
+        )
 
     def test_rejects_output_root_equal_repository_without_mutation(self) -> None:
         sentinel = self._repo_sentinel()
@@ -2314,7 +2334,7 @@ class CodexImmutablePromotionTests(unittest.TestCase):
         return self.module.validate_candidate(
             root,
             expected_version=version,
-            smoke_timeout=1.0,
+            smoke_timeout=5.0,
             import_timeout=1.0,
         )
 
@@ -2543,6 +2563,32 @@ class CodexImmutablePromotionTests(unittest.TestCase):
             lambda: self.module.validate_candidate(boolean_schema_root),
         )
 
+        reordered_historical_root = self._build_candidate(
+            "1.0.0",
+            "reordered-historical-required-paths",
+        )
+        manifest_path = reordered_historical_root / MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text())
+        historical_paths = [
+            path
+            for path in manifest["required_paths"]
+            if path
+            not in {
+                "scripts/codex_switch_selection.py",
+                "scripts/codex_switch_shared_configuration.py",
+            }
+        ]
+        historical_paths[-2:] = reversed(historical_paths[-2:])
+        manifest["required_paths"] = historical_paths
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True))
+        self._assert_promotion_error(
+            "candidate_invalid",
+            lambda: self.module.validate_candidate(
+                reordered_historical_root,
+                allow_historical_required_paths=True,
+            ),
+        )
+
         shell_root = self._build_candidate(
             "1.0.0",
             "shell",
@@ -2588,6 +2634,40 @@ class CodexImmutablePromotionTests(unittest.TestCase):
             lambda: self.module.validate_candidate(
                 candidate_root,
                 smoke_timeout=1.0,
+            ),
+        )
+
+    def test_candidate_helper_uses_production_smoke_budget(self) -> None:
+        candidate_root = self._build_candidate(
+            "1.0.0",
+            "production-smoke-budget",
+            command_text=(
+                "#!/usr/bin/env bash\n"
+                "sleep 1.2\n"
+                "printf 'smoke\\n'\n"
+            ),
+        )
+
+        candidate = self._candidate(candidate_root, "1.0.0")
+
+        self.assertEqual("1.0.0", candidate.version)
+
+    def test_candidate_smoke_explicit_short_timeout_is_rejected(self) -> None:
+        candidate_root = self._build_candidate(
+            "1.0.0",
+            "explicit-smoke-timeout",
+            command_text=(
+                "#!/usr/bin/env bash\n"
+                "sleep 0.2\n"
+                "printf 'smoke\\n'\n"
+            ),
+        )
+
+        self._assert_promotion_error(
+            "candidate_smoke_timeout",
+            lambda: self.module.validate_candidate(
+                candidate_root,
+                smoke_timeout=0.05,
             ),
         )
 
@@ -3559,6 +3639,8 @@ class CodexStagedInternalUpdateTests(unittest.TestCase):
         exit_status: int = 0,
         candidate_checks_bound: bool = True,
         mutate_bound: bool = False,
+        mutate_ambient_state: bool = False,
+        block_until_signal: bool = False,
     ) -> None:
         candidate_script = (
             "#!/usr/bin/env bash\n"
@@ -3592,6 +3674,54 @@ class CodexStagedInternalUpdateTests(unittest.TestCase):
             ),
             'cmp "$CODEX_TEST_BOUND_BIN" "$CODEX_TEST_BOUND_COPY"\n',
         ]
+        if mutate_ambient_state:
+            lines.extend(
+                [
+                    (
+                        "printf 'ambient|%s|%s|%s\\n' "
+                        '"$HOME" "$CODEX_HOME" "$PATH" '
+                        '>> "$CODEX_TEST_EVENTS"\n'
+                    ),
+                    (
+                        '"$CODEX_SWITCH_PYTHON" -I -B - '
+                        '"$HOME" "$CODEX_HOME" '
+                        '>> "$CODEX_TEST_EVENTS" <<\'PY\'\n'
+                    ),
+                    "import os\n",
+                    "import stat\n",
+                    "import sys\n",
+                    "paths = [os.path.dirname(sys.argv[1]), *sys.argv[1:]]\n",
+                    "print(\n",
+                    "    'ambient-mode|' + '|'.join(\n",
+                    "        str(stat.S_IMODE(os.stat(path).st_mode))\n",
+                    "        for path in paths\n",
+                    "    )\n",
+                    ")\n",
+                    "PY\n",
+                    'mkdir -p "$CODEX_HOME"\n',
+                    (
+                        "printf 'installer-default-config\\n' "
+                        '> "$CODEX_HOME/config.toml"\n'
+                    ),
+                    'case ":$PATH:" in\n',
+                    '  *":$CODEX_INSTALL_DIR:"*) ;;\n',
+                    "  *)\n",
+                    (
+                        "    printf '\\n# Added by Codex installer\\n"
+                        "export PATH=\"%s:$PATH\"\\n' "
+                        '"$CODEX_INSTALL_DIR" >> "$HOME/.zshrc"\n'
+                    ),
+                    "    ;;\n",
+                    "esac\n",
+                ]
+            )
+        if block_until_signal:
+            lines.extend(
+                [
+                    'printf \'installer-blocked\\n\' >> "$CODEX_TEST_EVENTS"\n',
+                    "while :; do sleep 1; done\n",
+                ]
+            )
         if exit_status:
             lines.append(f"exit {exit_status}\n")
         else:
@@ -3850,6 +3980,420 @@ class CodexStagedInternalUpdateTests(unittest.TestCase):
         self.assertFalse(
             any(".preinstall." in path.name for path in self.install_root.iterdir())
         )
+
+    def test_env_setup_isolates_installer_config_and_shell_side_effects(
+        self,
+    ) -> None:
+        live_codex_home = self.root / "live-codex-home"
+        live_codex_home.mkdir()
+        live_config = live_codex_home / "config.toml"
+        live_config.write_text("live-config-sentinel = true\n")
+        live_config.chmod(0o600)
+        live_shell = self.home / ".zshrc"
+        live_shell.write_text("live-shell-sentinel\n")
+        live_shell.chmod(0o640)
+        config_before = (
+            live_config.read_bytes(),
+            stat.S_IMODE(live_config.stat().st_mode),
+        )
+        shell_before = (
+            live_shell.read_bytes(),
+            stat.S_IMODE(live_shell.stat().st_mode),
+        )
+        self._write_installer(mutate_ambient_state=True)
+        candidate_dir = self._candidate_dir("ambient-isolation")
+
+        result = self._run_env_setup(
+            candidate_dir,
+            env_overrides={"CODEX_HOME": str(live_codex_home)},
+        )
+
+        output = result.stdout + result.stderr
+        self.assertEqual(0, result.returncode, output)
+        self.assertEqual(
+            config_before,
+            (
+                live_config.read_bytes(),
+                stat.S_IMODE(live_config.stat().st_mode),
+            ),
+        )
+        self.assertEqual(
+            shell_before,
+            (
+                live_shell.read_bytes(),
+                stat.S_IMODE(live_shell.stat().st_mode),
+            ),
+        )
+        ambient_event = next(
+            line
+            for line in self.events.read_text().splitlines()
+            if line.startswith("ambient|")
+        )
+        _, installer_home, installer_codex_home, installer_path = (
+            ambient_event.split("|", 3)
+        )
+        self.assertNotEqual(str(self.home), installer_home)
+        self.assertNotEqual(str(live_codex_home), installer_codex_home)
+        self.assertEqual(
+            Path(installer_home).parent,
+            Path(installer_codex_home).parent,
+        )
+        self.assertEqual(
+            str(candidate_dir),
+            installer_path.split(os.pathsep)[0],
+        )
+        ambient_mode = next(
+            line
+            for line in self.events.read_text().splitlines()
+            if line.startswith("ambient-mode|")
+        )
+        self.assertEqual(
+            ["448", "448", "448"],
+            ambient_mode.split("|")[1:],
+        )
+        self.assertFalse(Path(installer_home).parent.exists())
+        self.assertTrue((candidate_dir / "codex").is_file())
+
+    def test_env_setup_isolates_and_cleans_failed_installer_state(
+        self,
+    ) -> None:
+        live_codex_home = self.root / "live-codex-home-failure"
+        live_codex_home.mkdir()
+        live_config = live_codex_home / "config.toml"
+        live_config.write_text("live-config-failure-sentinel = true\n")
+        live_config.chmod(0o600)
+        live_shell = self.home / ".zshrc"
+        live_shell.write_text("live-shell-failure-sentinel\n")
+        live_shell.chmod(0o640)
+        config_before = (
+            live_config.read_bytes(),
+            stat.S_IMODE(live_config.stat().st_mode),
+        )
+        shell_before = (
+            live_shell.read_bytes(),
+            stat.S_IMODE(live_shell.stat().st_mode),
+        )
+        self._write_installer(
+            exit_status=17,
+            mutate_ambient_state=True,
+        )
+        candidate_dir = self._candidate_dir("ambient-failure")
+
+        result = self._run_env_setup(
+            candidate_dir,
+            env_overrides={"CODEX_HOME": str(live_codex_home)},
+        )
+
+        output = result.stdout + result.stderr
+        self.assertEqual(17, result.returncode, output)
+        self.assertEqual(
+            config_before,
+            (
+                live_config.read_bytes(),
+                stat.S_IMODE(live_config.stat().st_mode),
+            ),
+        )
+        self.assertEqual(
+            shell_before,
+            (
+                live_shell.read_bytes(),
+                stat.S_IMODE(live_shell.stat().st_mode),
+            ),
+        )
+        ambient_event = next(
+            line
+            for line in self.events.read_text().splitlines()
+            if line.startswith("ambient|")
+        )
+        _, installer_home, installer_codex_home, installer_path = (
+            ambient_event.split("|", 3)
+        )
+        self.assertNotEqual(str(self.home), installer_home)
+        self.assertNotEqual(str(live_codex_home), installer_codex_home)
+        self.assertEqual(
+            str(candidate_dir),
+            installer_path.split(os.pathsep)[0],
+        )
+        self.assertFalse(Path(installer_home).parent.exists())
+        self.assertFalse((candidate_dir / "codex").exists())
+
+    def test_env_setup_initialization_failure_removes_installer_root(
+        self,
+    ) -> None:
+        self._write_installer()
+        self._write_script(
+            self.fake_bin / "chmod",
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'target="${@: -1}"\n'
+            'case "$target" in\n'
+            "  /tmp/codex-switch-internal-installer.*)\n"
+            '    printf \'scratch-chmod:%s\\n\' "$target" '
+            '>> "$CODEX_TEST_EVENTS"\n'
+            '    exec /bin/chmod 755 "$target"\n'
+            "    ;;\n"
+            "esac\n"
+            'exec /bin/chmod "$@"\n',
+        )
+        candidate_dir = self._candidate_dir("scratch-init-failure")
+
+        result = self._run_env_setup(candidate_dir)
+
+        output = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, output)
+        scratch_event = next(
+            line
+            for line in self.events.read_text().splitlines()
+            if line.startswith("scratch-chmod:")
+        )
+        installer_root = Path(scratch_event.split(":", 1)[1])
+        self.assertTrue(
+            installer_root.name.startswith(
+                "codex-switch-internal-installer."
+            )
+        )
+        self.addCleanup(shutil.rmtree, installer_root, ignore_errors=True)
+        self.assertFalse(installer_root.exists())
+        self.assertFalse((candidate_dir / "codex").exists())
+
+    def test_env_setup_removes_private_installer_state_on_signals(self) -> None:
+        for signal_value, label in (
+            (signal.SIGHUP, "hup"),
+            (signal.SIGINT, "int"),
+            (signal.SIGTERM, "term"),
+        ):
+            with self.subTest(signal=label):
+                if self.events.exists():
+                    self.events.unlink()
+                live_codex_home = self.root / f"live-codex-home-{label}"
+                live_codex_home.mkdir()
+                live_config = live_codex_home / "config.toml"
+                live_config.write_text(
+                    f"live-config-{label}-sentinel = true\n"
+                )
+                live_config.chmod(0o600)
+                live_shell = self.home / ".zshrc"
+                live_shell.write_text(f"live-shell-{label}-sentinel\n")
+                live_shell.chmod(0o640)
+                config_before = (
+                    live_config.read_bytes(),
+                    stat.S_IMODE(live_config.stat().st_mode),
+                )
+                shell_before = (
+                    live_shell.read_bytes(),
+                    stat.S_IMODE(live_shell.stat().st_mode),
+                )
+                self._write_installer(
+                    mutate_ambient_state=True,
+                    block_until_signal=True,
+                )
+                candidate_dir = self._candidate_dir(f"{label}-cleanup")
+                env = self.base_env.copy()
+                env["CODEX_HOME"] = str(live_codex_home)
+                command = [
+                    str(ENV_SETUP),
+                    "update-internal",
+                    "--internal-bin",
+                    str(self.bound_bin),
+                    "--install-dir",
+                    str(candidate_dir),
+                    "--version",
+                    "2.0.0",
+                    "--model",
+                    "gpt-internal-staged",
+                    "--azure-base-url",
+                    "https://internal.example.invalid/api",
+                    "--skip-source-check",
+                    "--skip-proxy",
+                ]
+                process = subprocess.Popen(
+                    [
+                        "bash",
+                        "-c",
+                        'umask 022; exec "$@"',
+                        f"codex-staged-update-{label}-test",
+                        *command,
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                    start_new_session=True,
+                )
+                installer_root: Path | None = None
+                try:
+                    for _ in range(200):
+                        if self.events.exists():
+                            events = self.events.read_text()
+                            ambient_events = [
+                                line
+                                for line in events.splitlines()
+                                if line.startswith("ambient|")
+                            ]
+                            if ambient_events and "installer-blocked" in events:
+                                _, installer_home, _, _ = ambient_events[
+                                    -1
+                                ].split("|", 3)
+                                installer_root = Path(installer_home).parent
+                                break
+                        if process.poll() is not None:
+                            break
+                        time.sleep(0.05)
+                    self.assertIsNotNone(installer_root)
+                    assert installer_root is not None
+                    self.assertTrue(
+                        installer_root.name.startswith(
+                            "codex-switch-internal-installer."
+                        )
+                    )
+                    self.addCleanup(
+                        shutil.rmtree,
+                        installer_root,
+                        ignore_errors=True,
+                    )
+                    os.killpg(process.pid, signal_value)
+                    stdout, stderr = process.communicate(timeout=10)
+                finally:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.communicate(timeout=10)
+
+                self.assertNotEqual(0, process.returncode, stdout + stderr)
+                self.assertEqual(
+                    config_before,
+                    (
+                        live_config.read_bytes(),
+                        stat.S_IMODE(live_config.stat().st_mode),
+                    ),
+                )
+                self.assertEqual(
+                    shell_before,
+                    (
+                        live_shell.read_bytes(),
+                        stat.S_IMODE(live_shell.stat().st_mode),
+                    ),
+                )
+                self.assertFalse(
+                    installer_root.exists(),
+                    stdout + stderr,
+                )
+
+    def test_env_setup_parent_signal_terminates_and_reaps_installer(
+        self,
+    ) -> None:
+        live_codex_home = self.root / "live-codex-home-parent-term"
+        live_codex_home.mkdir()
+        live_config = live_codex_home / "config.toml"
+        live_config.write_text("live-config-parent-term-sentinel = true\n")
+        live_config.chmod(0o600)
+        live_shell = self.home / ".zshrc"
+        live_shell.write_text("live-shell-parent-term-sentinel\n")
+        live_shell.chmod(0o640)
+        config_before = (
+            live_config.read_bytes(),
+            stat.S_IMODE(live_config.stat().st_mode),
+        )
+        shell_before = (
+            live_shell.read_bytes(),
+            stat.S_IMODE(live_shell.stat().st_mode),
+        )
+        self._write_installer(
+            mutate_ambient_state=True,
+            block_until_signal=True,
+        )
+        candidate_dir = self._candidate_dir("parent-term-cleanup")
+        env = self.base_env.copy()
+        env["CODEX_HOME"] = str(live_codex_home)
+        command = [
+            str(ENV_SETUP),
+            "update-internal",
+            "--internal-bin",
+            str(self.bound_bin),
+            "--install-dir",
+            str(candidate_dir),
+            "--version",
+            "2.0.0",
+            "--model",
+            "gpt-internal-staged",
+            "--azure-base-url",
+            "https://internal.example.invalid/api",
+            "--skip-source-check",
+            "--skip-proxy",
+        ]
+        process = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                'umask 022; exec "$@"',
+                "codex-staged-update-parent-term-test",
+                *command,
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+        installer_root: Path | None = None
+        timed_out = False
+        try:
+            for _ in range(200):
+                if self.events.exists():
+                    events = self.events.read_text()
+                    ambient_events = [
+                        line
+                        for line in events.splitlines()
+                        if line.startswith("ambient|")
+                    ]
+                    if ambient_events and "installer-blocked" in events:
+                        _, installer_home, _, _ = ambient_events[-1].split(
+                            "|",
+                            3,
+                        )
+                        installer_root = Path(installer_home).parent
+                        break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(installer_root)
+            assert installer_root is not None
+            self.addCleanup(
+                shutil.rmtree,
+                installer_root,
+                ignore_errors=True,
+            )
+            os.kill(process.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                os.killpg(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate(timeout=10)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=10)
+
+        self.assertFalse(
+            timed_out,
+            "top-level TERM did not terminate the blocked installer",
+        )
+        self.assertEqual(143, process.returncode, stdout + stderr)
+        self.assertEqual(
+            config_before,
+            (
+                live_config.read_bytes(),
+                stat.S_IMODE(live_config.stat().st_mode),
+            ),
+        )
+        self.assertEqual(
+            shell_before,
+            (
+                live_shell.read_bytes(),
+                stat.S_IMODE(live_shell.stat().st_mode),
+            ),
+        )
+        self.assertFalse(installer_root.exists(), stdout + stderr)
 
     def test_env_setup_detects_bound_mutation_by_installer(self) -> None:
         self._write_installer(
@@ -4239,6 +4783,301 @@ class CodexStagedInternalUpdateTests(unittest.TestCase):
         )
         self.assertEqual(before, self._bound_snapshot())
         self.assertNotIn("verified installed version", output)
+
+    def test_cli_only_promotion_commits_digest_bound_manifest_without_desktop_artifacts(
+        self,
+    ) -> None:
+        store = self._write_internal_manifest()
+        profile_dir = store / "profiles" / "internal"
+        desktop_artifacts = {
+            store / "bin" / "codex-internal-app": b"desktop-launcher\n",
+            profile_dir / "parity" / "receipt.json": b"parity-receipt\n",
+            profile_dir / "parity" / "model-catalog.json": b"overlay\n",
+            profile_dir / "config.toml": b'model = "old"\n',
+        }
+        for path, payload in desktop_artifacts.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(0o755 if path.name == "codex-internal-app" else 0o600)
+        candidate_dir = self._candidate_dir("cli-only-success")
+        candidate_dir.mkdir(mode=0o700)
+        candidate = candidate_dir / "codex"
+        self._write_script(
+            candidate,
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == "--version" ]]; then\n'
+            "  printf 'codex-cli 2.0.0\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+        )
+        candidate_payload = candidate.read_bytes()
+        backup = self.install_root / ".codex-internal-backup-cli-only"
+
+        result = subprocess.run(
+            [
+                self.base_env["CODEX_SWITCH_PYTHON"],
+                str(PROFILE_SWITCH_MODULE_PATH),
+                "--store-dir",
+                str(store),
+                "--official-codex-home",
+                str(self.root / "official-home"),
+                "--internal-codex-home",
+                str(store / "homes" / "internal"),
+                "--launch-agent-path",
+                str(self.root / "agent.plist"),
+                "promote-internal-update",
+                "--bound-bin",
+                str(self.bound_bin),
+                "--candidate-bin",
+                str(candidate),
+                "--backup-bin",
+                str(backup),
+                "--target-version",
+                "2.0.0",
+                "--cli-only",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self.base_env,
+        )
+
+        output = result.stdout + result.stderr
+        self.assertEqual(0, result.returncode, output)
+        self.assertEqual(candidate_payload, self.bound_bin.read_bytes())
+        self.assertFalse(candidate.exists())
+        self.assertFalse(backup.exists())
+        manifest = json.loads(
+            (profile_dir / "manifest.json").read_text()
+        )
+        self.assertEqual(
+            {
+                "schema_version": 1,
+                "scope": "cli-only",
+                "backend_sha256": hashlib.sha256(
+                    candidate_payload
+                ).hexdigest(),
+                "backend_version": "2.0.0",
+            },
+            manifest["internal_cli_generation"],
+        )
+        self.assertEqual(
+            "unverified",
+            manifest["internal_app_readiness"],
+        )
+        for path, payload in desktop_artifacts.items():
+            self.assertEqual(payload, path.read_bytes(), str(path))
+        self.assertIn("CLI-only promotion: passed", output)
+        self.assertNotIn("App-server smoke: passed", output)
+        self.assertNotIn("Restart required", output)
+
+    def test_cli_only_promotion_rolls_back_binary_and_manifest_when_postcondition_fails(
+        self,
+    ) -> None:
+        store = self._write_internal_manifest()
+        manifest_path = store / "profiles" / "internal" / "manifest.json"
+        old_manifest = manifest_path.read_bytes()
+        old_bound = self.bound_bin.read_bytes()
+        candidate_dir = self._candidate_dir("cli-only-rollback")
+        candidate_dir.mkdir(mode=0o700)
+        candidate = candidate_dir / "codex"
+        probe_count = self.root / "cli-only-probe-count"
+        self._write_script(
+            candidate,
+            "#!/usr/bin/env bash\n"
+            f"count_file={str(probe_count)!r}\n"
+            "count=0\n"
+            '[[ -f "$count_file" ]] && count="$(cat "$count_file")"\n'
+            "count=$((count + 1))\n"
+            'printf "%s\\n" "$count" > "$count_file"\n'
+            'if [[ "${1:-}" == "--version" && "$count" == "1" ]]; then\n'
+            "  printf 'codex-cli 2.0.0\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 31\n",
+        )
+        candidate_payload = candidate.read_bytes()
+        backup = self.install_root / ".codex-internal-backup-cli-rollback"
+
+        result = subprocess.run(
+            [
+                self.base_env["CODEX_SWITCH_PYTHON"],
+                str(PROFILE_SWITCH_MODULE_PATH),
+                "--store-dir",
+                str(store),
+                "--official-codex-home",
+                str(self.root / "official-home"),
+                "--internal-codex-home",
+                str(store / "homes" / "internal"),
+                "--launch-agent-path",
+                str(self.root / "agent.plist"),
+                "promote-internal-update",
+                "--bound-bin",
+                str(self.bound_bin),
+                "--candidate-bin",
+                str(candidate),
+                "--backup-bin",
+                str(backup),
+                "--target-version",
+                "2.0.0",
+                "--cli-only",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self.base_env,
+        )
+
+        output = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, output)
+        self.assertEqual(old_bound, self.bound_bin.read_bytes())
+        self.assertEqual(old_manifest, manifest_path.read_bytes())
+        self.assertEqual(candidate_payload, candidate.read_bytes())
+        self.assertEqual("2", probe_count.read_text().strip())
+        self.assertFalse(backup.exists())
+        self.assertFalse(
+            (store / ".runtime-binding-rebind.json").exists()
+        )
+        self.assertNotIn("CLI-only promotion: passed", output)
+
+    def test_cli_only_promotion_rolls_back_when_managed_generation_is_invalid(
+        self,
+    ) -> None:
+        store = self._write_internal_manifest()
+        manifest_path = store / "profiles" / "internal" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["codex_home"] = "relative-internal-home"
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        old_manifest = manifest_path.read_bytes()
+        old_bound = self.bound_bin.read_bytes()
+        candidate_dir = self._candidate_dir("cli-only-invalid-generation")
+        candidate_dir.mkdir(mode=0o700)
+        candidate = candidate_dir / "codex"
+        self._write_script(
+            candidate,
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == "--version" ]]; then\n'
+            "  printf 'codex-cli 2.0.0\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+        )
+        candidate_payload = candidate.read_bytes()
+        backup = self.install_root / ".codex-internal-backup-cli-invalid"
+
+        result = subprocess.run(
+            [
+                self.base_env["CODEX_SWITCH_PYTHON"],
+                str(PROFILE_SWITCH_MODULE_PATH),
+                "--store-dir",
+                str(store),
+                "--official-codex-home",
+                str(self.root / "official-home"),
+                "--internal-codex-home",
+                str(store / "homes" / "internal"),
+                "--launch-agent-path",
+                str(self.root / "agent.plist"),
+                "promote-internal-update",
+                "--bound-bin",
+                str(self.bound_bin),
+                "--candidate-bin",
+                str(candidate),
+                "--backup-bin",
+                str(backup),
+                "--target-version",
+                "2.0.0",
+                "--cli-only",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self.base_env,
+        )
+
+        output = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, output)
+        self.assertIn("CLI CODEX_HOME path is not absolute", output)
+        self.assertEqual(old_bound, self.bound_bin.read_bytes())
+        self.assertEqual(old_manifest, manifest_path.read_bytes())
+        self.assertEqual(candidate_payload, candidate.read_bytes())
+        self.assertFalse(backup.exists())
+        self.assertFalse(
+            (store / ".runtime-binding-rebind.json").exists()
+        )
+        self.assertNotIn("CLI-only promotion: passed", output)
+
+    def test_cli_only_promotion_rolls_back_when_managed_shell_probe_fails(
+        self,
+    ) -> None:
+        store = self._write_internal_manifest()
+        manifest_path = store / "profiles" / "internal" / "manifest.json"
+        old_manifest = manifest_path.read_bytes()
+        old_bound = self.bound_bin.read_bytes()
+        managed_home = (store / "homes" / "internal").resolve()
+        candidate_dir = self._candidate_dir("cli-only-managed-shell-failure")
+        candidate_dir.mkdir(mode=0o700)
+        candidate = candidate_dir / "codex"
+        self._write_script(
+            candidate,
+            "#!/usr/bin/env bash\n"
+            f"managed_home={str(managed_home)!r}\n"
+            'if [[ "${CODEX_HOME:-}" == "$managed_home" ]]; then\n'
+            "  exit 41\n"
+            "fi\n"
+            'if [[ "${1:-}" == "--version" ]]; then\n'
+            "  printf 'codex-cli 2.0.0\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+        )
+        candidate_payload = candidate.read_bytes()
+        backup = self.install_root / ".codex-internal-backup-cli-shell"
+
+        result = subprocess.run(
+            [
+                self.base_env["CODEX_SWITCH_PYTHON"],
+                str(PROFILE_SWITCH_MODULE_PATH),
+                "--store-dir",
+                str(store),
+                "--official-codex-home",
+                str(self.root / "official-home"),
+                "--internal-codex-home",
+                str(managed_home),
+                "--launch-agent-path",
+                str(self.root / "agent.plist"),
+                "promote-internal-update",
+                "--bound-bin",
+                str(self.bound_bin),
+                "--candidate-bin",
+                str(candidate),
+                "--backup-bin",
+                str(backup),
+                "--target-version",
+                "2.0.0",
+                "--cli-only",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self.base_env,
+        )
+
+        output = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, output)
+        self.assertIn("Managed internal CLI shell version probe failed", output)
+        self.assertEqual(old_bound, self.bound_bin.read_bytes())
+        self.assertEqual(old_manifest, manifest_path.read_bytes())
+        self.assertEqual(candidate_payload, candidate.read_bytes())
+        self.assertFalse(backup.exists())
+        self.assertFalse(
+            (store / ".runtime-binding-rebind.json").exists()
+        )
+        self.assertNotIn("CLI-only promotion: passed", output)
 
 
 class CodexInstallerRunnerAdapterTests(unittest.TestCase):
@@ -5054,6 +5893,79 @@ class CodexInstallerRunnerAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             historical_required_paths,
+            json.loads(
+                (layout_root / "rollback" / "bundle-manifest.json").read_text()
+            )["required_paths"],
+        )
+        self.assertTrue((install_dir / "codex-switch").is_symlink())
+
+    def test_installer_upgrades_immediately_prior_twenty_path_manifests(
+        self,
+    ) -> None:
+        _, archive = self._build_candidate(
+            "immediately-prior-manifest-upgrade",
+            "2.0.0",
+        )
+        layout_root = self._prepare_prior_layout(
+            "immediately-prior-manifest-upgrade"
+        )
+        prior_required_paths = [
+            "README.md",
+            "SKILL.md",
+            "VERSION",
+            "run.sh",
+            "agents",
+            "docs",
+            "evals",
+            "scripts",
+            "scripts/codex-switch",
+            "scripts/codex_profile_switch.py",
+            "scripts/codex_switch_release_bundle.py",
+            "scripts/codex_switch_promotion.py",
+            "scripts/codex_switch_update_policy.py",
+            "scripts/codex_switch_official_release.py",
+            "scripts/codex_switch_parity.py",
+            "scripts/codex_switch_runtime_binding.py",
+            "scripts/codex_switch_app_proxy.py",
+            "scripts/codex_switch_home_sync.py",
+            "scripts/package-release.sh",
+            "bundle-manifest.json",
+        ]
+        for reference in ("current", "rollback"):
+            release = (layout_root / os.readlink(layout_root / reference)).resolve()
+            manifest_path = release / "bundle-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["required_paths"] = prior_required_paths
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+            )
+        previous_current = (layout_root / "current").resolve()
+        previous_current_snapshot = filesystem_snapshot(previous_current)
+        install_dir = self.root / "immediately-prior-manifest-bin"
+
+        result = self._run_entrypoint(
+            INSTALLER,
+            archive,
+            layout_root,
+            install_dir,
+            (),
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(
+            "2.0.0",
+            (layout_root / "current" / "VERSION").read_text().strip(),
+        )
+        self.assertEqual(
+            "1.0.0",
+            (layout_root / "rollback" / "VERSION").read_text().strip(),
+        )
+        self.assertEqual(
+            previous_current_snapshot,
+            filesystem_snapshot((layout_root / "rollback").resolve()),
+        )
+        self.assertEqual(
+            prior_required_paths,
             json.loads(
                 (layout_root / "rollback" / "bundle-manifest.json").read_text()
             )["required_paths"],

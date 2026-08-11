@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from codex_switch_constants import APP_CLI_ENV, DEFAULT_CHATGPT_BUNDLED_CODEX, SwitchError
-from codex_switch_io import read_json
 from codex_switch_paths import equivalent_paths, profile_app_cli_path
 from codex_switch_running_app import (
     attestation_problem_messages,
@@ -35,12 +34,10 @@ def print_app_codex_status(
                     "binding.official.explicit_compatibility",
                     "Explicit official App CLI compatibility is not a canonical ChatGPT binding.",
                 )
-            active_record = read_json(store.active_path) if store.active_path.exists() else {}
             binding = resolve_store_runtime_binding(
                 store,
                 active_profile,
                 manifest=manifest,
-                active_record=active_record,
             )
         except (SwitchError, RuntimeBindingError) as exc:
             if getattr(exc, "code", "") != "binding.official.explicit_compatibility":

@@ -50,10 +50,17 @@ from codex_switch_runtime_binding import (
     RuntimeBinding,
     RuntimeBindingError,
     RuntimeObservation,
+    manifest_has_internal_cli_generation,
     manifest_uses_canonical_binding,
     resolve_store_runtime_binding,
     validate_internal_runtime_generation,
 )
+from codex_switch_selection import (
+    ActiveProfileSelectionSnapshot,
+    active_profile_selection,
+    read_active_profile_selection_snapshot,
+)
+from codex_switch_shared_configuration import shared_configuration_report
 from codex_switch_store import Store, make_store
 from codex_switch_toml_scan import toml_table_name
 from codex_switch_toml_validate import commentless_line, validate_toml
@@ -109,6 +116,8 @@ DEFAULT_SMOKE_TIMEOUT_SECONDS = 15.0
 DEFAULT_SMOKE_MAX_STREAM_BYTES = 64 * 1024
 DEFAULT_TERMINATE_GRACE_SECONDS = 0.5
 DEFAULT_KILL_GRACE_SECONDS = 1.0
+
+
 @dataclass(frozen=True)
 class SmokeOutcome:
     status: str
@@ -122,6 +131,75 @@ class SmokeOutcome:
     stdout_truncated: bool
     stderr_truncated: bool
     duration_seconds: float
+
+
+@dataclass(frozen=True)
+class VerificationRuntimeBindings:
+    cli: RuntimeBinding | None
+    cli_problem: str | None
+    app: RuntimeBinding | None
+    app_problem: str | None
+    selection_problem: str | None = None
+
+
+_SHARED_CONFIGURATION_REPORT_UNSET = object()
+
+
+def selection_uses_shared_configuration(selection: object) -> bool:
+    return (
+        getattr(selection, "cli_profile", None),
+        getattr(selection, "app_profile", None),
+    ) == ("internal", "openai-official")
+
+
+def shared_configuration_diagnostic_lines(report: object) -> list[str]:
+    generation = getattr(report, "generation", None)
+    if generation is None:
+        generation = getattr(report, "generation_after", 0)
+    status = str(getattr(report, "status", "unknown"))
+    cli_ready = bool(getattr(report, "cli_ready", False))
+    pending_target = getattr(report, "pending_target", None)
+    lines = [
+        f"Shared configuration generation: {generation}",
+        f"Shared configuration status: {status}",
+        f"Shared configuration CLI ready: {'yes' if cli_ready else 'no'}",
+        "Shared configuration pending target: "
+        f"{pending_target if pending_target is not None else '<none>'}",
+    ]
+    for finding in getattr(report, "findings", ()):
+        code = str(getattr(finding, "code", "shared_configuration.unknown"))
+        severity = str(getattr(finding, "severity", "error"))
+        lines.append(
+            f"Shared configuration finding: {code} ({severity})"
+        )
+    return lines
+
+
+def shared_configuration_problem_messages(report: object | None) -> list[str]:
+    if report is None:
+        return []
+    status = str(getattr(report, "status", "unknown"))
+    findings = tuple(getattr(report, "findings", ()))
+    unhealthy = (
+        not bool(getattr(report, "cli_ready", False))
+        or getattr(report, "pending_target", None) is not None
+        or status
+        in {
+            "blocked",
+            "conflict",
+            "incomplete",
+            "materialization_failed",
+            "pending",
+            "stale",
+            "unsafe",
+        }
+        or any(
+            str(getattr(finding, "severity", "error"))
+            in {"error", "warning"}
+            for finding in findings
+        )
+    )
+    return shared_configuration_diagnostic_lines(report) if unhealthy else []
 
 
 class _BoundedByteCapture:
@@ -557,24 +635,46 @@ def collect_active_state_problems(
     home: Path,
     *,
     runtime_binding: RuntimeBinding | None = None,
+    app_runtime_binding: RuntimeBinding | None = None,
     runtime_binding_problem: str | None = None,
+    app_runtime_binding_problem: str | None = None,
     runtime_observation: RuntimeObservation | None = None,
+    shared_configuration: object = _SHARED_CONFIGURATION_REPORT_UNSET,
+    selection_snapshot: ActiveProfileSelectionSnapshot | None = None,
 ) -> list[str]:
     problems: list[str] = []
     if runtime_binding_problem is not None:
         problems.append(runtime_binding_problem)
-    if not store.active_path.exists():
+    snapshot = selection_snapshot or read_active_profile_selection_snapshot(
+        store.active_path,
+        fallback_cli_profile=name,
+    )
+    if snapshot.record is None and snapshot.problem is None:
         problems.append(f"{name}: active profile record is missing")
         return problems
-    try:
-        active = read_json(store.active_path)
-    except SwitchError as exc:
-        problems.append(str(exc))
+    if snapshot.problem is not None:
+        problems.append(snapshot.problem)
+        return problems
+    active = snapshot.record
+    selection = snapshot.selection
+    if active is None or selection is None:
+        problems.append("active.selection.invalid: active selection is unavailable")
         return problems
 
-    active_profile = active.get("profile")
-    if active_profile != name:
-        problems.append(f"active profile is {active_profile or '<missing>'}, expected {name}")
+    shared_report = shared_configuration
+    if shared_report is _SHARED_CONFIGURATION_REPORT_UNSET:
+        shared_report = (
+            shared_configuration_report(store, selection)
+            if selection_uses_shared_configuration(selection)
+            else None
+        )
+    if shared_report is not None:
+        problems.extend(shared_configuration_problem_messages(shared_report))
+
+    if selection.cli_profile != name:
+        problems.append(
+            f"active CLI profile is {selection.cli_profile}, expected {name}"
+        )
 
     active_home = active.get("codex_home") or active.get("live_codex_home")
     if isinstance(active_home, str) and active_home:
@@ -584,6 +684,11 @@ def collect_active_state_problems(
         problems.append(f"{name}: active CODEX_HOME is missing")
 
     manifest = store.load_manifest(name)
+    app_manifest = (
+        manifest
+        if selection.app_profile == name
+        else store.load_manifest(selection.app_profile)
+    )
     binding = runtime_binding
     if (
         runtime_binding_problem is None
@@ -597,37 +702,69 @@ def collect_active_state_problems(
                 store,
                 name,
                 manifest=manifest,
-                active_record=active,
+            )
+        except RuntimeBindingError as exc:
+            problems.append(f"{exc.code}: {exc}")
+    app_binding = app_runtime_binding
+    if (
+        app_runtime_binding_problem is not None
+        and app_runtime_binding_problem != runtime_binding_problem
+    ):
+        problems.append(app_runtime_binding_problem)
+    if (
+        app_runtime_binding_problem is None
+        and app_binding is None
+        and selection.app_profile in {"internal", "openai-official", "official"}
+        and manifest_uses_canonical_binding(selection.app_profile, app_manifest)
+    ):
+        try:
+            app_binding = (
+                binding
+                if selection.app_profile == name
+                else resolve_store_runtime_binding(
+                    store,
+                    selection.app_profile,
+                    manifest=app_manifest,
+                )
             )
         except RuntimeBindingError as exc:
             problems.append(f"{exc.code}: {exc}")
     observation = runtime_observation
-    if observation is None and binding is not None:
-        observation = collect_store_runtime_observation(store, binding)
+    if observation is None and app_binding is not None:
+        observation = collect_store_runtime_observation(store, app_binding)
     expected_shell_cli = (
         str(binding.shell_cli)
         if binding is not None
         else str(manifest.get("codex_bin", ""))
     )
     active_shell_cli = active.get("shell_cli_path")
+    active_record_stale = False
     if expected_shell_cli and active_shell_cli and not equivalent_paths(
         str(active_shell_cli), expected_shell_cli
     ):
+        active_record_stale = True
         problems.append(
             f"{name}: active shell CLI is {active_shell_cli}, expected {expected_shell_cli}"
         )
 
     active_app_cli = active.get("app_cli_path")
     expected_app_cli = (
-        str(binding.desktop_cli)
-        if binding is not None
-        else profile_app_cli_path(manifest)
+        str(app_binding.desktop_cli)
+        if app_binding is not None
+        else profile_app_cli_path(app_manifest)
     )
     if expected_app_cli and active_app_cli and not equivalent_paths(
         str(active_app_cli), expected_app_cli
     ):
+        active_record_stale = True
         problems.append(
-            f"{name}: active App CLI is {active_app_cli}, expected {expected_app_cli}"
+            f"{selection.app_profile}: active App CLI is {active_app_cli}, "
+            f"expected {expected_app_cli}"
+        )
+    if active_record_stale:
+        problems.append(
+            "binding.observation.active_stale: The active record differs "
+            "from manifest-derived runtime intent."
         )
 
     launch_agent_cli = (
@@ -639,7 +776,8 @@ def collect_active_state_problems(
         launch_agent_cli, expected_app_cli
     ):
         problems.append(
-            f"{name}: LaunchAgent CODEX_CLI_PATH is {launch_agent_cli}, expected {expected_app_cli}"
+            f"{selection.app_profile}: LaunchAgent CODEX_CLI_PATH is "
+            f"{launch_agent_cli}, expected {expected_app_cli}"
         )
     elif (
         binding is None
@@ -651,13 +789,20 @@ def collect_active_state_problems(
         gui_app_cli = detect_current_app_cli_path()
         if gui_app_cli and not equivalent_paths(gui_app_cli, expected_app_cli):
             problems.append(
-                f"{name}: GUI CODEX_CLI_PATH is {gui_app_cli}, expected {expected_app_cli}"
+                f"{selection.app_profile}: GUI CODEX_CLI_PATH is {gui_app_cli}, "
+                f"expected {expected_app_cli}"
             )
 
-    if binding is not None and observation is not None:
-        problems.extend(attestation_problem_messages(binding, observation))
+    if app_binding is not None and observation is not None:
+        problems.extend(attestation_problem_messages(app_binding, observation))
     elif expected_app_cli:
-        problems.extend(running_desktop_problems(store, name, expected_app_cli))
+        problems.extend(
+            running_desktop_problems(
+                store,
+                selection.app_profile,
+                expected_app_cli,
+            )
+        )
     return problems
 
 
@@ -1338,6 +1483,7 @@ def runtime_smoke_problems(
     runtime_smoke: bool = False,
     responses_tool_smoke: bool = False,
     runtime_binding: RuntimeBinding | None = None,
+    app_runtime_binding: RuntimeBinding | None = None,
 ) -> tuple[
     list[str],
     list[dict[str, object]],
@@ -1349,11 +1495,27 @@ def runtime_smoke_problems(
         if runtime_binding is not None
         else str(manifest.get("codex_bin", ""))
     )
+    if (
+        name == "internal"
+        and manifest_has_internal_cli_generation(manifest)
+    ):
+        codex_bin = str(store.bin_dir / "codex")
     runtime_home = (
         runtime_binding.codex_home
         if runtime_binding is not None
         else home
     )
+    app_binding = (
+        app_runtime_binding
+        if app_runtime_binding is not None
+        else runtime_binding
+    )
+    app_manifest = (
+        store.load_manifest(app_binding.profile)
+        if app_binding is not None
+        else manifest
+    )
+    app_name = app_binding.profile if app_binding is not None else name
     if not codex_bin:
         return [f"{name}: missing codex_bin for runtime smoke"], [], []
 
@@ -1407,14 +1569,14 @@ def runtime_smoke_problems(
     if app_server_smoke:
         started = time.monotonic()
         app_server_bin = (
-            str(runtime_binding.desktop_cli)
-            if runtime_binding is not None
+            str(app_binding.desktop_cli)
+            if app_binding is not None
             else codex_bin
         )
-        if runtime_binding is not None:
+        if app_binding is not None:
             code, output = run_binding_app_server_smoke(
-                runtime_binding,
-                manifest,
+                app_binding,
+                app_manifest,
             )
         else:
             code, output = run_app_server_smoke(
@@ -1449,7 +1611,7 @@ def runtime_smoke_problems(
         smoke_outcomes.append(app_server_outcome)
         if code != 0:
             problems.append(
-                f"{name}: app-server smoke failed for "
+                f"{app_name}: app-server smoke failed for "
                 f"`{app_server_bin} {' '.join(app_server_smoke_args())}` "
                 f"(exit {code}): {output}"
             )
@@ -1465,9 +1627,14 @@ def collect_verification_problems(
     exec_smoke: str | None = None,
     responses_tool_smoke: bool = False,
     runtime_binding: RuntimeBinding | None = None,
+    app_runtime_binding: RuntimeBinding | None = None,
     runtime_binding_problem: str | None = None,
+    app_runtime_binding_problem: str | None = None,
+    selection_problem: str | None = None,
     runtime_observation: RuntimeObservation | None = None,
     parity_report: ParityReport | None = None,
+    shared_configuration: object = _SHARED_CONFIGURATION_REPORT_UNSET,
+    selection_snapshot: ActiveProfileSelectionSnapshot | None = None,
 ) -> tuple[
     list[str],
     list[dict[str, object]],
@@ -1489,6 +1656,37 @@ def collect_verification_problems(
                 )
             except RuntimeBindingError as exc:
                 binding_problem = f"{exc.code}: {exc}"
+    app_binding = app_runtime_binding
+    app_binding_problem = app_runtime_binding_problem
+    effective_selection_problem = selection_problem
+    snapshot = selection_snapshot or read_active_profile_selection_snapshot(
+        store.active_path,
+        fallback_cli_profile=name,
+    )
+    if snapshot.problem is not None or snapshot.selection is None:
+        effective_selection_problem = effective_selection_problem or (
+            snapshot.problem
+            or "active.selection.invalid: active selection is unavailable"
+        )
+        app_profile = name
+        app_binding = None
+    else:
+        app_profile = snapshot.selection.app_profile
+    if app_binding is None and app_binding_problem is None:
+        if app_profile == name:
+            app_binding = binding
+            app_binding_problem = binding_problem
+        elif app_profile in {"internal", "openai-official", "official"}:
+            app_manifest = store.load_manifest(app_profile)
+            if manifest_uses_canonical_binding(app_profile, app_manifest):
+                try:
+                    app_binding = resolve_store_runtime_binding(
+                        store,
+                        app_profile,
+                        manifest=app_manifest,
+                    )
+                except RuntimeBindingError as exc:
+                    app_binding_problem = f"{exc.code}: {exc}"
     home = binding.codex_home if binding is not None else profile_home(store, name)
     problems: list[str] = []
     smoke_diagnostics: list[dict[str, object]] = []
@@ -1499,12 +1697,21 @@ def collect_verification_problems(
             name,
             home,
             runtime_binding=binding,
+            app_runtime_binding=app_binding,
             runtime_binding_problem=binding_problem,
+            app_runtime_binding_problem=app_binding_problem,
             runtime_observation=runtime_observation,
+            shared_configuration=shared_configuration,
+            selection_snapshot=snapshot,
         )
     )
+    if (
+        effective_selection_problem is not None
+        and effective_selection_problem not in problems
+    ):
+        problems.append(effective_selection_problem)
     problems.extend(collect_runtime_config_problems(store, name, home))
-    if name == "internal":
+    if name == "internal" and app_profile == "internal":
         effective_parity_report = (
             parity_report
             if parity_report is not None
@@ -1515,7 +1722,9 @@ def collect_verification_problems(
         smoke_diagnostics.append(parity_diagnostic)
         problems.extend(parity_problem_messages(effective_parity_report))
     if (
-        binding_problem is None
+        effective_selection_problem is None
+        and binding_problem is None
+        and app_binding_problem is None
         and (
             app_server_smoke
             or runtime_smoke
@@ -1536,6 +1745,7 @@ def collect_verification_problems(
             runtime_smoke=runtime_smoke,
             responses_tool_smoke=responses_tool_smoke,
             runtime_binding=binding,
+            app_runtime_binding=app_binding,
         )
         problems.extend(smoke_problems)
         smoke_diagnostics.extend(runtime_diagnostics)
@@ -2005,6 +2215,13 @@ def print_parity_diagnostics(report: ParityReport) -> None:
         )
 
 
+def internal_app_parity_not_applicable_message(app_profile: str) -> str:
+    return (
+        "Internal App parity: not applicable "
+        f"(App profile: {app_profile})"
+    )
+
+
 def write_verification_report(
     store: Store,
     *,
@@ -2101,6 +2318,7 @@ def write_verification_report(
 def repair_internal_parity(
     args: argparse.Namespace,
     binding: RuntimeBinding,
+    selection_snapshot: ActiveProfileSelectionSnapshot | None = None,
 ) -> None:
     from codex_switch_bindings import cmd_set_bin
 
@@ -2110,16 +2328,124 @@ def repair_internal_parity(
             "name": "internal",
             "codex_bin": str(binding.backend_cli),
             "preserve_app_cli": False,
+            **(
+                {
+                    "expected_active_selection_payload": (
+                        selection_snapshot.payload
+                    )
+                }
+                if selection_snapshot is not None
+                else {}
+            ),
         }
     )
     cmd_set_bin(rebind_args)
 
 
+def active_app_profile_for_cli(store: Store, cli_profile: str) -> str:
+    snapshot = read_active_profile_selection_snapshot(
+        store.active_path,
+        fallback_cli_profile=cli_profile,
+    )
+    if snapshot.problem is not None:
+        raise SwitchError(snapshot.problem)
+    if snapshot.selection is None:
+        raise SwitchError(
+            "active.selection.invalid: active selection is unavailable"
+        )
+    return snapshot.selection.app_profile
+
+
+def resolve_verification_runtime_bindings(
+    store: Store,
+    cli_profile: str,
+    *,
+    selection_snapshot: ActiveProfileSelectionSnapshot | None = None,
+) -> VerificationRuntimeBindings:
+    def resolve_profile(
+        profile: str,
+    ) -> tuple[RuntimeBinding | None, str | None]:
+        try:
+            manifest = store.load_manifest(profile)
+            if (
+                profile in {"internal", "openai-official", "official"}
+                and manifest_uses_canonical_binding(profile, manifest)
+            ):
+                return (
+                    resolve_store_runtime_binding(
+                        store,
+                        profile,
+                        manifest=manifest,
+                    ),
+                    None,
+                )
+        except RuntimeBindingError as exc:
+            return None, f"{exc.code}: {exc}"
+        except SwitchError:
+            return None, None
+        return None, None
+
+    cli_binding, cli_problem = resolve_profile(cli_profile)
+    snapshot = selection_snapshot or read_active_profile_selection_snapshot(
+        store.active_path,
+        fallback_cli_profile=cli_profile,
+    )
+    if snapshot.problem is not None or snapshot.selection is None:
+        return VerificationRuntimeBindings(
+            cli=cli_binding,
+            cli_problem=cli_problem,
+            app=None,
+            app_problem=None,
+            selection_problem=(
+                snapshot.problem
+                or "active.selection.invalid: active selection is unavailable"
+            ),
+        )
+    app_profile = snapshot.selection.app_profile
+    if app_profile == cli_profile:
+        return VerificationRuntimeBindings(
+            cli=cli_binding,
+            cli_problem=cli_problem,
+            app=cli_binding,
+            app_problem=cli_problem,
+            selection_problem=None,
+        )
+    app_binding, app_problem = resolve_profile(app_profile)
+    return VerificationRuntimeBindings(
+        cli=cli_binding,
+        cli_problem=cli_problem,
+        app=app_binding,
+        app_problem=app_problem,
+        selection_problem=None,
+    )
+
+
 def cmd_verify(args: argparse.Namespace) -> None:
     store = make_store(args)
     home = profile_home(store, args.name)
+    selection_snapshot = read_active_profile_selection_snapshot(
+        store.active_path,
+        fallback_cli_profile=args.name,
+    )
+    preflight_selection_problem = selection_snapshot.problem
+    resolved_app_profile = args.name
+    shared_report: object | None = None
+    selection = selection_snapshot.selection
+    if selection is not None:
+        resolved_app_profile = selection.app_profile
+        if (
+            selection_snapshot.record is not None
+            and selection_uses_shared_configuration(selection)
+        ):
+            shared_report = shared_configuration_report(store, selection)
+    if (
+        shared_report is not None
+        and not shared_configuration_problem_messages(shared_report)
+    ):
+        for line in shared_configuration_diagnostic_lines(shared_report):
+            print(line)
     repair_messages: list[str] = []
-    if args.repair == "safe":
+    if args.repair == "safe" and preflight_selection_problem is None:
         repair_messages = run_safe_repair(store, args.name, home)
         repair_messages = [
             sanitize_external_text(message)
@@ -2128,62 +2454,64 @@ def cmd_verify(args: argparse.Namespace) -> None:
         for message in repair_messages:
             print(message)
 
-    binding: RuntimeBinding | None = None
-    binding_problem: str | None = None
-    try:
-        manifest = store.load_manifest(args.name)
-        active = read_json(store.active_path) if store.active_path.exists() else {}
-        if (
-            args.name in {"internal", "openai-official", "official"}
-            and manifest_uses_canonical_binding(args.name, manifest)
-        ):
-            binding = resolve_store_runtime_binding(
-                store,
-                args.name,
-                manifest=manifest,
-                active_record=active,
-            )
-    except RuntimeBindingError as exc:
-        binding_problem = f"{exc.code}: {exc}"
-    except SwitchError:
-        pass
+    bindings = resolve_verification_runtime_bindings(
+        store,
+        args.name,
+        selection_snapshot=selection_snapshot,
+    )
+    binding = bindings.cli
+    binding_problem = bindings.cli_problem
+    app_binding = bindings.app
+    app_binding_problem = bindings.app_problem
+    selection_problem = (
+        preflight_selection_problem or bindings.selection_problem
+    )
+    parity_applicable = (
+        args.name == "internal"
+        and resolved_app_profile == "internal"
+    )
     parity_report = (
         collect_parity_report(store, binding)
-        if args.name == "internal"
+        if parity_applicable and selection_problem is None
         else None
     )
     if (
         args.repair == "safe"
-        and args.name == "internal"
+        and selection_problem is None
+        and parity_applicable
         and binding is not None
         and parity_report is not None
         and not parity_report.healthy
     ):
-        repair_internal_parity(args, binding)
-        binding = None
-        binding_problem = None
-        try:
-            manifest = store.load_manifest(args.name)
-            active = (
-                read_json(store.active_path)
-                if store.active_path.exists()
-                else {}
-            )
-            if manifest_uses_canonical_binding(args.name, manifest):
-                binding = resolve_store_runtime_binding(
-                    store,
-                    args.name,
-                    manifest=manifest,
-                    active_record=active,
-                )
-        except RuntimeBindingError as exc:
-            binding_problem = f"{exc.code}: {exc}"
-        except SwitchError:
-            pass
+        repair_internal_parity(args, binding, selection_snapshot)
+        bindings = resolve_verification_runtime_bindings(
+            store,
+            args.name,
+            selection_snapshot=selection_snapshot,
+        )
+        binding = bindings.cli
+        binding_problem = bindings.cli_problem
+        app_binding = bindings.app
+        app_binding_problem = bindings.app_problem
+        selection_problem = bindings.selection_problem
         parity_report = collect_parity_report(store, binding)
-    observation = collect_store_runtime_observation(store, binding)
+    observation = (
+        collect_store_runtime_observation(store, app_binding)
+        if selection_problem is None
+        else None
+    )
     if parity_report is not None:
         print_parity_diagnostics(parity_report)
+    elif (
+        args.name == "internal"
+        and selection_problem is None
+        and not parity_applicable
+    ):
+        print(
+            internal_app_parity_not_applicable_message(
+                resolved_app_profile
+            )
+        )
 
     problems, smoke_diagnostics, smoke_outcomes = collect_verification_problems(
         store,
@@ -2193,9 +2521,14 @@ def cmd_verify(args: argparse.Namespace) -> None:
         exec_smoke=args.exec_smoke,
         responses_tool_smoke=args.responses_tool_smoke,
         runtime_binding=binding,
+        app_runtime_binding=app_binding,
         runtime_binding_problem=binding_problem,
+        app_runtime_binding_problem=app_binding_problem,
+        selection_problem=selection_problem,
         runtime_observation=observation,
         parity_report=parity_report,
+        shared_configuration=shared_report,
+        selection_snapshot=selection_snapshot,
     )
     problems = [
         sanitize_external_text(problem)

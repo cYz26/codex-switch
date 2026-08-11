@@ -9469,12 +9469,32 @@ def evaluate_parity_policy(
                 == entry.internal.effective_state
             )
             if name == "item_ids":
+                resume_key = ("client_request", "thread/resume")
+                resume_comparison = next(
+                    (
+                        protocol_entry
+                        for protocol_entry
+                        in protocol_comparison.entries
+                        if (
+                            protocol_entry.direction,
+                            protocol_entry.method,
+                        )
+                        == resume_key
+                    ),
+                    None,
+                )
+                resume_natively_compatible = (
+                    resume_comparison is not None
+                    and resume_comparison.official is not None
+                    and resume_comparison.internal is not None
+                    and resume_comparison.compatible
+                    and not resume_comparison.reason_codes
+                )
                 resume_coverage = coverage_by_key.get(
-                    ("client_request", "thread/resume")
+                    resume_key
                 )
                 resume_covered = (
-                    ("client_request", "thread/resume")
-                    in accepted_coverage_keys
+                    resume_key in accepted_coverage_keys
                     and resume_coverage is not None
                     and resume_coverage.disposition
                     == "adapter_transformed"
@@ -9495,7 +9515,13 @@ def evaluate_parity_policy(
                     )
                     and (
                         (behavior_compatible and not item_dependencies)
-                        or (dependencies_exact and resume_covered)
+                        or (
+                            dependencies_exact
+                            and (
+                                resume_natively_compatible
+                                or resume_covered
+                            )
+                        )
                     )
                 ):
                     code = "parity.feature.optional_drift"

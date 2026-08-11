@@ -1818,6 +1818,173 @@ class TransactionTests(unittest.TestCase):
                 marker_text,
             )
 
+    def test_cli_only_runtime_rebind_commits_exact_manifest_and_executable_swap(
+        self,
+    ) -> None:
+        from codex_switch_transaction import locked_store_mutation
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = self.arrange_runtime_binding_executable_swap(
+                Path(temp_dir)
+            )
+            manifest_artifact = next(
+                artifact
+                for artifact in fixture.artifacts
+                if getattr(artifact, "role") == "manifest"
+            )
+            desktop_snapshots = {
+                path: self.runtime_binding_path_snapshot(path)
+                for role, path in fixture.artifact_paths.items()
+                if role != "manifest"
+            }
+
+            with locked_store_mutation(
+                fixture.store,
+                operation="CLI-only runtime promotion",
+            ) as locked_store:
+                self.runtime_binding_executable_swap_seams()[
+                    "commit_runtime_binding_bundle"
+                ](
+                    locked_store,
+                    artifacts=(manifest_artifact,),
+                    executable_swap=fixture.swap,
+                    bundle_scope="cli-only",
+                )
+
+            self.assertEqual(fixture.new_binary, fixture.bound.read_bytes())
+            self.assertFalse(fixture.candidate.exists())
+            self.assertEqual(fixture.old_binary, fixture.backup.read_bytes())
+            self.assertEqual(
+                getattr(manifest_artifact, "payload"),
+                fixture.artifact_paths["manifest"].read_bytes(),
+            )
+            self.assert_runtime_binding_paths_unchanged(desktop_snapshots)
+            self.assertFalse(
+                (
+                    fixture.store.root
+                    / ".runtime-binding-rebind.json"
+                ).exists()
+            )
+
+    def test_cli_only_runtime_rebind_marker_is_scoped_schema_v4_and_recovers(
+        self,
+    ) -> None:
+        from codex_switch_transaction import locked_store_mutation
+
+        class HardInterruption(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = self.arrange_runtime_binding_executable_swap(
+                Path(temp_dir)
+            )
+            manifest_artifact = next(
+                artifact
+                for artifact in fixture.artifacts
+                if getattr(artifact, "role") == "manifest"
+            )
+            old_manifest = fixture.artifact_paths["manifest"].read_bytes()
+
+            def interrupt(phase: str) -> None:
+                if phase == "after_manifest":
+                    raise HardInterruption(phase)
+
+            with self.assertRaises(HardInterruption):
+                with locked_store_mutation(
+                    fixture.store,
+                    operation="interrupted CLI-only runtime promotion",
+                ) as locked_store:
+                    self.runtime_binding_executable_swap_seams()[
+                        "commit_runtime_binding_bundle"
+                    ](
+                        locked_store,
+                        artifacts=(manifest_artifact,),
+                        executable_swap=fixture.swap,
+                        bundle_scope="cli-only",
+                        fault_hook=interrupt,
+                    )
+
+            marker_path = (
+                fixture.store.root / ".runtime-binding-rebind.json"
+            )
+            marker = json.loads(marker_path.read_text())
+            self.assertEqual(4, marker["schema_version"])
+            self.assertEqual("cli-only", marker["bundle_scope"])
+            self.assertEqual(
+                ["manifest"],
+                [entry["role"] for entry in marker["artifacts"]],
+            )
+
+            with locked_store_mutation(
+                fixture.store,
+                operation="recover CLI-only runtime promotion",
+            ):
+                pass
+
+            self.assertEqual(fixture.old_binary, fixture.bound.read_bytes())
+            self.assertEqual(fixture.new_binary, fixture.candidate.read_bytes())
+            self.assertFalse(fixture.backup.exists())
+            self.assertEqual(
+                old_manifest,
+                fixture.artifact_paths["manifest"].read_bytes(),
+            )
+            self.assertFalse(marker_path.exists())
+
+    def test_cli_only_runtime_rebind_rejects_desktop_artifacts_before_marker(
+        self,
+    ) -> None:
+        from codex_switch_transaction import locked_store_mutation
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = self.arrange_runtime_binding_executable_swap(
+                Path(temp_dir)
+            )
+            manifest_artifact = next(
+                artifact
+                for artifact in fixture.artifacts
+                if getattr(artifact, "role") == "manifest"
+            )
+            launcher_artifact = next(
+                artifact
+                for artifact in fixture.artifacts
+                if getattr(artifact, "role") == "launcher"
+            )
+            observed_paths = {
+                *fixture.artifact_paths.values(),
+                fixture.bound,
+                fixture.candidate,
+                fixture.backup,
+            }
+            snapshots = {
+                path: self.runtime_binding_path_snapshot(path)
+                for path in observed_paths
+            }
+
+            with self.assertRaisesRegex(
+                SwitchError,
+                "unexpected targets",
+            ):
+                with locked_store_mutation(
+                    fixture.store,
+                    operation="invalid CLI-only runtime promotion",
+                ) as locked_store:
+                    self.runtime_binding_executable_swap_seams()[
+                        "commit_runtime_binding_bundle"
+                    ](
+                        locked_store,
+                        artifacts=(launcher_artifact, manifest_artifact),
+                        executable_swap=fixture.swap,
+                        bundle_scope="cli-only",
+                    )
+
+            self.assertFalse(
+                (
+                    fixture.store.root
+                    / ".runtime-binding-rebind.json"
+                ).exists()
+            )
+            self.assert_runtime_binding_paths_unchanged(snapshots)
+
     def test_runtime_rebind_executable_swap_rejects_unsafe_paths_modes_and_digests_before_marker(
         self,
     ) -> None:
@@ -2518,6 +2685,28 @@ class TransactionTests(unittest.TestCase):
         )
         return store, target_executable, prior_executable, observed_paths
 
+    def write_explicit_official_active(
+        self,
+        store: Store,
+        official_executable: Path,
+    ) -> None:
+        store.active_path.write_text(
+            json.dumps(
+                {
+                    "profile": "openai-official",
+                    "cli_profile": "openai-official",
+                    "app_profile": "openai-official",
+                    "codex_home": str(store.official_codex_home),
+                    "live_codex_home": str(store.official_codex_home),
+                    "home_mode": "official",
+                    "shell_cli_path": str(official_executable),
+                    "app_cli_path": str(official_executable),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
     def arrange_pending_switch(
         self,
         root: Path,
@@ -3098,7 +3287,7 @@ class TransactionTests(unittest.TestCase):
                     ).exists()
                 )
 
-    def test_official_shared_dry_run_rejects_unknown_special_file(self) -> None:
+    def test_official_shared_dry_run_ignores_unknown_special_file(self) -> None:
         from codex_switch_transaction import TransactionRequest, execute_transaction
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3144,29 +3333,30 @@ class TransactionTests(unittest.TestCase):
             runtime_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
                 runtime_socket.bind(str(socket_path))
-                with self.assertRaisesRegex(
-                    SwitchError,
-                    "Unsupported filesystem object kind.*unknown-runtime.sock",
-                ):
-                    execute_transaction(
-                        store,
-                        TransactionRequest(
-                            operation="switch",
-                            profile="openai-official",
-                            options={
-                                "config_mode": "shared",
-                                "shared_config_base": None,
-                                "clear_missing_auth": False,
-                                "skip_shim": True,
-                                "skip_app_cli": True,
-                                "skip_launchctl": True,
-                            },
-                        ),
-                        dry_run=True,
-                    )
+                receipt = execute_transaction(
+                    store,
+                    TransactionRequest(
+                        operation="switch",
+                        profile="openai-official",
+                        options={
+                            "config_mode": "shared",
+                            "shared_config_base": None,
+                            "clear_missing_auth": False,
+                            "skip_shim": True,
+                            "skip_app_cli": True,
+                            "skip_launchctl": True,
+                        },
+                    ),
+                    dry_run=True,
+                )
             finally:
                 runtime_socket.close()
 
+            self.assertEqual("dry_run", receipt.outcome)
+            self.assertTrue(stat.S_ISSOCK(os.lstat(socket_path).st_mode))
+            self.assertFalse(
+                (store.official_codex_home / socket_path.name).exists()
+            )
             self.assertEqual([], list(store.backups_dir.iterdir()))
             self.assertFalse(store.active_path.exists())
 
@@ -3335,13 +3525,13 @@ class TransactionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store, _, _, _ = self.arrange_switch_effect_fixture(root)
-            planned_support = store.official_codex_home / "stable-support"
+            planned_support = store.official_codex_home / "rules"
             planned_support.mkdir()
             (planned_support / "tool.json").write_text("{}\n")
 
             def add_late_source(message: str) -> None:
                 if message == "Applying switch mutations...":
-                    late_support = store.official_codex_home / "late-support"
+                    late_support = store.official_codex_home / "skills"
                     late_support.mkdir()
                     (late_support / "late.json").write_text("{}\n")
 
@@ -3364,13 +3554,13 @@ class TransactionTests(unittest.TestCase):
 
             self.assertEqual("rolled_back", receipt.outcome)
             self.assertFalse(
-                (store.internal_codex_home / "stable-support").exists()
+                (store.internal_codex_home / "rules").exists()
             )
             self.assertFalse(
-                (store.internal_codex_home / "late-support").exists()
+                (store.internal_codex_home / "skills").exists()
             )
             self.assertTrue(
-                (store.official_codex_home / "late-support").is_dir()
+                (store.official_codex_home / "skills").is_dir()
             )
             manifest = json.loads(
                 (
@@ -3381,12 +3571,792 @@ class TransactionTests(unittest.TestCase):
             )
             planned_paths = {entry["path"] for entry in manifest["entries"]}
             self.assertIn(
-                str(store.internal_codex_home / "stable-support"),
+                str(store.internal_codex_home / "rules"),
                 planned_paths,
             )
             self.assertNotIn(
-                str(store.internal_codex_home / "late-support"),
+                str(store.internal_codex_home / "skills"),
                 planned_paths,
+            )
+
+    def test_shared_support_allowlist_preserves_ignored_targets(self) -> None:
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, _, _ = self.arrange_switch_effect_fixture(root)
+            allowed_names = ("AGENTS.md", "prompts", "rules", "skills")
+            (store.official_codex_home / "AGENTS.md").write_text(
+                "# Shared workstation guidance\n"
+            )
+            for name in allowed_names[1:]:
+                source = store.official_codex_home / name
+                source.mkdir()
+                (source / "source.txt").write_text(f"{name}-source\n")
+
+            ignored_source_names = (
+                "worktrees",
+                "unknown-support",
+                "..codex-global-state.json.tmp-20260810",
+                ".codex-global-state.json.backup-20260810",
+            )
+            for name in ignored_source_names:
+                source = store.official_codex_home / name
+                source.mkdir()
+                (source / "source.txt").write_text(f"{name}-source\n")
+            preserved_target = store.internal_codex_home / "worktrees"
+            preserved_target.mkdir()
+            (preserved_target / "target.txt").write_text("target-owned\n")
+            progress: list[str] = []
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": True,
+                        "skip_app_cli": True,
+                        "skip_launchctl": True,
+                        "progress_callback": progress.append,
+                    },
+                ),
+            )
+
+            self.assertEqual("committed", receipt.outcome)
+            self.assertEqual(
+                "# Shared workstation guidance\n",
+                (store.internal_codex_home / "AGENTS.md").read_text(),
+            )
+            for name in allowed_names[1:]:
+                target = store.internal_codex_home / name
+                self.assertTrue(target.is_symlink(), name)
+                self.assertTrue(
+                    target.resolve().samefile(store.official_codex_home / name),
+                    name,
+                )
+            self.assertEqual(
+                "target-owned\n",
+                (preserved_target / "target.txt").read_text(),
+            )
+            for name in ignored_source_names[1:]:
+                self.assertFalse(
+                    (store.internal_codex_home / name).exists(),
+                    name,
+                )
+
+            backup_dir = store.backups_dir / str(receipt.backup_id)
+            manifest = json.loads((backup_dir / "backup.json").read_text())
+            source_entry_set = next(
+                item
+                for item in manifest["switch_journal"]["frozen_inputs"]
+                if item.get("label") == "shared source entry set"
+            )
+            source_entries = source_entry_set["before_state"]["entries"]
+            self.assertEqual(
+                list(allowed_names),
+                [entry["name"] for entry in source_entries],
+            )
+            self.assertTrue(
+                all("state" not in entry for entry in source_entries),
+                source_entries,
+            )
+            planned_paths = {
+                entry["path"] for entry in manifest["entries"]
+            }
+            for name in ignored_source_names:
+                self.assertNotIn(
+                    str(store.internal_codex_home / name),
+                    planned_paths,
+                )
+            self.assertEqual(
+                [
+                    "Applying shared support [1/4]: AGENTS.md",
+                    "Applying shared support [2/4]: prompts",
+                    "Applying shared support [3/4]: rules",
+                    "Applying shared support [4/4]: skills",
+                ],
+                [
+                    message
+                    for message in progress
+                    if message.startswith("Applying shared support [")
+                ],
+            )
+
+    def test_split_running_app_fails_when_rebind_is_required(self) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter, launch_agent_payload
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, target_executable, official_executable, _ = (
+                self.arrange_switch_effect_fixture(root)
+            )
+            self.write_explicit_official_active(store, official_executable)
+            store.launch_agent_path.write_bytes(
+                launch_agent_payload(store.launch_agent_label, target_executable)
+            )
+            launch_agent_before = store.launch_agent_path.read_bytes()
+            active_before = store.active_path.read_bytes()
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(target_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+            stopped_probes: list[str] = []
+
+            def observe_running(_store: Store, _selection: object) -> bool:
+                stopped_probes.append("running-rebind")
+                return True
+
+            with self.assertRaisesRegex(
+                SwitchError,
+                "fully quit.*keep.*closed",
+            ):
+                execute_transaction(
+                    store,
+                    TransactionRequest(
+                        operation="switch",
+                        profile="internal",
+                        options={
+                            "app_profile": "openai-official",
+                            "config_mode": "shared",
+                            "shared_config_base": None,
+                            "clear_missing_auth": False,
+                            "skip_shim": True,
+                            "skip_app_cli": False,
+                            "skip_launchctl": False,
+                            "desktop_binding_adapter": desktop,
+                            "split_app_is_running": observe_running,
+                        },
+                    ),
+                )
+
+            self.assertEqual(["running-rebind"], stopped_probes)
+            self.assertEqual(
+                ["observe:getenv", "observe:service"],
+                runner.events,
+            )
+            self.assertEqual(active_before, store.active_path.read_bytes())
+            self.assertEqual(
+                launch_agent_before,
+                store.launch_agent_path.read_bytes(),
+            )
+            self.assertEqual([], list(store.backups_dir.iterdir()))
+            self.assertEqual(
+                [],
+                list(store.root.glob(".pending-transaction-*.json")),
+            )
+
+    def test_split_running_official_app_preserves_desktop_surface(self) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, official_executable, _ = self.arrange_switch_effect_fixture(root)
+            self.write_explicit_official_active(store, official_executable)
+            desktop_source = store.official_codex_home / ".codex-global-state.json"
+            desktop_target = store.internal_codex_home / ".codex-global-state.json"
+            desktop_source.write_text(
+                json.dumps({"appshotHotkey": "official-live"}, sort_keys=True)
+                + "\n"
+            )
+            desktop_target.write_text(
+                json.dumps({"appshotHotkey": "internal-preserved"}, sort_keys=True)
+                + "\n"
+            )
+            launch_agent_before = store.launch_agent_path.read_bytes()
+            official_files_before = {
+                path: path.read_bytes()
+                for path in (
+                    store.official_codex_home / "config.toml",
+                    store.official_codex_home / "auth.json",
+                    desktop_source,
+                )
+            }
+            desktop_target_before = desktop_target.read_bytes()
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(official_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+            process_observations: list[str] = []
+
+            def observe_running(_store: Store, _selection: object) -> bool:
+                process_observations.append("running-official")
+                return True
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "app_profile": "openai-official",
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": False,
+                        "skip_app_cli": False,
+                        "skip_launchctl": False,
+                        "desktop_binding_adapter": desktop,
+                        "split_app_is_running": observe_running,
+                    },
+                ),
+            )
+
+            self.assertEqual("committed", receipt.outcome)
+            self.assertEqual(["running-official"], process_observations)
+            self.assertEqual(
+                ["observe:getenv", "observe:service"],
+                runner.events,
+            )
+            self.assertEqual(
+                launch_agent_before,
+                store.launch_agent_path.read_bytes(),
+            )
+            for path, expected in official_files_before.items():
+                self.assertEqual(expected, path.read_bytes(), str(path))
+            self.assertEqual(desktop_target_before, desktop_target.read_bytes())
+            active = json.loads(store.active_path.read_text())
+            self.assertEqual("internal", active["cli_profile"])
+            self.assertEqual("openai-official", active["app_profile"])
+            self.assertEqual(str(official_executable), active["app_cli_path"])
+            backup_dir = store.backups_dir / str(receipt.backup_id)
+            manifest = json.loads((backup_dir / "backup.json").read_text())
+            entry_paths = {entry["path"] for entry in manifest["entries"]}
+            self.assertNotIn(str(store.launch_agent_path), entry_paths)
+            self.assertNotIn(str(desktop_source), entry_paths)
+            self.assertNotIn(str(desktop_target), entry_paths)
+            effect_phases = {
+                effect["phase"]
+                for effect in manifest["switch_journal"]["effects"]
+            }
+            self.assertFalse(
+                effect_phases
+                & {
+                    "app_wrapper_write",
+                    "desktop_bootout",
+                    "desktop_bootstrap",
+                    "desktop_global_state_sync",
+                    "desktop_setenv",
+                    "plist_write",
+                }
+            )
+
+    def test_split_default_runtime_attestation_preserves_matching_owner(
+        self,
+    ) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, official_executable, _ = self.arrange_switch_effect_fixture(root)
+            self.write_explicit_official_active(store, official_executable)
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(official_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+            processes = [
+                SimpleNamespace(
+                    kind="desktop",
+                    host_kind="chatgpt",
+                    app_cli_env=str(official_executable),
+                ),
+                SimpleNamespace(
+                    kind="app-server",
+                    command_path=str(official_executable),
+                    parent_command="",
+                ),
+            ]
+
+            with (
+                patch(
+                    "codex_switch_running_app.is_default_desktop_context",
+                    return_value=True,
+                ),
+                patch(
+                    "codex_switch_io.run_quiet",
+                    return_value=(0, "fixture process inventory"),
+                ),
+                patch(
+                    "codex_switch_running_app.running_codex_processes",
+                    return_value=processes,
+                ),
+            ):
+                receipt = execute_transaction(
+                    store,
+                    TransactionRequest(
+                        operation="switch",
+                        profile="internal",
+                        options={
+                            "app_profile": "openai-official",
+                            "config_mode": "shared",
+                            "shared_config_base": None,
+                            "clear_missing_auth": False,
+                            "skip_shim": True,
+                            "skip_app_cli": False,
+                            "skip_launchctl": False,
+                            "desktop_binding_adapter": desktop,
+                        },
+                    ),
+                )
+
+            self.assertEqual("committed", receipt.outcome)
+            self.assertIn("App action: preserve", "\n".join(receipt.preview_lines))
+            self.assertEqual(
+                ["observe:getenv", "observe:service"],
+                runner.events,
+            )
+
+    def test_split_default_runtime_attestation_rejects_mismatched_owner(
+        self,
+    ) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, internal_executable, official_executable, _ = (
+                self.arrange_switch_effect_fixture(root)
+            )
+            self.write_explicit_official_active(store, official_executable)
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(official_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+            processes = [
+                SimpleNamespace(
+                    kind="app-server",
+                    command_path=str(internal_executable),
+                    parent_command="",
+                ),
+            ]
+
+            with (
+                patch(
+                    "codex_switch_running_app.is_default_desktop_context",
+                    return_value=True,
+                ),
+                patch(
+                    "codex_switch_io.run_quiet",
+                    return_value=(0, "fixture process inventory"),
+                ),
+                patch(
+                    "codex_switch_running_app.running_codex_processes",
+                    return_value=processes,
+                ),
+                self.assertRaisesRegex(
+                    SwitchError,
+                    "fully quit.*keep.*closed",
+                ),
+            ):
+                execute_transaction(
+                    store,
+                    TransactionRequest(
+                        operation="switch",
+                        profile="internal",
+                        options={
+                            "app_profile": "openai-official",
+                            "config_mode": "shared",
+                            "shared_config_base": None,
+                            "clear_missing_auth": False,
+                            "skip_shim": True,
+                            "skip_app_cli": False,
+                            "skip_launchctl": False,
+                            "desktop_binding_adapter": desktop,
+                        },
+                    ),
+                )
+
+            self.assertEqual([], list(store.backups_dir.iterdir()))
+            self.assertEqual(
+                ["observe:getenv", "observe:service"],
+                runner.events,
+            )
+
+    def test_split_preview_reports_preserve_without_stopped_app_probe(self) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, official_executable, _ = self.arrange_switch_effect_fixture(root)
+            self.write_explicit_official_active(store, official_executable)
+            active_before = store.active_path.read_bytes()
+            launch_agent_before = store.launch_agent_path.read_bytes()
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(official_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+            stopped_probes: list[str] = []
+
+            def fail_if_probed(_store: Store, _selection: object) -> bool:
+                stopped_probes.append("called")
+                raise AssertionError("preserve preview must not require stopped proof")
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "app_profile": "openai-official",
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": False,
+                        "skip_app_cli": False,
+                        "skip_launchctl": False,
+                        "desktop_binding_adapter": desktop,
+                        "split_app_is_running": fail_if_probed,
+                    },
+                ),
+                dry_run=True,
+            )
+
+            output = "\n".join(receipt.preview_lines)
+            self.assertEqual("dry_run", receipt.outcome)
+            self.assertIn("App action: preserve", output)
+            self.assertNotIn("Stopped-App requirement:", output)
+            self.assertEqual([], stopped_probes)
+            self.assertEqual(
+                ["observe:getenv", "observe:service"],
+                runner.events,
+            )
+            self.assertEqual(active_before, store.active_path.read_bytes())
+            self.assertEqual(
+                launch_agent_before,
+                store.launch_agent_path.read_bytes(),
+            )
+            self.assertEqual([], list(store.backups_dir.iterdir()))
+
+    def test_split_unreadable_app_inventory_fails_when_rebind_is_required(
+        self,
+    ) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter, launch_agent_payload
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        def unreadable_inventory(_store: Store, _selection: object) -> bool:
+            raise OSError("injected process inventory failure")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, target_executable, official_executable, _ = (
+                self.arrange_switch_effect_fixture(root)
+            )
+            self.write_explicit_official_active(store, official_executable)
+            store.launch_agent_path.write_bytes(
+                launch_agent_payload(store.launch_agent_label, target_executable)
+            )
+            launch_agent_before = store.launch_agent_path.read_bytes()
+            active_before = store.active_path.read_bytes()
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(target_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+
+            with self.assertRaisesRegex(
+                SwitchError,
+                "Unable to prove.*App.*stopped",
+            ):
+                execute_transaction(
+                    store,
+                    TransactionRequest(
+                        operation="switch",
+                        profile="internal",
+                        options={
+                            "app_profile": "openai-official",
+                            "config_mode": "shared",
+                            "shared_config_base": None,
+                            "clear_missing_auth": False,
+                            "skip_shim": True,
+                            "skip_app_cli": False,
+                            "skip_launchctl": False,
+                            "desktop_binding_adapter": desktop,
+                            "split_app_is_running": unreadable_inventory,
+                        },
+                    ),
+                )
+
+            self.assertEqual(
+                ["observe:getenv", "observe:service"],
+                runner.events,
+            )
+            self.assertEqual(active_before, store.active_path.read_bytes())
+            self.assertEqual(
+                launch_agent_before,
+                store.launch_agent_path.read_bytes(),
+            )
+            self.assertEqual([], list(store.backups_dir.iterdir()))
+            self.assertEqual(
+                [],
+                list(store.root.glob(".pending-transaction-*.json")),
+            )
+
+    def test_split_live_process_probe_fails_closed_before_backup(self) -> None:
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        cases = (
+            (
+                (1, ""),
+                [],
+                "Unable to prove.*App.*stopped",
+            ),
+            (
+                (0, "fixture process inventory"),
+                [SimpleNamespace(kind="app-server")],
+                "fully quit.*keep.*closed",
+            ),
+        )
+        for ps_result, processes, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                store, _, _, _ = self.arrange_switch_effect_fixture(root)
+                active_before = store.active_path.read_bytes()
+                with (
+                    patch(
+                        "codex_switch_running_app.is_default_desktop_context",
+                        return_value=True,
+                    ),
+                    patch("codex_switch_io.run_quiet", return_value=ps_result),
+                    patch(
+                        "codex_switch_running_app.running_codex_processes",
+                        return_value=processes,
+                    ),
+                    self.assertRaisesRegex(SwitchError, expected),
+                ):
+                    execute_transaction(
+                        store,
+                        TransactionRequest(
+                            operation="switch",
+                            profile="internal",
+                            options={
+                                "app_profile": "openai-official",
+                                "config_mode": "shared",
+                                "shared_config_base": None,
+                                "clear_missing_auth": False,
+                                "skip_shim": True,
+                                "skip_app_cli": False,
+                                "skip_launchctl": True,
+                            },
+                        ),
+                    )
+
+                self.assertEqual(active_before, store.active_path.read_bytes())
+                self.assertEqual([], list(store.backups_dir.iterdir()))
+
+    def test_split_dry_run_reports_stopped_app_requirement_without_observing_processes(
+        self,
+    ) -> None:
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, _, _ = self.arrange_switch_effect_fixture(root)
+            observations: list[str] = []
+            active_before = store.active_path.read_bytes()
+
+            def observe_running(_store: Store, _selection: object) -> bool:
+                observations.append("called")
+                return True
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "app_profile": "openai-official",
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": True,
+                        "skip_app_cli": False,
+                        "skip_launchctl": True,
+                        "split_app_is_running": observe_running,
+                    },
+                ),
+                dry_run=True,
+            )
+
+            self.assertEqual("dry_run", receipt.outcome)
+            self.assertEqual([], observations)
+            output = "\n".join(receipt.preview_lines)
+            self.assertIn("App action: rebind", output)
+            self.assertIn(
+                "quit ChatGPT/Codex App and keep it closed until the switch completes",
+                output,
+            )
+            self.assertNotIn("Desktop global settings state", output)
+            self.assertNotIn(".codex-global-state.json", output)
+            self.assertEqual(active_before, store.active_path.read_bytes())
+            self.assertEqual([], list(store.backups_dir.iterdir()))
+
+    def test_shared_support_progress_is_counted_and_ordered(self) -> None:
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, _, _ = self.arrange_switch_effect_fixture(root)
+            (store.official_codex_home / "AGENTS.md").write_text("# Shared\n")
+            for name in ("prompts", "rules", "skills"):
+                source = store.official_codex_home / name
+                source.mkdir()
+                (source / "source.txt").write_text(f"{name}\n")
+            rules_target = store.internal_codex_home / "rules"
+
+            def fail_rules_effect() -> None:
+                raise OSError("injected rules sync failure")
+
+            adapter = self.before_switch_effect_adapter(
+                "shared_support_sync",
+                fail_rules_effect,
+                target=rules_target,
+            )
+            progress: list[str] = []
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": True,
+                        "skip_app_cli": True,
+                        "skip_launchctl": True,
+                        "filesystem_adapter": adapter,
+                        "progress_callback": progress.append,
+                    },
+                ),
+            )
+
+            self.assertTrue(getattr(adapter, "injected"))
+            self.assertEqual("rolled_back", receipt.outcome)
+            self.assertEqual(
+                [
+                    "Applying shared support [1/4]: AGENTS.md",
+                    "Applying shared support [2/4]: prompts",
+                    "Applying shared support [3/4]: rules",
+                ],
+                [
+                    message
+                    for message in progress
+                    if message.startswith("Applying shared support [")
+                ],
+            )
+            self.assertFalse((store.internal_codex_home / "skills").exists())
+
+    def test_split_late_app_state_drift_rolls_back_after_stopped_preflight(
+        self,
+    ) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter, launch_agent_payload
+        from codex_switch_transaction import TransactionRequest, execute_transaction
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, prior_executable, _ = self.arrange_switch_effect_fixture(root)
+            late_app_cli = self.make_executable(root, "codex-late-app")
+            late_launch_agent_payload = launch_agent_payload(
+                store.launch_agent_label,
+                late_app_cli,
+            )
+            active_before = store.active_path.read_bytes()
+            target_config = store.internal_codex_home / "config.toml"
+            target_config_before = target_config.read_bytes()
+
+            def launch_app_write() -> None:
+                store.launch_agent_path.write_bytes(
+                    late_launch_agent_payload
+                )
+
+            filesystem = self.before_switch_effect_adapter(
+                "config_write",
+                launch_app_write,
+                target=target_config,
+            )
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(prior_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "app_profile": "openai-official",
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": True,
+                        "skip_app_cli": False,
+                        "skip_launchctl": True,
+                        "filesystem_adapter": filesystem,
+                        "desktop_binding_adapter": desktop,
+                        "split_app_is_running": (
+                            lambda _store, _selection: False
+                        ),
+                    },
+                ),
+            )
+
+            self.assertTrue(getattr(filesystem, "injected"))
+            self.assertEqual("rolled_back", receipt.outcome)
+            self.assertEqual(active_before, store.active_path.read_bytes())
+            self.assertEqual(
+                target_config_before,
+                target_config.read_bytes(),
+            )
+            self.assertEqual(
+                late_launch_agent_payload,
+                store.launch_agent_path.read_bytes(),
+            )
+            self.assertIn(
+                "Required switch input changed",
+                "\n".join(receipt.preview_lines),
             )
 
     def test_shared_switch_preserves_concurrent_desktop_global_state_after_noop_merge(
@@ -3621,8 +4591,8 @@ class TransactionTests(unittest.TestCase):
                 )
                 + "\n"
             )
-            shared_source = store.official_codex_home / "visualizations"
-            shared_target = store.internal_codex_home / "visualizations"
+            shared_source = store.official_codex_home / "rules"
+            shared_target = store.internal_codex_home / "rules"
             for shared_path in (shared_source, shared_target):
                 shared_path.mkdir()
                 (shared_path / "baseline.json").write_text(
@@ -4204,13 +5174,135 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual("intent", auth_effect["status"])
             self.assertNotIn("produced_identity", auth_effect)
 
+    def test_shared_directory_validation_work_is_effect_bounded(self) -> None:
+        from codex_switch_transaction import (
+            FilesystemAdapter,
+            TransactionRequest,
+            execute_transaction,
+        )
+
+        class DirectoryAttestationBudgetAdapter(FilesystemAdapter):
+            def __init__(self, source: Path) -> None:
+                self.source = source
+                self.deep_state_captures = 0
+
+            def capture_state(self, path: Path) -> dict[str, object]:
+                if path == self.source:
+                    self.deep_state_captures += 1
+                return super().capture_state(path)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, _, _ = self.arrange_switch_effect_fixture(root)
+            shared_source = store.official_codex_home / "skills"
+            shared_source.mkdir()
+            for index in range(32):
+                skill = shared_source / f"skill-{index:02d}"
+                skill.mkdir()
+                (skill / "SKILL.md").write_text(f"# Skill {index}\n")
+            adapter = DirectoryAttestationBudgetAdapter(shared_source)
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": True,
+                        "skip_app_cli": True,
+                        "skip_launchctl": True,
+                        "filesystem_adapter": adapter,
+                    },
+                ),
+            )
+
+            self.assertEqual(
+                "committed",
+                receipt.outcome,
+                "\n".join(receipt.preview_lines),
+            )
+            self.assertLessEqual(
+                adapter.deep_state_captures,
+                8,
+                "recursive source attestation must be bounded independently "
+                "of unrelated journal effects",
+            )
+
+    def test_shared_directory_final_cas_detects_late_drift(self) -> None:
+        from codex_switch_transaction import (
+            FilesystemAdapter,
+            TransactionRequest,
+            execute_transaction,
+        )
+
+        class DriftAtFinalizeIntent(FilesystemAdapter):
+            def __init__(self, source_file: Path) -> None:
+                self.source_file = source_file
+                self.injected = False
+
+            def write_manifest(
+                self,
+                path: Path,
+                data: dict[str, object],
+                *,
+                phase: str,
+            ) -> None:
+                super().write_manifest(path, data, phase=phase)
+                journal = data.get("switch_journal")
+                effects = journal.get("effects") if isinstance(journal, dict) else None
+                if (
+                    not self.injected
+                    and phase == "switch_journal_intent"
+                    and isinstance(effects, list)
+                    and effects
+                    and isinstance(effects[-1], dict)
+                    and effects[-1].get("phase") == "backup_finalize"
+                ):
+                    self.source_file.write_text("external-final-drift\n")
+                    self.injected = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _, _, _ = self.arrange_switch_effect_fixture(root)
+            shared_source = store.official_codex_home / "skills"
+            shared_source.mkdir()
+            source_file = shared_source / "SKILL.md"
+            source_file.write_text("planned\n")
+            adapter = DriftAtFinalizeIntent(source_file)
+
+            receipt = execute_transaction(
+                store,
+                TransactionRequest(
+                    operation="switch",
+                    profile="internal",
+                    options={
+                        "config_mode": "shared",
+                        "shared_config_base": None,
+                        "clear_missing_auth": False,
+                        "skip_shim": True,
+                        "skip_app_cli": True,
+                        "skip_launchctl": True,
+                        "filesystem_adapter": adapter,
+                    },
+                ),
+            )
+
+            self.assertTrue(adapter.injected)
+            self.assertEqual("rolled_back", receipt.outcome)
+            self.assertEqual("external-final-drift\n", source_file.read_text())
+            self.assertFalse((store.internal_codex_home / "skills").exists())
+            self.assertIn("at commit", "\n".join(receipt.preview_lines))
+
     def test_switch_rejects_late_shared_source_drift_before_shared_action(self) -> None:
         from codex_switch_transaction import TransactionRequest, execute_transaction
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store, _, _, _ = self.arrange_switch_effect_fixture(root)
-            shared_source = store.official_codex_home / "stable-support"
+            shared_source = store.official_codex_home / "rules"
             shared_source.mkdir()
             source_file = shared_source / "tool.json"
             source_file.write_text('{"source":"planned"}\n')
@@ -4933,6 +6025,119 @@ class TransactionTests(unittest.TestCase):
             )
             self.assertEqual("rolled_back", backup["lifecycle"])
             self.assertIn("app_cli_path", backup["failure"])
+
+    def test_split_selected_manifest_drift_preserves_state_per_journal_contract(
+        self,
+    ) -> None:
+        from codex_switch_transaction import (
+            FilesystemAdapter,
+            TransactionRequest,
+            capture_path_state,
+            execute_transaction,
+        )
+
+        class DriftSelectedManifestAtLastIntent(FilesystemAdapter):
+            def __init__(self, manifest_path: Path, payload: bytes) -> None:
+                self.manifest_path = manifest_path
+                self.payload = payload
+
+            def write_manifest(
+                self,
+                path: Path,
+                data: dict[str, object],
+                *,
+                phase: str,
+            ) -> None:
+                journal = data.get("switch_journal")
+                effects = journal.get("effects") if isinstance(journal, dict) else None
+                is_last_preterminal_intent = (
+                    phase == "switch_journal_intent"
+                    and isinstance(effects, list)
+                    and bool(effects)
+                    and isinstance(effects[-1], dict)
+                    and effects[-1].get("phase") == "backup_finalize"
+                )
+                if is_last_preterminal_intent:
+                    self.manifest_path.write_bytes(self.payload)
+                    self.manifest_path.chmod(0o600)
+                super().write_manifest(path, data, phase=phase)
+
+        for drift_profile in ("internal", "openai-official"):
+            with self.subTest(drift_profile=drift_profile):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    store, _, _, observed_paths = self.arrange_switch_effect_fixture(root)
+                    drift_path = store.manifest_path(drift_profile)
+                    external_payload = (
+                        json.dumps(
+                            {
+                                "name": drift_profile,
+                                "external_drift": True,
+                            },
+                            sort_keys=True,
+                        ).encode()
+                        + b"\n"
+                    )
+                    protected_paths = tuple(
+                        path for path in observed_paths if path != drift_path
+                    )
+                    before_states = {
+                        path: capture_path_state(path) for path in protected_paths
+                    }
+
+                    with patch.dict(
+                        os.environ,
+                        {"CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP": "1"},
+                        clear=False,
+                    ):
+                        receipt = execute_transaction(
+                            store,
+                            TransactionRequest(
+                                operation="switch",
+                                profile="internal",
+                                options={
+                                    "app_profile": "openai-official",
+                                    "config_mode": "snapshot",
+                                    "shared_config_base": None,
+                                    "clear_missing_auth": False,
+                                    "skip_shim": False,
+                                    "skip_app_cli": False,
+                                    "skip_launchctl": True,
+                                    "filesystem_adapter": (
+                                        DriftSelectedManifestAtLastIntent(
+                                            drift_path,
+                                            external_payload,
+                                        )
+                                    ),
+                                },
+                            ),
+                        )
+
+                    expected_outcome = (
+                        "rollback_failed"
+                        if drift_profile == "internal"
+                        else "rolled_back"
+                    )
+                    self.assertEqual(
+                        expected_outcome,
+                        receipt.outcome,
+                        "\n".join(receipt.preview_lines),
+                    )
+                    self.assertEqual(external_payload, drift_path.read_bytes())
+                    self.assertEqual(
+                        before_states,
+                        {
+                            path: capture_path_state(path)
+                            for path in protected_paths
+                        },
+                    )
+                    pending_markers = tuple(
+                        store.root.glob(".pending-transaction-*.json")
+                    )
+                    self.assertEqual(
+                        1 if expected_outcome == "rollback_failed" else 0,
+                        len(pending_markers),
+                    )
 
     def test_snapshot_auth_source_drift_uses_frozen_payload_and_rolls_back(
         self,
@@ -8304,7 +9509,7 @@ class TransactionTests(unittest.TestCase):
                     else "snapshot"
                 )
                 if config_mode == "shared":
-                    shared_file = store.official_codex_home / "support-file"
+                    shared_file = store.official_codex_home / "AGENTS.md"
                     shared_file.write_text("shared payload\n")
                     (store.official_codex_home / ".codex-global-state.json").write_text(
                         '{"appshotHotkey":"planned"}\n'
@@ -8483,7 +9688,7 @@ class TransactionTests(unittest.TestCase):
                     profile = "internal"
                     config_mode = "snapshot"
                 else:
-                    source = store.internal_codex_home / "support-directory"
+                    source = store.internal_codex_home / "rules"
                     source.mkdir()
                     (source / "payload.json").write_text('{"stable":true}\n')
                     target = store.official_codex_home / source.name
@@ -8581,7 +9786,7 @@ class TransactionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store, _, _, _ = self.arrange_switch_effect_fixture(root)
-            source = store.internal_codex_home / "support-directory"
+            source = store.internal_codex_home / "rules"
             source.mkdir()
             (source / "payload.json").write_text('{"stable":true}\n')
             target = store.official_codex_home / source.name
@@ -9271,6 +10476,90 @@ class TransactionTests(unittest.TestCase):
             )
             self.assertEqual("rolled_back", manifest["lifecycle"])
             self.assertIn("injected plist write failure", "\n".join(receipt.preview_lines))
+
+    def test_split_official_desktop_failure_rolls_back_both_surfaces(self) -> None:
+        from codex_switch_launch import _DesktopBindingAdapter
+        from codex_switch_transaction import (
+            FilesystemAdapter,
+            TransactionRequest,
+            capture_path_state,
+            execute_transaction,
+        )
+
+        class PlistWriteFailureAdapter(FilesystemAdapter):
+            def write_bytes(
+                self,
+                path: Path,
+                data: bytes,
+                *,
+                mode: int,
+                phase: str,
+            ) -> None:
+                if phase == "plist_write":
+                    raise OSError("injected split plist write failure")
+                super().write_bytes(path, data, mode=mode, phase=phase)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, internal_executable, prior_executable, observed_paths = (
+                self.arrange_switch_effect_fixture(root)
+            )
+            official_executable = self.make_executable(root, "codex-official-target")
+            official_manifest_path = store.manifest_path("openai-official")
+            official_manifest = json.loads(official_manifest_path.read_text())
+            official_manifest["codex_bin"] = str(official_executable)
+            official_manifest["app_cli_path"] = str(official_executable)
+            official_manifest_path.write_text(json.dumps(official_manifest) + "\n")
+            protected_paths = (*observed_paths, official_manifest_path)
+            before_states = {
+                path: capture_path_state(path) for path in protected_paths
+            }
+            runner = _FakeLaunchctlRunner(
+                gui_env=str(prior_executable),
+                service_loaded=True,
+            )
+            desktop = _DesktopBindingAdapter(
+                store,
+                runner=runner,
+                uid_provider=lambda: 501,
+            )
+
+            with patch.dict(
+                os.environ,
+                {"CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP": "1"},
+                clear=False,
+            ):
+                receipt = execute_transaction(
+                    store,
+                    TransactionRequest(
+                        operation="switch",
+                        profile="internal",
+                        options={
+                            "app_profile": "openai-official",
+                            "config_mode": "snapshot",
+                            "shared_config_base": None,
+                            "clear_missing_auth": False,
+                            "skip_shim": False,
+                            "skip_app_cli": False,
+                            "skip_launchctl": False,
+                            "filesystem_adapter": PlistWriteFailureAdapter(),
+                            "desktop_binding_adapter": desktop,
+                        },
+                    ),
+                )
+
+            self.assertEqual("rolled_back", receipt.outcome)
+            self.assertEqual(
+                before_states,
+                {path: capture_path_state(path) for path in protected_paths},
+            )
+            self.assertEqual(str(prior_executable), runner.gui_env)
+            self.assertTrue(runner.service_loaded)
+            self.assertNotEqual(str(internal_executable), runner.gui_env)
+            self.assertIn(
+                "injected split plist write failure",
+                "\n".join(receipt.preview_lines),
+            )
 
     def test_gui_setenv_failure_rolls_back_complete_switch_state(self) -> None:
         from codex_switch_launch import _DesktopBindingAdapter
@@ -11278,12 +12567,16 @@ class TransactionTests(unittest.TestCase):
         with self.subTest(case="shared_entry_set"), tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store, _, _, _ = self.arrange_switch_effect_fixture(root)
-            added = store.official_codex_home / "external-added.json"
+            added = store.official_codex_home / "rules"
+            changed = False
 
             def mutate_after_enumeration(home: Path) -> list[Path]:
+                nonlocal changed
                 entries = shared_support_entries(home)
-                if home == store.official_codex_home:
-                    added.write_text('{"external":true}\n')
+                if home == store.official_codex_home and not changed:
+                    added.mkdir()
+                    (added / "external.json").write_text('{"external":true}\n')
+                    changed = True
                 return entries
 
             with patch(
@@ -11307,7 +12600,10 @@ class TransactionTests(unittest.TestCase):
                             },
                         ),
                     )
-            self.assertEqual('{"external":true}\n', added.read_text())
+            self.assertEqual(
+                '{"external":true}\n',
+                (added / "external.json").read_text(),
+            )
             self.assertEqual(tuple(), tuple(store.backups_dir.iterdir()))
 
         with self.subTest(case="stale_link"), tempfile.TemporaryDirectory() as temp_dir:
@@ -11821,6 +13117,66 @@ class TransactionTests(unittest.TestCase):
                 "injected backup finalize failure",
                 "\n".join(receipt.preview_lines),
             )
+
+    def test_deep_switch_transaction_rejects_cli_only_internal_app_before_backup(
+        self,
+    ) -> None:
+        from codex_switch_transaction import (
+            TransactionRequest,
+            execute_transaction,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _target, _prior, observed_paths = (
+                self.arrange_switch_effect_fixture(root)
+            )
+            manifest_path = store.manifest_path("internal")
+            manifest = json.loads(manifest_path.read_text())
+            manifest.update(
+                {
+                    "internal_cli_generation": {
+                        "schema_version": 1,
+                        "scope": "cli-only",
+                        "backend_sha256": "a" * 64,
+                        "backend_version": "2.0.0",
+                    },
+                    "internal_app_readiness": "unverified",
+                }
+            )
+            manifest_path.write_text(json.dumps(manifest) + "\n")
+            protected = {
+                path: self.runtime_binding_path_snapshot(path)
+                for path in {*observed_paths, manifest_path}
+            }
+            before_backups = tuple(store.backups_dir.iterdir())
+
+            with self.assertRaisesRegex(
+                SwitchError,
+                "internal.app_readiness.unverified",
+            ):
+                execute_transaction(
+                    store,
+                    TransactionRequest(
+                        operation="switch",
+                        profile="internal",
+                        options={
+                            "config_mode": "snapshot",
+                            "shared_config_base": None,
+                            "clear_missing_auth": False,
+                            "skip_shim": False,
+                            "skip_app_cli": False,
+                            "skip_launchctl": False,
+                        },
+                    ),
+                    dry_run=True,
+                )
+
+            self.assertEqual(
+                before_backups,
+                tuple(store.backups_dir.iterdir()),
+            )
+            self.assert_runtime_binding_paths_unchanged(protected)
 
     def test_switch_rollback_failure_preserves_material_and_backup_id(self) -> None:
         from codex_switch_launch import _DesktopBindingAdapter

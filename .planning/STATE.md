@@ -4942,3 +4942,279 @@ retained probe/config/auth/bytecode evidence: absent
 ### Next Action
 
 Execute task 7.7 diff, write-set, ownership, and 66-scenario coverage audit.
+
+## 2026-07-28 Internal Installer Side-Effect Repair Approved
+
+The current active change is `internal-official-feature-parity`. Historical
+tasks 1.1-8.2 and the task-8.3 source/package repair account for 70 completed
+items. Five new Scheme A incident tasks make current progress 70/84.
+
+Live diagnosis established:
+
+- official and internal direct plugin inventories contain the same 24 plugin
+  IDs and enabled states;
+- common synchronized safe config values match, and the internal managed config
+  differs only at intended internal provider/model fields;
+- the internal manifest and generated wrapper bind
+  `/Users/cY/.local/bin/codex`, and direct internal runtime/app-server smoke
+  passes;
+- the trusted installer inherited live `HOME`, `CODEX_HOME`, and `PATH`,
+  narrowed live `config.toml`, and appended three failed sibling candidates to
+  `.zshrc` before preparation could promote a new runtime; and
+- bare shell `codex` therefore resolved a retained candidate instead of the
+  codex-switch shim, explaining the apparent wrong-bin runtime failures.
+
+The user explicitly selected Scheme A. The approved repair isolates the
+installer inside a private exact-cleaned root, preserves all live state during
+staging, adds harmful-installer TDD coverage, backs up and removes only the
+three confirmed shell blocks, moves only the three confirmed candidates to a
+recoverable codex-switch backup, installs exact verified source, and performs
+one controlled internal update/rebind/switch plus bounded ChatGPT restart and
+runtime/config/plugin verification.
+
+The write boundary excludes proxy changes, plugin refresh, global-state
+allowlist expansion, credential/identity migration, legacy skill
+migration/cleanup, dependency changes, destructive deletion, provider-backed
+Desktop tasks, Git, release, and archive effects. The required DevFlow layout
+preflight was dry-run only and reported the existing source conflicts with no
+writes.
+
+### Next Action
+
+Task 8.3A.1 is complete at 71/84. The Python 3.12 public-seam regression
+returned 0 and produced the candidate, but failed because the harmful installer
+replaced live `config.toml` bytes (`live-config-sentinel = true` became
+`installer-default-config`). This is the intended RED and no production code
+changed.
+
+Task 8.3A.2 is complete at 72/84. The helper now creates one identity-bound
+mode-0700 `/tmp/codex-switch-internal-installer.*` root, gives the installer
+private `HOME`/`CODEX_HOME`, places the validated candidate first in child
+PATH, and exact-cleans only the captured root inode. No wrapper change was
+needed. Three incident tests pass on Python 3.12 and system Python 3.9,
+including installer exit 17 plus `HUP`/`INT`/`TERM`; the complete staged-update
+class passes 13/13 on both runtimes and Bash syntax passes.
+
+Task 8.3A.3 is complete at 73/84. The final implementation also explicitly
+forwards parent-only signals to the installer pipeline and waits/reaps it.
+Final serial update/release suites pass 132/132 on Python 3.12 and 132/132 on
+system Python 3.9. Active/all strict OpenSpec, AI-plan lint, pinned workflow
+validation, Bash syntax, dual-runtime AST, isolated release-package validation,
+source/package identity, `git diff --check`, exact write-set, and scratch/
+credential/config/shell/bytecode residue checks pass. The isolated package is
+`/private/tmp/codex-switch-installer-isolation.rZHFJ2`; packaged and source
+`scripts/codex_env_setup` share SHA-256
+`0e7334481204785517ac68ac4a9086b77cc9b1136718fbc15234459b25c61bd9`.
+The pre-live `.zshrc` remains at the diagnosed SHA-256
+`7caecab6b6bd2bc1ccc358e5071a40fa8fcb244ba065f3140dba0d1e24fc1807`.
+
+Execute task 8.3A.4: re-attest every exact live target, create the private
+recovery backup, remove only the three confirmed installer PATH blocks, and
+move only the three confirmed mode-0700 candidate directories. Stop on drift;
+delete nothing.
+
+Task 8.3A.4 is complete at 74/84. Pre-mutation attestation matched the
+diagnosed `.zshrc` SHA-256, exact one-per-target block counts, regular-file
+mode/owner, and all three non-symlink candidate directory modes, owners,
+inodes, three-file contents, and `codex-cli 0.145.0` versions. Private recovery
+directory
+`/Users/cY/.codex-switch/backups/20260728T161949+0800-installer-side-effect-recovery`
+is mode 0700. It contains the byte-identical mode-0600 `.zshrc` backup and the
+three original mode-0700 candidate directories with unchanged inodes. The live
+`.zshrc` diff removes only the three named blocks, remains mode 0600, and now
+has SHA-256
+`8a144f4d2221437b65119b343b356958fb3155a63e3037956c0ce8aa9da224b4`.
+A clean-environment interactive zsh resolves bare `codex` to
+`/Users/cY/.codex-switch/bin/codex`; the current official profile reports
+`codex-cli 0.146.0-alpha.3.1`. No target was deleted.
+
+Execute task 8.3A.5: install the exact verified source, verify immutable
+installed identity, run one supported internal update/rebind/switch, then one
+bounded ChatGPT quit/reopen and complete config/plugin/runtime ownership
+verification. Stop before provider-backed Desktop work or any excluded effect.
+
+Task 8.3A.5 is blocked after a safe compatibility RED. The exact source
+installation promoted immutable payload
+`275ad2e2fda95c0d2591fe95aa4d9e7075988da286851f6584e51c3bad771dab`;
+its 66-file manifest validates and installed/source `codex_env_setup` hashes
+match. The one authorized update staged internal 0.145.0 at
+`/Users/cY/.local/bin/.codex-internal-update-6efc91d3f6359549077f8a00`
+and stopped before promotion with `parity.feature.core_drift`. Live `.zshrc`,
+official config, internal config, bound 0.144.6, manifest, launcher, and active
+official profile remain unchanged; installer scratch is absent.
+
+A forced-stop read-only diagnostic proves the sole error is `item_ids`.
+Official metadata is `removed/default-on/effective-on`; internal 0.145.0 is
+`under-development/default-off/effective-off`. The only observed dependency is
+`thread/resume.params.history`, and current
+`client_request:thread/resume` is natively compatible with both schemas and no
+reason codes. Native compatibility correctly yields no adapter coverage
+record, but policy incorrectly requires that record. Existing warnings are
+only optional `mcp_2026_07_28` missing and provider-pending `tool_mode`.
+
+The exact correction is planned in the active OpenSpec: accept the exact resume
+dependency only when current native compatibility or the existing exact
+adapter coverage proves it; missing/incompatible/uncovered/stale evidence or
+another dependency remains unhealthy. TDD and production writes would be
+limited to `scripts/test_codex_parity.py` and
+`scripts/codex_switch_parity.py`. Those paths are outside the narrower Scheme A
+incident write set, so implementation, promotion retry, switch, and restart
+stop at `PARITY-0.145-NATIVE-RESUME-IMPLEMENT` pending explicit user approval.
+
+## 2026-07-28 Internal 0.145 Native-Resume Implementation Approved
+
+The user explicitly consumed `PARITY-0.145-NATIVE-RESUME-IMPLEMENT`. Execution
+resumes from the recorded safe live state. Source changes are limited to
+`scripts/test_codex_parity.py` and `scripts/codex_switch_parity.py`, with
+main-owned OpenSpec/ledger/state/verification evidence. The first required
+action is the named RED proving exact current native
+`client_request:thread/resume` compatibility can satisfy the sole
+`thread/resume.params.history` dependency without an adapter record.
+
+After reviewed dual-runtime GREEN and source/package verification, freshly
+re-attest the existing internal 0.145.0 candidate and every live fingerprint.
+Retry promotion only with that retained candidate; do not download another.
+The existing Scheme A authorization still excludes provider-backed Desktop
+tasks, proxy/plugin/global-state changes, credential/identity migration,
+dependencies, destructive cleanup, Git, release, and archive.
+
+### Next Action
+
+Add and run
+`ParityMethodCoverageTests.test_item_ids_accepts_exact_native_resume_compatibility_without_adapter_coverage`
+on Python 3.12. Record the expected policy false-negative before changing
+production.
+
+### RED Evidence
+
+The named Python 3.12 test ran alone and failed at the expected
+`self.assertTrue(...healthy)` assertion:
+
+```text
+Ran 1 test in 0.002s
+FAILED (failures=1)
+```
+
+Both exact resume schemas were present, direction-aware compatibility was true,
+reason codes and adapter coverage were empty, and the only observed dependency
+was `thread/resume.params.history`. No production file had changed.
+
+### Next Action
+
+Make the smallest policy change so that exact current native compatibility or
+the existing exact adapter coverage satisfies that sole dependency, then rerun
+the named test.
+
+### Focused and Full Parity GREEN
+
+The production change performs an exact lookup of
+`client_request:thread/resume` and treats it as native proof only when both
+method schemas are present and `compatible=true`. The existing exact adapter
+path is unchanged. Results:
+
+```text
+named regression: 1/1 on Python 3.12 and system Python 3.9
+method-coverage class: 6/6 on both runtimes
+complete parity: 94/94 on both runtimes
+```
+
+The named regression also proves missing official/internal schema,
+incompatible resume without accepted coverage, an extra observed dependency,
+and no exact resume comparison all remain unhealthy.
+
+### Next Action
+
+Run the complete update/release adjacency serially on Python 3.12, then system
+Python 3.9. Do not run the two full suites concurrently.
+
+### Read-Only Review Guard RED
+
+The Standards axis found one fail-closed gap: a caller-constructed comparison
+can contain `compatible=true` and non-empty incompatibility reasons. The
+original native branch accepted that contradictory evidence. The Spec axis
+also required independently proving both-side presence and exact
+direction/method selection.
+
+The tightened Python 3.12 negative test now has one expected failure only for
+the contradictory reason tuple:
+
+```text
+Ran 1 test in 0.005s
+FAILED (failures=1)
+```
+
+Missing official/internal sides retain `compatible=true` and require the
+feature-level `item_ids` core finding. Compatible wrong-direction and
+wrong-method entries, incompatible resume, extra dependencies, and an absent
+exact comparison also remain negative.
+
+### Next Action
+
+Require empty reason codes for native resume proof, then rerun the focused and
+complete dual-runtime parity suites before repeating any source/package claim.
+
+## 2026-07-28 Internal 0.145 Native-Resume Source Verified
+
+The review guard is closed. Exact native proof now requires both current
+schemas, the exact direction/method, `compatible=true`, and empty reason codes.
+The exact adapter alternative is unchanged. Both read-only review axes report
+no remaining actionable findings.
+
+Fresh final results are method coverage 7/7 and complete parity 95/95 on both
+runtimes, plus update/release 132/132 on Python 3.12 and system Python 3.9.
+Dual-runtime AST/import, active/all strict OpenSpec 18/18, AI-native plan lint,
+pinned workflow (`ok=true`, zero issues), diff checks, and isolated package/
+source identity pass. No new bytecode was generated after the implementation
+gate was consumed. Durable evidence is
+`.planning/checkpoints/2026-07-28-internal-0145-native-resume-source-verified.md`.
+
+### Next Action
+
+Install the exact verified source through the supported install command,
+validate the new immutable payload, then freshly re-attest the retained
+internal 0.145.0 candidate and all live inputs. Retry only that candidate. Do
+not run `update-internal` or download another candidate.
+
+## 2026-07-28 Retained-Candidate Promotion Ready
+
+The supported exact-source install promoted immutable payload
+`6a23d04f8408681c26ed116583b208699f4b8fba4357162717befe7af8c1f132`
+and strict validation passed. Fresh candidate, bound backend, official bundle,
+shell, config, manifest, launcher, active-record, backup, and transaction
+marker checks pass. The retained candidate remains signed internal 0.145.0,
+mode-0700 rooted, SHA-256 `a34c872c...197b8`; bound remains 0.144.6 SHA-256
+`410ebcd3...e8b6`; backup and marker are absent.
+
+Durable preflight is
+`.planning/checkpoints/2026-07-28-internal-0145-retained-candidate-preflight.md`.
+
+### Next Action
+
+Call the installed immutable `codex_profile_switch.py
+promote-internal-update` seam directly with the exact retained
+bound/candidate/backup/target arguments. Do not invoke `update-internal`.
+
+## 2026-07-28 Core-Probe EOF Failure
+
+The retained-candidate promotion used the exact installed hidden seam and
+failed before transaction with `parity.probe.missing_response`. Immediate
+attestation proves the bound/candidate/live generation is unchanged and no
+backup, marker, runtime temp, or installer scratch exists.
+
+Minimal credential-free differential evidence proves official 0.146, bound
+0.144.6, and candidate 0.145 all return only initialize when the runner closes
+stdin immediately after writing the request batch. Candidate 0.145 returns all
+three required response IDs in order when each request is response-paced and
+stdin remains open until the final response. Premature EOF is the root cause.
+
+Durable diagnosis and the three-option design are in
+`.planning/checkpoints/2026-07-28-internal-0145-core-probe-eof-gate.md`.
+
+### Human Gate
+
+Stop at `PARITY-CORE-PROBE-INTERACTIVE-IMPLEMENT`. Approval would authorize
+coherent updates to the existing OpenSpec artifacts plus the exact same
+two-file runner/test write set, isolated verification, exact-source reinstall,
+and one more retained-candidate promotion attempt. It would not authorize a
+second candidate/download or any excluded plugin/proxy/provider/dependency/Git/
+release/archive/cleanup effect.

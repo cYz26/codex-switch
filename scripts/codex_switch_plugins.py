@@ -38,6 +38,8 @@ PLUGIN_CATALOG_COLLECTION_KEYS = (
     "items",
     "data",
 )
+SHARED_PLUGIN_POLICIES = frozenset({"portable_exact", "backend_managed"})
+SHARED_MATERIALIZATION_ERROR_PREFIX = "shared_configuration.materialization."
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,11 @@ class PluginCatalogEntry:
     marketplace: str
     version: str
     source_path: Path | None
+    available_record_seen: bool = False
+    available_version_seen: bool = False
+    available_source_seen: bool = False
+    installed_record_seen: bool = False
+    installed_versions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,23 @@ class PluginMaintenanceRuntime:
     codex_bin: Path
     home: Path
     binding: Any | None = None
+
+
+@dataclass(frozen=True)
+class SharedPluginDesiredIdentity:
+    requirement: PluginRequirement
+    policy: str
+    cache_key: str
+    manifest_version: str
+    tree_sha256: str
+    marketplace_config: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _SharedTargetConfigSnapshot:
+    exists: bool
+    data: bytes = b""
+    mode: int = 0
 
 
 def decode_toml_key_segment(raw: str) -> str:
@@ -479,20 +503,39 @@ def capture_profile_command(
     args: list[str],
     dry_run: bool = False,
 ) -> ProfileCommandResult:
+    return _capture_profile_command(
+        codex_bin=codex_bin,
+        home=home,
+        args=args,
+        dry_run=dry_run,
+        pass_fds=(),
+    )
+
+
+def _capture_profile_command(
+    *,
+    codex_bin: Path,
+    home: Path,
+    args: list[str],
+    dry_run: bool = False,
+    pass_fds: tuple[int, ...],
+) -> ProfileCommandResult:
     command = [str(codex_bin), *args]
     if dry_run:
         print("Dry run:", " ".join(command))
         return ProfileCommandResult(stdout="", stderr="", returncode=0)
     env = dict(os.environ)
     env["CODEX_HOME"] = str(home)
-    result = subprocess.run(
-        command,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    run_options: dict[str, Any] = {
+        "check": False,
+        "text": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "env": env,
+    }
+    if pass_fds:
+        run_options["pass_fds"] = pass_fds
+    result = subprocess.run(command, **run_options)
     return ProfileCommandResult(
         stdout=result.stdout,
         stderr=result.stderr,
@@ -579,7 +622,11 @@ def refresh_profile_plugin_catalogs(
     )
 
 
-def plugin_catalog_entry(value: dict[str, Any]) -> PluginCatalogEntry | None:
+def plugin_catalog_entry(
+    value: dict[str, Any],
+    *,
+    provenance: str = "generic",
+) -> PluginCatalogEntry | None:
     selector = ""
     for key in ("pluginId", "id", "selector"):
         candidate = value.get(key)
@@ -610,42 +657,122 @@ def plugin_catalog_entry(value: dict[str, Any]) -> PluginCatalogEntry | None:
         path_value = source.get("path")
         if source_kind == "local" and isinstance(path_value, str) and path_value:
             source_path = Path(path_value).expanduser()
+    explicit_installed = value.get("installed")
+    installed_record_seen = explicit_installed is True or (
+        provenance == "installed" and explicit_installed is not False
+    )
     return PluginCatalogEntry(
         selector=requirement.selector,
         plugin=requirement.plugin,
         marketplace=requirement.marketplace,
         version=version,
         source_path=source_path,
+        available_record_seen=provenance == "available",
+        available_version_seen=(
+            provenance == "available" and bool(version)
+        ),
+        available_source_seen=(
+            provenance == "available" and source_path is not None
+        ),
+        installed_record_seen=installed_record_seen,
+        installed_versions=(
+            (version,) if installed_record_seen and version else ()
+        ),
+    )
+
+
+def _catalog_version_projection_key(
+    entry: PluginCatalogEntry,
+) -> tuple[int, int, str]:
+    return (
+        0 if entry.available_version_seen else 1,
+        0 if entry.version else 1,
+        entry.version,
+    )
+
+
+def _catalog_source_path_projection_key(
+    entry: PluginCatalogEntry,
+) -> tuple[int, int, str]:
+    return (
+        0 if entry.available_source_seen else 1,
+        0 if entry.source_path is not None else 1,
+        str(entry.source_path or ""),
+    )
+
+
+def _merge_plugin_catalog_entries(
+    previous: PluginCatalogEntry,
+    current: PluginCatalogEntry,
+) -> PluginCatalogEntry:
+    version_projection = min(
+        (previous, current),
+        key=_catalog_version_projection_key,
+    )
+    source_path_projection = min(
+        (previous, current),
+        key=_catalog_source_path_projection_key,
+    )
+    return PluginCatalogEntry(
+        selector=previous.selector,
+        plugin=previous.plugin,
+        marketplace=previous.marketplace,
+        version=version_projection.version,
+        source_path=source_path_projection.source_path,
+        available_record_seen=(
+            previous.available_record_seen or current.available_record_seen
+        ),
+        available_version_seen=version_projection.available_version_seen,
+        available_source_seen=source_path_projection.available_source_seen,
+        installed_record_seen=(
+            previous.installed_record_seen or current.installed_record_seen
+        ),
+        installed_versions=tuple(
+            sorted(
+                set(previous.installed_versions)
+                | set(current.installed_versions)
+            )
+        ),
     )
 
 
 def collect_available_plugin_catalog(
     value: Any,
     entries: dict[str, PluginCatalogEntry],
+    *,
+    provenance: str = "generic",
 ) -> None:
     if isinstance(value, list):
         for item in value:
-            collect_available_plugin_catalog(item, entries)
+            collect_available_plugin_catalog(
+                item,
+                entries,
+                provenance=provenance,
+            )
         return
     if not isinstance(value, dict):
         return
 
-    entry = plugin_catalog_entry(value)
+    entry = plugin_catalog_entry(value, provenance=provenance)
     if entry is not None:
         previous = entries.get(entry.selector)
         if previous is None:
             entries[entry.selector] = entry
         else:
-            entries[entry.selector] = PluginCatalogEntry(
-                selector=entry.selector,
-                plugin=entry.plugin,
-                marketplace=entry.marketplace,
-                version=entry.version or previous.version,
-                source_path=entry.source_path or previous.source_path,
+            entries[entry.selector] = _merge_plugin_catalog_entries(
+                previous,
+                entry,
             )
 
     for key in ("installed", "available", "plugins", "items", "data"):
-        collect_available_plugin_catalog(value.get(key), entries)
+        child_provenance = provenance
+        if key in {"installed", "available"}:
+            child_provenance = key
+        collect_available_plugin_catalog(
+            value.get(key),
+            entries,
+            provenance=child_provenance,
+        )
 
 
 def available_plugin_catalog(
@@ -841,6 +968,1109 @@ def plugin_tree_manifest(root: Path) -> dict[str, str]:
                 continue
             manifest[relative] = f"other:{path.lstat().st_mode}"
     return manifest
+
+
+def plugin_tree_sha256(root: Path) -> str:
+    """Hash the same residue-insensitive tree identity used by repair checks."""
+    payload = json.dumps(
+        plugin_tree_manifest(root),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _shared_materialization_error(code: str) -> SwitchError:
+    return SwitchError(f"{SHARED_MATERIALIZATION_ERROR_PREFIX}{code}")
+
+
+def _desired_plugin_field(
+    desired: object,
+    name: str,
+    default: object = None,
+) -> object:
+    if isinstance(desired, Mapping):
+        return desired.get(name, default)
+    return getattr(desired, name, default)
+
+
+def _safe_cache_key(value: str) -> bool:
+    return bool(
+        value
+        and value not in {".", ".."}
+        and "\x00" not in value
+        and Path(value).name == value
+        and "/" not in value
+        and "\\" not in value
+    )
+
+
+def _normalize_marketplace_config(value: object) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise _shared_materialization_error("unsafe_cache")
+    normalized = {
+        str(key): item
+        for key, item in value.items()
+        if str(key) not in {"name", "marketplace"}
+    }
+    return MappingProxyType(normalized)
+
+
+def _normalize_shared_desired_plugin(
+    desired: object,
+) -> SharedPluginDesiredIdentity | None:
+    if _desired_plugin_field(desired, "enabled", True) is False:
+        return None
+    selector = str(_desired_plugin_field(desired, "selector", ""))
+    requirement = plugin_requirement(selector)
+    if requirement is None or not all(
+        _safe_cache_key(component)
+        for component in (requirement.plugin, requirement.marketplace)
+    ):
+        raise _shared_materialization_error("unsafe_cache")
+    declared_plugin = str(_desired_plugin_field(desired, "plugin", ""))
+    declared_marketplace = str(
+        _desired_plugin_field(desired, "marketplace", "")
+    )
+    if (
+        (declared_plugin and declared_plugin != requirement.plugin)
+        or (
+            declared_marketplace
+            and declared_marketplace != requirement.marketplace
+        )
+    ):
+        raise _shared_materialization_error("unsafe_cache")
+    policy = str(_desired_plugin_field(desired, "policy", ""))
+    if policy not in SHARED_PLUGIN_POLICIES:
+        raise _shared_materialization_error("unsafe_cache")
+    cache_key = str(_desired_plugin_field(desired, "cache_key", ""))
+    manifest_version = str(
+        _desired_plugin_field(desired, "manifest_version", "")
+    )
+    tree_sha256 = str(_desired_plugin_field(desired, "tree_sha256", ""))
+    marketplace_config = _desired_plugin_field(
+        desired,
+        "marketplace_config",
+        _desired_plugin_field(desired, "marketplace_descriptor", None),
+    )
+    if policy == "portable_exact" and (
+        not _safe_cache_key(cache_key)
+        or not manifest_version
+        or len(tree_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in tree_sha256)
+    ):
+        raise _shared_materialization_error("unsafe_cache")
+    return SharedPluginDesiredIdentity(
+        requirement=requirement,
+        policy=policy,
+        cache_key=cache_key,
+        manifest_version=manifest_version,
+        tree_sha256=tree_sha256,
+        marketplace_config=_normalize_marketplace_config(marketplace_config),
+    )
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_cache_root(home: Path) -> tuple[Path, Path]:
+    try:
+        resolved_home = home.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _shared_materialization_error("unsafe_cache") from None
+    if not resolved_home.is_dir():
+        raise _shared_materialization_error("unsafe_cache")
+    plugins_root = home / "plugins"
+    cache_root = plugins_root / "cache"
+    for path in (plugins_root, cache_root):
+        if path.is_symlink():
+            raise _shared_materialization_error("unsafe_cache")
+    resolved_cache = cache_root.resolve(strict=False)
+    if not _path_is_within(resolved_cache, resolved_home):
+        raise _shared_materialization_error("unsafe_cache")
+    if cache_root.exists() and not cache_root.is_dir():
+        raise _shared_materialization_error("unsafe_cache")
+    return cache_root, resolved_cache
+
+
+def _validate_independent_cache_roots(
+    source_home: Path,
+    target_home: Path,
+) -> tuple[Path, Path]:
+    source_cache, resolved_source = _validate_cache_root(source_home)
+    target_cache, resolved_target = _validate_cache_root(target_home)
+    if resolved_source == resolved_target:
+        raise _shared_materialization_error("unsafe_cache")
+    return source_cache, target_cache
+
+
+def _validate_artifact_tree(
+    root: Path,
+    cache_root: Path,
+    *,
+    proof_error_code: str = "unsafe_cache",
+) -> Path:
+    try:
+        root_stat = root.lstat()
+    except OSError:
+        raise _shared_materialization_error(proof_error_code) from None
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise _shared_materialization_error("unsafe_cache")
+    try:
+        resolved_cache = cache_root.resolve(strict=False)
+        resolved_root = root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _shared_materialization_error(proof_error_code) from None
+    if not _path_is_within(resolved_root, resolved_cache):
+        raise _shared_materialization_error("unsafe_cache")
+
+    try:
+        for current_root, dir_names, file_names in os.walk(
+            root,
+            topdown=True,
+            followlinks=False,
+            onerror=raise_tree_walk_error,
+        ):
+            current = Path(current_root)
+            for name in (*dir_names, *file_names):
+                path = current / name
+                path_stat = path.lstat()
+                if stat.S_ISLNK(path_stat.st_mode):
+                    try:
+                        resolved_link = path.resolve(strict=True)
+                    except (OSError, RuntimeError):
+                        raise _shared_materialization_error(
+                            "unsafe_cache"
+                        ) from None
+                    if not _path_is_within(resolved_link, resolved_root):
+                        raise _shared_materialization_error("unsafe_cache")
+                    continue
+                if not (
+                    stat.S_ISDIR(path_stat.st_mode)
+                    or stat.S_ISREG(path_stat.st_mode)
+                ):
+                    raise _shared_materialization_error("unsafe_cache")
+    except SwitchError:
+        raise
+    except (OSError, RuntimeError):
+        raise _shared_materialization_error(proof_error_code) from None
+    return resolved_root
+
+
+def _plugin_manifest(
+    root: Path,
+    plugin: str,
+    *,
+    proof_error_code: str = "unsafe_cache",
+) -> Mapping[str, Any]:
+    manifest_path = root / ".codex-plugin" / "plugin.json"
+    try:
+        manifest_stat = manifest_path.lstat()
+    except OSError:
+        raise _shared_materialization_error(proof_error_code) from None
+    if stat.S_ISLNK(manifest_stat.st_mode) or not stat.S_ISREG(
+        manifest_stat.st_mode
+    ):
+        raise _shared_materialization_error("unsafe_cache")
+    try:
+        value = json.loads(manifest_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise _shared_materialization_error(proof_error_code) from None
+    if not isinstance(value, dict) or value.get("name") != plugin:
+        raise _shared_materialization_error(proof_error_code)
+    version = value.get("version")
+    if not isinstance(version, str) or not version:
+        raise _shared_materialization_error(proof_error_code)
+    return MappingProxyType(value)
+
+
+def _plugin_skill_roots(
+    root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    proof_error_code: str = "unsafe_cache",
+) -> tuple[str, ...]:
+    declared = manifest.get("skills", "./skills/")
+    candidates: list[str] = []
+    if isinstance(declared, str):
+        candidates.append(declared)
+    elif isinstance(declared, list) and all(
+        isinstance(value, str) for value in declared
+    ):
+        candidates.extend(declared)
+    elif declared is not None:
+        raise _shared_materialization_error(proof_error_code)
+
+    try:
+        resolved_root = root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _shared_materialization_error(proof_error_code) from None
+    skill_roots: set[str] = set()
+    for candidate in candidates:
+        relative = Path(candidate)
+        if relative.is_absolute():
+            raise _shared_materialization_error("unsafe_cache")
+        location = root / relative
+        if location.is_symlink():
+            try:
+                resolved_link = location.resolve(strict=True)
+            except (OSError, RuntimeError):
+                raise _shared_materialization_error("unsafe_cache") from None
+            if not _path_is_within(resolved_link, resolved_root):
+                raise _shared_materialization_error("unsafe_cache")
+        if not location.exists():
+            continue
+        try:
+            resolved_location = location.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise _shared_materialization_error(proof_error_code) from None
+        if not _path_is_within(resolved_location, resolved_root):
+            raise _shared_materialization_error("unsafe_cache")
+        if resolved_location.is_file():
+            if resolved_location.name != "SKILL.md":
+                raise _shared_materialization_error("unsafe_cache")
+            skill_roots.add(str(resolved_location.parent))
+            continue
+        if not resolved_location.is_dir():
+            raise _shared_materialization_error(proof_error_code)
+        direct_skill = resolved_location / "SKILL.md"
+        if direct_skill.is_file() and not direct_skill.is_symlink():
+            skill_roots.add(str(resolved_location))
+        try:
+            manifests = sorted(resolved_location.rglob("SKILL.md"))
+        except OSError:
+            raise _shared_materialization_error(proof_error_code) from None
+        for skill_manifest in manifests:
+            if skill_manifest.is_symlink() or not skill_manifest.is_file():
+                raise _shared_materialization_error("unsafe_cache")
+            resolved_skill = skill_manifest.resolve(strict=True)
+            if not _path_is_within(resolved_skill, resolved_root):
+                raise _shared_materialization_error("unsafe_cache")
+            skill_roots.add(str(resolved_skill.parent))
+    return tuple(sorted(skill_roots))
+
+
+def _attest_shared_plugin_artifact(
+    *,
+    root: Path,
+    cache_root: Path,
+    identity: SharedPluginDesiredIdentity,
+    require_exact: bool,
+) -> dict[str, object]:
+    _validate_artifact_tree(root, cache_root)
+    manifest = _plugin_manifest(root, identity.requirement.plugin)
+    manifest_version = str(manifest["version"])
+    try:
+        tree_sha256 = plugin_tree_sha256(root)
+    except OSError:
+        raise _shared_materialization_error("unsafe_cache") from None
+    if require_exact and (
+        root.name != identity.cache_key
+        or manifest_version != identity.manifest_version
+        or tree_sha256 != identity.tree_sha256
+    ):
+        raise _shared_materialization_error("unsafe_cache")
+    return {
+        "selector": identity.requirement.selector,
+        "policy": identity.policy,
+        "cache_key": root.name,
+        "manifest_version": manifest_version,
+        "tree_sha256": tree_sha256,
+        "skill_roots": _plugin_skill_roots(root, manifest),
+    }
+
+
+def _attest_backend_managed_target(
+    *,
+    root: Path,
+    cache_root: Path,
+    identity: SharedPluginDesiredIdentity,
+    target_cache_key: str,
+) -> dict[str, object]:
+    try:
+        root_stat = root.lstat()
+    except FileNotFoundError:
+        raise _shared_materialization_error("unverified_target") from None
+    except OSError:
+        raise _shared_materialization_error("unverified_target") from None
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise _shared_materialization_error("unsafe_cache")
+
+    _validate_artifact_tree(
+        root,
+        cache_root,
+        proof_error_code="unverified_target",
+    )
+    manifest = _plugin_manifest(
+        root,
+        identity.requirement.plugin,
+        proof_error_code="unverified_target",
+    )
+    manifest_version = str(manifest["version"])
+    if (
+        target_cache_key != manifest_version
+        and not catalog_version_is_revision_key(target_cache_key)
+    ):
+        raise _shared_materialization_error("unverified_target")
+    try:
+        tree_sha256 = plugin_tree_sha256(root)
+    except OSError:
+        raise _shared_materialization_error("unverified_target") from None
+    return {
+        "selector": identity.requirement.selector,
+        "policy": identity.policy,
+        "cache_key": target_cache_key,
+        "manifest_version": manifest_version,
+        "tree_sha256": tree_sha256,
+        "skill_roots": _plugin_skill_roots(
+            root,
+            manifest,
+            proof_error_code="unverified_target",
+        ),
+    }
+
+
+def _toml_key_segment(value: str) -> str:
+    if value and all(
+        character.isascii()
+        and (character.isalnum() or character in {"_", "-"})
+        for character in value
+    ):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _toml_inline_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_inline_value(item) for item in value) + "]"
+    if isinstance(value, Mapping):
+        entries = ", ".join(
+            f"{_toml_key_segment(str(key))} = {_toml_inline_value(item)}"
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+        return "{ " + entries + " }"
+    raise _shared_materialization_error("unsafe_cache")
+
+
+def _shared_marketplace_config_args(
+    identities: tuple[SharedPluginDesiredIdentity, ...],
+) -> list[str]:
+    by_marketplace: dict[str, Mapping[str, Any]] = {}
+    for identity in identities:
+        if not identity.marketplace_config:
+            continue
+        marketplace = identity.requirement.marketplace
+        previous = by_marketplace.get(marketplace)
+        if previous is not None and dict(previous) != dict(identity.marketplace_config):
+            raise _shared_materialization_error("unsafe_cache")
+        by_marketplace[marketplace] = identity.marketplace_config
+
+    args: list[str] = []
+    for marketplace, config in sorted(by_marketplace.items()):
+        prefix = f"marketplaces.{_toml_key_segment(marketplace)}"
+        for key, value in sorted(config.items(), key=lambda pair: str(pair[0])):
+            args.extend(
+                (
+                    "-c",
+                    f"{prefix}.{_toml_key_segment(str(key))}="
+                    f"{_toml_inline_value(value)}",
+                )
+            )
+    return args
+
+
+def _shared_available_catalog(
+    *,
+    runtime: PluginMaintenanceRuntime,
+    config_args: list[str],
+    store_lock_descriptor: int,
+) -> CatalogResult:
+    # Shared preflight may consume only the target backend's configured
+    # snapshot. Marketplace upgrade remains an explicit repair operation.
+    try:
+        result = _capture_profile_command(
+            codex_bin=runtime.codex_bin,
+            home=runtime.home,
+            args=[*config_args, "plugin", "list", "--available", "--json"],
+            pass_fds=(store_lock_descriptor,),
+        )
+    except (OSError, SwitchError) as error:
+        raise _shared_materialization_error("unverified_catalog") from error
+    catalog = available_plugin_catalog(
+        result.stdout,
+        stderr=result.stderr,
+        returncode=result.returncode,
+    )
+    if not catalog.verified:
+        raise _shared_materialization_error("unverified_catalog")
+    return catalog
+
+
+def _catalog_source_is_exact(
+    identity: SharedPluginDesiredIdentity,
+    entry: PluginCatalogEntry,
+) -> bool:
+    source = entry.source_path
+    if (
+        source is None
+        or not source.is_absolute()
+        or source.is_symlink()
+        or not source.is_dir()
+    ):
+        raise _shared_materialization_error("unsafe_cache")
+    try:
+        source = source.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _shared_materialization_error("unsafe_cache") from None
+    _validate_artifact_tree(
+        source,
+        source,
+        proof_error_code="source_mismatch",
+    )
+    manifest = _plugin_manifest(
+        source,
+        identity.requirement.plugin,
+        proof_error_code="source_mismatch",
+    )
+    try:
+        tree_sha256 = plugin_tree_sha256(source)
+    except OSError:
+        raise _shared_materialization_error("source_mismatch") from None
+    return (
+        str(manifest["version"]) == identity.manifest_version
+        and tree_sha256 == identity.tree_sha256
+    )
+
+
+def _shared_target_changed_error() -> SwitchError:
+    return SwitchError("shared_configuration.target_changed_during_plan")
+
+
+def _shared_target_config_snapshot(path: Path) -> _SharedTargetConfigSnapshot:
+    try:
+        before_stat = path.lstat()
+    except FileNotFoundError:
+        return _SharedTargetConfigSnapshot(exists=False)
+    except OSError:
+        raise _shared_target_changed_error() from None
+    if stat.S_ISLNK(before_stat.st_mode) or not stat.S_ISREG(before_stat.st_mode):
+        raise _shared_target_changed_error()
+    try:
+        data = path.read_bytes()
+        after_stat = path.lstat()
+        text = data.decode()
+        validate_toml_text(text, str(path))
+    except (OSError, UnicodeDecodeError, SwitchError):
+        raise _shared_target_changed_error() from None
+    before_identity = (
+        before_stat.st_dev,
+        before_stat.st_ino,
+        before_stat.st_size,
+        before_stat.st_mtime_ns,
+        before_stat.st_mode,
+    )
+    after_identity = (
+        after_stat.st_dev,
+        after_stat.st_ino,
+        after_stat.st_size,
+        after_stat.st_mtime_ns,
+        after_stat.st_mode,
+    )
+    if before_identity != after_identity:
+        raise _shared_target_changed_error()
+    return _SharedTargetConfigSnapshot(
+        exists=True,
+        data=data,
+        mode=stat.S_IMODE(after_stat.st_mode),
+    )
+
+
+def _selector_table_spans(
+    text: str,
+    selector: str,
+) -> tuple[list[str], tuple[tuple[int, int], ...]]:
+    lines = text.splitlines(keepends=True)
+    starts: list[int] = []
+    target_starts: list[int] = []
+    for index, line in enumerate(lines):
+        table = toml_table_name(line)
+        if table is None:
+            continue
+        starts.append(index)
+        if (
+            not line.lstrip().startswith("[[")
+            and plugin_selector_from_table(table) == selector
+        ):
+            target_starts.append(index)
+    spans: list[tuple[int, int]] = []
+    for start in target_starts:
+        end = len(lines)
+        for next_start in starts:
+            if next_start > start:
+                end = next_start
+                break
+        spans.append((start, end))
+    return lines, tuple(spans)
+
+
+def _exact_added_activation_table(lines: list[str]) -> bool:
+    if not lines:
+        return False
+    header = lines[0].strip()
+    if not header or commentless_line(lines[0]).strip() != header:
+        return False
+    enabled_count = 0
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#") or commentless_line(line).strip() != stripped:
+            return False
+        if assignment_bool(line, "enabled") is not True:
+            return False
+        enabled_count += 1
+    return enabled_count == 1
+
+
+def _restore_existing_activation_table(
+    before_lines: list[str],
+    after_lines: list[str],
+) -> str | None:
+    before_enabled = [
+        index
+        for index, line in enumerate(before_lines[1:], start=1)
+        if assignment_bool(line, "enabled") is not None
+    ]
+    after_enabled = [
+        index
+        for index, line in enumerate(after_lines[1:], start=1)
+        if assignment_bool(line, "enabled") is not None
+    ]
+    if len(after_enabled) != 1:
+        return None
+    after_index = after_enabled[0]
+    if assignment_bool(after_lines[after_index], "enabled") is not True:
+        return None
+
+    if len(before_enabled) == 1:
+        before_index = before_enabled[0]
+        if assignment_bool(before_lines[before_index], "enabled") is not False:
+            return None
+        candidate = list(after_lines)
+        candidate[after_index] = before_lines[before_index]
+        if "".join(candidate) == "".join(before_lines):
+            return "".join(before_lines)
+        return None
+
+    if before_enabled:
+        return None
+    candidate = list(after_lines)
+    del candidate[after_index]
+    if "".join(candidate) == "".join(before_lines):
+        return "".join(before_lines)
+    return None
+
+
+def _scrub_expected_plugin_activation(
+    *,
+    before: bytes,
+    after: bytes,
+    selector: str,
+) -> bytes | None:
+    try:
+        before_text = before.decode()
+        after_text = after.decode()
+        validate_toml_text(before_text, "shared target config before native add")
+        validate_toml_text(after_text, "shared target config after native add")
+    except (UnicodeDecodeError, SwitchError):
+        return None
+
+    before_lines, before_spans = _selector_table_spans(before_text, selector)
+    after_lines, after_spans = _selector_table_spans(after_text, selector)
+    if len(after_spans) != 1 or len(before_spans) > 1:
+        return None
+
+    after_start, after_end = after_spans[0]
+    if not before_spans:
+        if not _exact_added_activation_table(after_lines[after_start:after_end]):
+            return None
+        prefix = "".join(after_lines[:after_start])
+        suffix = "".join(after_lines[after_end:])
+        removal_prefix = prefix
+        if prefix.startswith(before_text):
+            inserted_spacing = prefix[len(before_text) :]
+            if inserted_spacing and not inserted_spacing.strip():
+                removal_prefix = before_text
+        scrubbed = removal_prefix + suffix
+    else:
+        before_start, before_end = before_spans[0]
+        restored_table = _restore_existing_activation_table(
+            before_lines[before_start:before_end],
+            after_lines[after_start:after_end],
+        )
+        if restored_table is None:
+            return None
+        scrubbed = (
+            "".join(after_lines[:after_start])
+            + restored_table
+            + "".join(after_lines[after_end:])
+        )
+
+    try:
+        validate_toml_text(scrubbed, "shared target config after selector restore")
+    except SwitchError:
+        return None
+    return scrubbed.encode()
+
+
+def _scrub_expected_plugin_activations(
+    *,
+    before: bytes,
+    after: bytes,
+    selectors: tuple[str, ...],
+) -> tuple[bytes, bool] | None:
+    """Remove only exact native-add activation deltas for bounded selectors.
+
+    ``None`` means a bounded selector changed in a way that cannot be proven to
+    be the native add operation's exact activation.  A successful result keeps
+    all non-selector bytes from ``after`` and reports whether any bounded
+    activation was removed.
+    """
+    try:
+        before_text = before.decode()
+        after_text = after.decode()
+        validate_toml_text(before_text, "shared target config before native add")
+        validate_toml_text(after_text, "shared target config after native add")
+    except (UnicodeDecodeError, SwitchError):
+        return None
+
+    normalized = tuple(sorted(set(selectors)))
+    if len(normalized) != len(selectors) or any(
+        plugin_requirement(selector) is None for selector in normalized
+    ):
+        return None
+
+    scrubbed = after
+    changed = False
+    for selector in normalized:
+        try:
+            current_text = scrubbed.decode()
+        except UnicodeDecodeError:
+            return None
+        before_lines, before_spans = _selector_table_spans(before_text, selector)
+        current_lines, current_spans = _selector_table_spans(current_text, selector)
+        before_tables = tuple(
+            "".join(before_lines[start:end]).rstrip()
+            for start, end in before_spans
+        )
+        current_tables = tuple(
+            "".join(current_lines[start:end]).rstrip()
+            for start, end in current_spans
+        )
+        if current_tables == before_tables:
+            continue
+        candidate = _scrub_expected_plugin_activation(
+            before=before,
+            after=scrubbed,
+            selector=selector,
+        )
+        if candidate is None:
+            return None
+        scrubbed = candidate
+        changed = True
+    return scrubbed, changed
+
+
+def _replace_shared_target_config_if_unchanged(
+    *,
+    path: Path,
+    observed: _SharedTargetConfigSnapshot,
+    data: bytes,
+    mode: int,
+) -> None:
+    if _shared_target_config_snapshot(path) != observed:
+        raise _shared_target_changed_error()
+    try:
+        atomic_write(path, data, mode=mode)
+    except OSError:
+        raise _shared_materialization_error("failed") from None
+
+
+def _restore_native_add_config(
+    *,
+    config_path: Path,
+    selector: str,
+    before: _SharedTargetConfigSnapshot,
+) -> None:
+    after = _shared_target_config_snapshot(config_path)
+    if after == before:
+        return
+    if not after.exists:
+        raise _shared_target_changed_error()
+
+    scrubbed = _scrub_expected_plugin_activation(
+        before=before.data if before.exists else b"",
+        after=after.data,
+        selector=selector,
+    )
+    if scrubbed is None:
+        raise _shared_target_changed_error()
+
+    only_expected_delta = (
+        before.exists
+        and scrubbed == before.data
+        and after.mode == before.mode
+    )
+    if only_expected_delta:
+        _replace_shared_target_config_if_unchanged(
+            path=config_path,
+            observed=after,
+            data=before.data,
+            mode=before.mode,
+        )
+        if _shared_target_config_snapshot(config_path) != before:
+            raise _shared_target_changed_error()
+        return
+
+    if not before.exists and not scrubbed.strip():
+        if _shared_target_config_snapshot(config_path) != after:
+            raise _shared_target_changed_error()
+        try:
+            config_path.unlink()
+            parent_descriptor = os.open(
+                config_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(parent_descriptor)
+            finally:
+                os.close(parent_descriptor)
+        except OSError:
+            raise _shared_materialization_error("failed") from None
+        if _shared_target_config_snapshot(config_path) != before:
+            raise _shared_target_changed_error()
+        return
+
+    _replace_shared_target_config_if_unchanged(
+        path=config_path,
+        observed=after,
+        data=scrubbed,
+        mode=after.mode,
+    )
+    raise _shared_target_changed_error()
+
+
+def _native_add_shared_plugin_preserving_config(
+    *,
+    runtime: PluginMaintenanceRuntime,
+    config_args: list[str],
+    identity: SharedPluginDesiredIdentity,
+    store_lock_descriptor: int,
+) -> None:
+    config_path = runtime.home / "config.toml"
+    before = _shared_target_config_snapshot(config_path)
+    try:
+        _native_add_shared_plugin(
+            runtime=runtime,
+            config_args=config_args,
+            identity=identity,
+            store_lock_descriptor=store_lock_descriptor,
+        )
+    except BaseException:
+        _restore_native_add_config(
+            config_path=config_path,
+            selector=identity.requirement.selector,
+            before=before,
+        )
+        raise
+    _restore_native_add_config(
+        config_path=config_path,
+        selector=identity.requirement.selector,
+        before=before,
+    )
+
+
+def _native_add_shared_plugin(
+    *,
+    runtime: PluginMaintenanceRuntime,
+    config_args: list[str],
+    identity: SharedPluginDesiredIdentity,
+    store_lock_descriptor: int,
+) -> None:
+    try:
+        result = _capture_profile_command(
+            codex_bin=runtime.codex_bin,
+            home=runtime.home,
+            args=[
+                *config_args,
+                "plugin",
+                "add",
+                identity.requirement.selector,
+                "--json",
+            ],
+            pass_fds=(store_lock_descriptor,),
+        )
+    except (OSError, SwitchError) as error:
+        raise _shared_materialization_error("failed") from error
+    if result.returncode != 0:
+        raise _shared_materialization_error("failed")
+
+
+def _validate_shared_materializer_lease(store: Store, descriptor: object) -> int:
+    """Bind the private inherited lease to this materializer's exact store."""
+    if (
+        isinstance(descriptor, bool)
+        or not isinstance(descriptor, int)
+        or descriptor < 0
+    ):
+        raise _shared_materialization_error("failed")
+    try:
+        locked = os.fstat(descriptor)
+        current = store.root.lstat()
+    except OSError as error:
+        raise _shared_materialization_error("failed") from error
+    if (
+        stat.S_ISLNK(current.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or not stat.S_ISDIR(locked.st_mode)
+        or (current.st_dev, current.st_ino) != (locked.st_dev, locked.st_ino)
+    ):
+        raise _shared_materialization_error("failed")
+    return descriptor
+
+
+def materialize_shared_plugins(
+    *,
+    store: Store,
+    selection: object,
+    source_profile: str,
+    target_profile: str,
+    desired_plugins: tuple[object, ...],
+    generation: int,
+    _store_lock_descriptor: object = None,
+) -> tuple[dict[str, object], ...]:
+    """Materialize one desired generation with the target profile backend.
+
+    This adapter never directly copies, links, deletes, garbage-collects, or
+    recreates Plugin cache artifacts, and it never publishes the target config.
+    Native backend commands own their installed-version cache lifecycle and may
+    replace prior versions. Desired marketplace values are temporary command
+    overrides; every returned receipt is rebuilt from the fresh target tree.
+    """
+    del selection
+    store_lock_descriptor = _validate_shared_materializer_lease(
+        store,
+        _store_lock_descriptor,
+    )
+    if (
+        source_profile == target_profile
+        or {source_profile, target_profile} != PRODUCT_PROFILES
+    ):
+        raise _shared_materialization_error("failed")
+    if not isinstance(generation, int) or generation < 1:
+        raise _shared_materialization_error("failed")
+    identities = tuple(
+        identity
+        for identity in (
+            _normalize_shared_desired_plugin(desired)
+            for desired in desired_plugins
+        )
+        if identity is not None
+    )
+    if len({identity.requirement.selector for identity in identities}) != len(
+        identities
+    ):
+        raise _shared_materialization_error("unsafe_cache")
+    if not identities:
+        return ()
+
+    try:
+        source_home = profile_home(store, source_profile)
+        target_home = profile_home(store, target_profile)
+        _source_cache, target_cache = _validate_independent_cache_roots(
+            source_home,
+            target_home,
+        )
+    except SwitchError as error:
+        if str(error).startswith(SHARED_MATERIALIZATION_ERROR_PREFIX):
+            raise
+        raise _shared_materialization_error("unsafe_cache") from error
+
+    receipts: dict[str, dict[str, object]] = {}
+    pending: list[SharedPluginDesiredIdentity] = []
+    for identity in identities:
+        if identity.policy != "portable_exact":
+            pending.append(identity)
+            continue
+        if not _safe_cache_key(identity.cache_key):
+            pending.append(identity)
+            continue
+        candidate = (
+            target_cache
+            / identity.requirement.marketplace
+            / identity.requirement.plugin
+            / identity.cache_key
+        )
+        if not candidate.exists():
+            pending.append(identity)
+            continue
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise _shared_materialization_error("unsafe_cache")
+        _validate_artifact_tree(candidate, target_cache)
+        try:
+            receipt = _attest_shared_plugin_artifact(
+                root=candidate,
+                cache_root=target_cache,
+                identity=identity,
+                require_exact=identity.policy == "portable_exact",
+            )
+        except SwitchError:
+            pending.append(identity)
+            continue
+        receipts[identity.requirement.selector] = receipt
+
+    if not pending:
+        return tuple(
+            receipts[identity.requirement.selector] for identity in identities
+        )
+
+    try:
+        runtime = profile_plugin_runtime(store, target_profile)
+    except SwitchError as error:
+        raise _shared_materialization_error("failed") from error
+    try:
+        runtime_home = runtime.home.expanduser().resolve(strict=False)
+        expected_home = target_home.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise _shared_materialization_error("unsafe_cache") from error
+    if runtime_home != expected_home:
+        raise _shared_materialization_error("unsafe_cache")
+
+    config_args = _shared_marketplace_config_args(identities)
+    catalog = _shared_available_catalog(
+        runtime=runtime,
+        config_args=config_args,
+        store_lock_descriptor=store_lock_descriptor,
+    )
+    for identity in pending:
+        entry = catalog.entries.get(identity.requirement.selector)
+        if entry is None:
+            raise _shared_materialization_error("unavailable")
+        if (
+            identity.policy == "portable_exact"
+            and not _safe_cache_key(entry.version)
+        ):
+            raise _shared_materialization_error("unsafe_cache")
+        if not _catalog_source_is_exact(identity, entry):
+            raise _shared_materialization_error("source_mismatch")
+
+    try:
+        running_pids = running_target_app_server_pids(store, runtime)
+    except (OSError, SwitchError) as error:
+        raise _shared_materialization_error("failed") from error
+    if running_pids:
+        raise _shared_materialization_error("running_process")
+
+    backend_pending: list[SharedPluginDesiredIdentity] = []
+    for identity in pending:
+        if identity.policy == "backend_managed":
+            backend_pending.append(identity)
+            continue
+        target_key = identity.cache_key
+        candidate = (
+            target_cache
+            / identity.requirement.marketplace
+            / identity.requirement.plugin
+            / target_key
+        )
+        needs_add = True
+        if candidate.exists():
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise _shared_materialization_error("unsafe_cache")
+            _validate_artifact_tree(candidate, target_cache)
+            try:
+                current = _attest_shared_plugin_artifact(
+                    root=candidate,
+                    cache_root=target_cache,
+                    identity=identity,
+                    require_exact=identity.policy == "portable_exact",
+                )
+            except SwitchError:
+                current = None
+            if current is not None:
+                needs_add = False
+        if needs_add:
+            _native_add_shared_plugin_preserving_config(
+                runtime=runtime,
+                config_args=config_args,
+                identity=identity,
+                store_lock_descriptor=store_lock_descriptor,
+            )
+
+        receipts[identity.requirement.selector] = _attest_shared_plugin_artifact(
+            root=candidate,
+            cache_root=target_cache,
+            identity=identity,
+            require_exact=identity.policy == "portable_exact",
+        )
+
+    for identity in backend_pending:
+        _native_add_shared_plugin_preserving_config(
+            runtime=runtime,
+            config_args=config_args,
+            identity=identity,
+            store_lock_descriptor=store_lock_descriptor,
+        )
+
+    if backend_pending:
+        post_catalog = _shared_available_catalog(
+            runtime=runtime,
+            config_args=config_args,
+            store_lock_descriptor=store_lock_descriptor,
+        )
+        for identity in backend_pending:
+            entry = post_catalog.entries.get(identity.requirement.selector)
+            if (
+                entry is None
+                or not entry.installed_record_seen
+                or len(entry.installed_versions) != 1
+            ):
+                raise _shared_materialization_error("unverified_target")
+            target_key = entry.installed_versions[0]
+            if not _safe_cache_key(target_key):
+                raise _shared_materialization_error("unsafe_cache")
+            candidate = (
+                target_cache
+                / identity.requirement.marketplace
+                / identity.requirement.plugin
+                / target_key
+            )
+            receipts[
+                identity.requirement.selector
+            ] = _attest_backend_managed_target(
+                root=candidate,
+                cache_root=target_cache,
+                identity=identity,
+                target_cache_key=target_key,
+            )
+
+    return tuple(
+        receipts[identity.requirement.selector] for identity in identities
+    )
 
 
 def classify_installed_plugin_cache(

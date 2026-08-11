@@ -35,8 +35,10 @@ from codex_switch_shell import ensure_shell_cli_bootstrap, shell_cli_bootstrap_p
 from codex_switch_runtime_binding import (
     DesktopInventory,
     manifest_uses_canonical_binding,
+    require_internal_app_readiness,
     resolve_store_runtime_binding,
 )
+from codex_switch_selection import requested_profile_selection
 
 
 def _switch_profile_unlocked(
@@ -49,22 +51,43 @@ def _switch_profile_unlocked(
     skip_shim: bool,
     skip_app_cli: bool,
     skip_launchctl: bool,
+    app_profile: str | None = None,
 ) -> None:
+    selection = requested_profile_selection(
+        name,
+        app_profile,
+        skip_app_cli=skip_app_cli,
+    )
+    name = selection.cli_profile
     if name in {"internal", "openai-official"}:
         from codex_switch_transaction import TransactionRequest, execute_transaction
 
         manifest = store.load_manifest(name)
+        app_manifest = (
+            manifest
+            if selection.app_profile == name
+            else store.load_manifest(selection.app_profile)
+        )
+        if selection.app_profile == "internal":
+            require_internal_app_readiness(app_manifest)
         canonical_app_cli_path = None
-        if name == "internal":
+        if selection.app_profile == "internal":
             binding = resolve_store_runtime_binding(
                 store,
-                name,
-                manifest=manifest,
+                selection.app_profile,
+                manifest=app_manifest,
                 inventory=DesktopInventory(current=None),
             )
             canonical_app_cli_path = str(binding.desktop_cli)
-        elif manifest_uses_canonical_binding(name, manifest):
-            binding = resolve_store_runtime_binding(store, name, manifest=manifest)
+        elif selection.is_split or manifest_uses_canonical_binding(
+            selection.app_profile,
+            app_manifest,
+        ):
+            binding = resolve_store_runtime_binding(
+                store,
+                selection.app_profile,
+                manifest=app_manifest,
+            )
             canonical_app_cli_path = str(binding.desktop_cli)
         progress_callback = print if config_mode == CONFIG_MODE_SHARED else None
         transaction_options = {
@@ -76,6 +99,8 @@ def _switch_profile_unlocked(
             "skip_launchctl": skip_launchctl,
             "progress_callback": progress_callback,
         }
+        if selection.app_profile_explicit:
+            transaction_options["app_profile"] = selection.app_profile
         if canonical_app_cli_path is not None:
             transaction_options["canonical_app_cli_path"] = canonical_app_cli_path
         receipt = execute_transaction(
@@ -231,6 +256,7 @@ def _switch_profile_unlocked(
             app_cli_path=app_cli_path,
             launch_agent_path=launch_agent_path,
             home_mode="legacy",
+            app_profile=selection.app_profile,
         ),
     )
     finalize_backup(backup_dir)
@@ -255,6 +281,7 @@ def switch_profile(
     skip_shim: bool,
     skip_app_cli: bool,
     skip_launchctl: bool,
+    app_profile: str | None = None,
 ) -> None:
     if name in {"internal", "openai-official"}:
         _switch_profile_unlocked(
@@ -267,6 +294,7 @@ def switch_profile(
             skip_shim,
             skip_app_cli,
             skip_launchctl,
+            app_profile,
         )
         return
 
@@ -283,6 +311,7 @@ def switch_profile(
             skip_shim,
             skip_app_cli,
             skip_launchctl,
+            app_profile,
         )
 
 
@@ -310,4 +339,5 @@ def cmd_switch(args: argparse.Namespace) -> None:
         skip_shim=args.skip_shim,
         skip_app_cli=args.skip_app_cli,
         skip_launchctl=args.skip_launchctl,
+        app_profile=args.app_profile,
     )

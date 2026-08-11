@@ -1,0 +1,17 @@
+{
+  "authorityContractSha256": "sha256:2e952d2504463d77df1871aeb131a827444fee619ab91eb0e2b9100fddd765db",
+  "decision": "AWAIT_HUMAN",
+  "evidenceSha256": "sha256:d1bc58ec2373d4ef88d82b84b629ab1f9a4982e4fcf5da520421d3fe34d43bd4",
+  "gateKey": "sha256:4d57babbbe6ed9079b22f4675c1ad54084cda5fb2f9fbf641dc62ce888225de5",
+  "invalidations": [],
+  "materialDelta": true,
+  "missingAuthority": [
+    "effect:app.stop_restart",
+    "effect:profile.live_activation"
+  ],
+  "reasonCodes": [
+    "effect_outside_authority_envelope"
+  ],
+  "requestSha256": "sha256:d10703016c3acc58adda9279abbb5618cbd275d6bc69d29a58931aac44ceb463",
+  "schemaVersion": "1.0"
+}

@@ -174,9 +174,14 @@ metadata drift, with multi-agent v2 as core and unknown drift as unhealthy.
 #### Scenario: Item IDs require exact observed-path coverage
 - **WHEN** `item_ids` effective state differs for the current candidate
 - **THEN** parity accepts the observed Desktop resume dependency only when the
-  exact `thread/resume.params.history` adapter removes top-level item IDs and
-  only non-portable opaque reasoning references while preserving all other
-  semantics
+  exact `thread/resume.params.history` path is proven by either current
+  direction-aware native compatibility for `client_request:thread/resume` or
+  the exact adapter that removes top-level item IDs and only non-portable
+  opaque reasoning references while preserving all other semantics
+- **AND** native compatibility requires both current method schemas and
+  `compatible=true`; absence of a method-coverage record alone is not proof
+- **AND** an incompatible resume method without accepted exact adapter
+  coverage remains unhealthy
 - **AND** another observed item-ID dependency remains unhealthy until separately
   proven.
 
@@ -433,6 +438,19 @@ last-known-good until the post-promotion handshake succeeds.
 - **AND** the bound internal binary remains executable during installation and
   candidate probing.
 
+#### Scenario: Installer ambient state is hermetic
+- **WHEN** the trusted installer runs for a sibling candidate
+- **THEN** it receives a private mode-0700 `HOME` and `CODEX_HOME`
+- **AND** the validated candidate is first in the installer child `PATH`
+- **AND** the live shell profile, live Codex config, active record, manifest,
+  wrapper, bound binary, and runtime bundle remain unchanged.
+
+#### Scenario: Installer scratch is removed on every supported exit
+- **WHEN** the installer succeeds, fails, receives `HUP`, `INT`, or `TERM`
+- **THEN** cleanup removes only the exact private installer root
+- **AND** no generated config, shell profile, credential-bearing scratch byte,
+  or scratch path remains.
+
 #### Scenario: Candidate parity precedes bound replacement
 - **WHEN** the staged binary has the intended version
 - **THEN** executable, mode, code-signature where applicable, generated schema,
@@ -443,6 +461,8 @@ last-known-good until the post-promotion handshake succeeds.
 - **WHEN** installer, version, schema, receipt, overlay, config, probe, or parity
   preparation fails
 - **THEN** the bound binary and active runtime bundle remain unchanged
+- **AND** live shell/config/profile state remains byte-for-byte unchanged
+- **AND** any retained candidate is absent from the live shell PATH
 - **AND** update returns nonzero without reporting success.
 
 #### Scenario: Binary and runtime bundle recover together
@@ -470,6 +490,15 @@ last-known-good until the post-promotion handshake succeeds.
   artifact set, and promotion order
 - **AND** invokes no installer and changes no binary, config, receipt, overlay,
   launcher, manifest, or journal.
+
+#### Scenario: Pre-fix installer residue is repaired precisely
+- **WHEN** the operator authorizes recovery from confirmed installer-added PATH
+  blocks and failed sibling candidates
+- **THEN** the system records a private timestamped backup before editing
+- **AND** removes or moves only the exact preflight-validated blocks and
+  candidates
+- **AND** preserves unrelated shell content, config, plugins, user data, and
+  recoverable backup bytes.
 
 ### Requirement: Unified parity diagnostics and packaging
 The system SHALL make status, Doctor, verify, reports, repair routing, and

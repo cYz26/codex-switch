@@ -16,6 +16,7 @@ import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import codex_switch_verify as verify
@@ -38,6 +39,7 @@ from codex_switch_runtime_binding import (
     CURRENT_CHATGPT_BUNDLE_ID,
     RuntimeBinding,
 )
+from codex_switch_selection import ProfileSelection
 from codex_switch_store import Store
 
 
@@ -499,6 +501,382 @@ class BoundedVerificationTests(unittest.TestCase):
                 [str(canonical), str(canonical)],
                 [outcome.command[0] for outcome in outcomes],
             )
+
+    def test_split_verifier_routes_cli_and_app_checks_to_distinct_bindings(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            internal_home = root / "internal-home"
+            official_home = root / "official-home"
+            internal_home.mkdir()
+            official_home.mkdir()
+            store = Store(root / "store", official_home, root / "agent.plist")
+            store.ensure()
+            internal_profile = store.profile_dir("internal")
+            official_profile = store.profile_dir("openai-official")
+            internal_profile.mkdir(parents=True)
+            official_profile.mkdir(parents=True)
+            internal_bin = root / "internal-codex"
+            internal_app = root / "internal-app"
+            official_bin = root / "official-codex"
+            for path in (internal_bin, internal_app, official_bin):
+                write_script(path, "#!/bin/sh\nexit 0\n")
+            internal_manifest = {
+                "name": "internal",
+                "codex_bin": str(internal_bin),
+                "app_cli_path": str(internal_app),
+            }
+            official_manifest = {
+                "name": "openai-official",
+                "codex_bin": str(official_bin),
+                "app_cli_path": str(official_bin),
+            }
+            (internal_profile / "manifest.json").write_text(
+                json.dumps(internal_manifest)
+            )
+            (official_profile / "manifest.json").write_text(
+                json.dumps(official_manifest)
+            )
+            internal_binding = RuntimeBinding(
+                profile="internal",
+                shell_cli=internal_bin,
+                desktop_cli=internal_app,
+                backend_cli=internal_bin,
+                codex_home=internal_home,
+                desktop_host=None,
+                requires_proxy=True,
+            )
+            official_binding = RuntimeBinding(
+                profile="openai-official",
+                shell_cli=official_bin,
+                desktop_cli=official_bin,
+                backend_cli=official_bin,
+                codex_home=official_home,
+                desktop_host=None,
+                requires_proxy=False,
+            )
+            passed = verify.SmokeOutcome(
+                status="passed",
+                kind="runtime smoke",
+                summary="passed",
+                command=(str(internal_bin), "--version"),
+                returncode=0,
+                stdout="",
+                stderr="",
+                timed_out=False,
+                stdout_truncated=False,
+                stderr_truncated=False,
+                duration_seconds=0.01,
+            )
+
+            with (
+                mock.patch.object(
+                    verify,
+                    "run_profile_command",
+                    return_value=passed,
+                ) as run_cli,
+                mock.patch.object(
+                    verify,
+                    "run_binding_app_server_smoke",
+                    return_value=(0, "app-server smoke passed"),
+                ) as run_app,
+            ):
+                problems, _diagnostics, outcomes = verify.runtime_smoke_problems(
+                    store,
+                    "internal",
+                    internal_home,
+                    app_server_smoke=True,
+                    runtime_smoke=True,
+                    runtime_binding=internal_binding,
+                    app_runtime_binding=official_binding,
+                )
+
+            self.assertEqual([], problems)
+            self.assertEqual(3, len(outcomes))
+            self.assertTrue(
+                all(call.args[0] == str(internal_bin) for call in run_cli.call_args_list)
+            )
+            self.assertTrue(
+                all(call.args[1] == internal_home for call in run_cli.call_args_list)
+            )
+            self.assertIs(official_binding, run_app.call_args.args[0])
+            observed_app_manifest = run_app.call_args.args[1]
+            self.assertEqual(
+                official_manifest["name"],
+                observed_app_manifest["name"],
+            )
+            self.assertEqual(
+                official_manifest["codex_bin"],
+                observed_app_manifest["codex_bin"],
+            )
+            self.assertEqual(
+                official_manifest["app_cli_path"],
+                observed_app_manifest["app_cli_path"],
+            )
+
+    def test_cli_only_runtime_smoke_uses_managed_store_shim(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            internal_home = root / "internal-home"
+            official_home = root / "official-home"
+            internal_home.mkdir()
+            official_home.mkdir()
+            store = Store(
+                root / "store",
+                official_home,
+                root / "agent.plist",
+                internal_codex_home=internal_home,
+            )
+            store.ensure()
+            profile = store.profile_dir("internal")
+            profile.mkdir(parents=True)
+            backend = root / "internal-backend"
+            write_script(
+                backend,
+                "#!/bin/sh\n"
+                "printf 'raw backend smoke bypassed managed generation\\n' >&2\n"
+                "exit 47\n",
+            )
+            shim_log = root / "managed-shim.log"
+            managed_shim = store.bin_dir / "codex"
+            write_script(
+                managed_shim,
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >> {str(shim_log)!r}\n"
+                "case \"$*\" in\n"
+                "  --version) printf 'codex-cli 2.0.0\\n' ;;\n"
+                "  'plugin list --json') printf '{\"plugins\":[]}\\n' ;;\n"
+                "  *) exit 48 ;;\n"
+                "esac\n",
+            )
+            backend_sha256 = hashlib.sha256(backend.read_bytes()).hexdigest()
+            (profile / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "name": "internal",
+                        "codex_bin": str(backend),
+                        "codex_home": str(internal_home),
+                        "app_cli_path": str(store.bin_dir / "codex-internal-app"),
+                        "internal_cli_generation": {
+                            "schema_version": 1,
+                            "scope": "cli-only",
+                            "backend_sha256": backend_sha256,
+                            "backend_version": "2.0.0",
+                        },
+                        "internal_app_readiness": "unverified",
+                    }
+                )
+            )
+            binding = RuntimeBinding(
+                profile="internal",
+                shell_cli=backend,
+                desktop_cli=store.bin_dir / "codex-internal-app",
+                backend_cli=backend,
+                codex_home=internal_home,
+                desktop_host=None,
+                requires_proxy=True,
+            )
+
+            problems, diagnostics, outcomes = verify.runtime_smoke_problems(
+                store,
+                "internal",
+                internal_home,
+                runtime_smoke=True,
+                runtime_binding=binding,
+            )
+
+            self.assertEqual([], problems)
+            self.assertEqual([], diagnostics)
+            self.assertEqual(
+                ["--version", "plugin list --json"],
+                shim_log.read_text().splitlines(),
+            )
+            self.assertEqual(
+                [str(managed_shim), str(managed_shim)],
+                [outcome.command[0] for outcome in outcomes],
+            )
+
+    def test_split_active_verification_attests_official_app_and_internal_home(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            internal_home = root / "internal-home"
+            official_home = root / "official-home"
+            internal_home.mkdir()
+            official_home.mkdir()
+            store = Store(root / "store", official_home, root / "agent.plist")
+            store.ensure()
+            internal_profile = store.profile_dir("internal")
+            official_profile = store.profile_dir("openai-official")
+            internal_profile.mkdir(parents=True)
+            official_profile.mkdir(parents=True)
+            internal_bin = root / "internal-codex"
+            internal_app = root / "internal-app"
+            official_bin = root / "official-codex"
+            for path in (internal_bin, internal_app, official_bin):
+                write_script(path, "#!/bin/sh\nexit 0\n")
+            (internal_profile / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "name": "internal",
+                        "codex_bin": str(internal_bin),
+                        "app_cli_path": str(internal_app),
+                    }
+                )
+            )
+            (official_profile / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openai-official",
+                        "codex_bin": str(official_bin),
+                        "app_cli_path": str(official_bin),
+                    }
+                )
+            )
+            store.active_path.write_text(
+                json.dumps(
+                    {
+                        "profile": "internal",
+                        "cli_profile": "internal",
+                        "app_profile": "openai-official",
+                        "codex_home": str(internal_home),
+                        "shell_cli_path": str(internal_bin),
+                        "app_cli_path": str(official_bin),
+                    }
+                )
+            )
+            internal_binding = RuntimeBinding(
+                profile="internal",
+                shell_cli=internal_bin,
+                desktop_cli=internal_app,
+                backend_cli=internal_bin,
+                codex_home=internal_home,
+                desktop_host=None,
+                requires_proxy=True,
+            )
+            official_binding = RuntimeBinding(
+                profile="openai-official",
+                shell_cli=official_bin,
+                desktop_cli=official_bin,
+                backend_cli=official_bin,
+                codex_home=official_home,
+                desktop_host=None,
+                requires_proxy=False,
+            )
+            observation = verify.RuntimeObservation(
+                gui_app_cli=str(official_bin),
+                launch_agent_cli=str(official_bin),
+            )
+
+            problems = verify.collect_active_state_problems(
+                store,
+                "internal",
+                internal_home,
+                runtime_binding=internal_binding,
+                app_runtime_binding=official_binding,
+                runtime_observation=observation,
+            )
+
+            self.assertEqual([], problems)
+
+    def test_malformed_active_selection_blocks_all_runtime_smokes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "official-home"
+            home.mkdir()
+            (home / "config.toml").write_text('model = "test"\n')
+            store = Store(root / "store", home, root / "agent.plist")
+            store.ensure()
+            profile = store.profile_dir("openai-official")
+            profile.mkdir(parents=True)
+            binary = root / "official-codex"
+            write_script(binary, "#!/bin/sh\nexit 0\n")
+            (profile / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openai-official",
+                        "codex_bin": str(binary),
+                        "app_cli_path": str(binary),
+                    }
+                )
+            )
+            store.active_path.write_text(
+                json.dumps(
+                    {
+                        "profile": "openai-official",
+                        "cli_profile": "openai-official",
+                        "codex_home": str(home),
+                    }
+                )
+            )
+            binding = RuntimeBinding(
+                profile="openai-official",
+                shell_cli=binary,
+                desktop_cli=binary,
+                backend_cli=binary,
+                codex_home=home,
+                desktop_host=None,
+                requires_proxy=False,
+            )
+
+            with mock.patch.object(
+                verify,
+                "runtime_smoke_problems",
+                return_value=([], [], []),
+            ) as run_smokes:
+                problems, _diagnostics, outcomes = (
+                    verify.collect_verification_problems(
+                        store,
+                        "openai-official",
+                        app_server_smoke=True,
+                        runtime_smoke=True,
+                        exec_smoke="printf should-not-run",
+                        responses_tool_smoke=True,
+                        runtime_binding=binding,
+                    )
+                )
+
+            self.assertTrue(
+                any("active.selection.partial" in problem for problem in problems),
+                problems,
+            )
+            run_smokes.assert_not_called()
+            self.assertEqual([], outcomes)
+
+            args = argparse.Namespace(
+                name="openai-official",
+                repair="safe",
+                app_server_smoke=True,
+                runtime_smoke=True,
+                exec_smoke="printf should-not-run",
+                responses_tool_smoke=True,
+                report=False,
+            )
+            with (
+                mock.patch.object(verify, "make_store", return_value=store),
+                mock.patch.object(verify, "profile_home", return_value=home),
+                mock.patch.object(verify, "run_safe_repair", return_value=[]) as repair,
+                mock.patch.object(
+                    verify,
+                    "collect_store_runtime_observation",
+                    return_value=None,
+                ) as observe,
+                mock.patch.object(
+                    verify,
+                    "runtime_smoke_problems",
+                    return_value=([], [], []),
+                ) as cmd_smokes,
+                redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    verify.cmd_verify(args)
+
+            self.assertEqual(1, raised.exception.code)
+            repair.assert_not_called()
+            observe.assert_not_called()
+            cmd_smokes.assert_not_called()
 
     def test_app_server_smoke_uses_managed_desktop_chain_and_temp_home(
         self,
@@ -1416,6 +1794,101 @@ class ParityVerificationTests(unittest.TestCase):
             self.assertEqual(str(binding.backend_cli), rebind_args.codex_bin)
             self.assertFalse(rebind_args.preserve_app_cli)
 
+    def test_verify_uses_one_active_selection_snapshot_for_parity_owner(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, binding = self.make_store_and_binding(root)
+            store.ensure()
+            for profile_name in ("internal", "openai-official"):
+                profile = store.profile_dir(profile_name)
+                profile.mkdir(parents=True, exist_ok=True)
+                store.manifest_path(profile_name).write_text("{}\n")
+            binding.codex_home.mkdir(parents=True, exist_ok=True)
+            (binding.codex_home / "config.toml").write_text(
+                'model = "test"\n'
+            )
+            current = {
+                "profile": "internal",
+                "cli_profile": "internal",
+                "app_profile": "internal",
+                "codex_home": str(binding.codex_home),
+            }
+            store.active_path.write_text(json.dumps(current) + "\n")
+            split = {
+                **current,
+                "app_profile": "openai-official",
+            }
+            snapshot = SimpleNamespace(
+                record=split,
+                selection=ProfileSelection(
+                    cli_profile="internal",
+                    app_profile="openai-official",
+                ),
+                problem=None,
+                payload=(json.dumps(split) + "\n").encode(),
+            )
+            args = argparse.Namespace(
+                name="internal",
+                repair="none",
+                app_server_smoke=False,
+                runtime_smoke=False,
+                exec_smoke=None,
+                responses_tool_smoke=False,
+                report=False,
+            )
+            output = io.StringIO()
+            with (
+                mock.patch.object(verify, "make_store", return_value=store),
+                mock.patch.object(
+                    verify,
+                    "profile_home",
+                    return_value=binding.codex_home,
+                ),
+                mock.patch.object(
+                    verify,
+                    "read_active_profile_selection_snapshot",
+                    return_value=snapshot,
+                    create=True,
+                ) as read_snapshot,
+                mock.patch.object(
+                    verify,
+                    "manifest_uses_canonical_binding",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    verify,
+                    "collect_store_runtime_observation",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    verify,
+                    "collect_verification_problems",
+                    return_value=([], [], []),
+                ),
+                mock.patch.object(
+                    verify,
+                    "collect_parity_report",
+                    side_effect=AssertionError(
+                        "split snapshot must not collect internal App parity"
+                    ),
+                ) as collect_parity,
+                redirect_stdout(output),
+            ):
+                verify.cmd_verify(args)
+
+            read_snapshot.assert_called_once_with(
+                store.active_path,
+                fallback_cli_profile="internal",
+            )
+            collect_parity.assert_not_called()
+            self.assertIn(
+                "Internal App parity: not applicable "
+                "(App profile: openai-official)",
+                output.getvalue(),
+            )
+
     def test_safe_repair_rechecks_parity_after_staged_rebind(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1510,7 +1983,14 @@ class ParityVerificationTests(unittest.TestCase):
                     code = 0
 
             self.assertEqual(0, code, output.getvalue())
-            repair_parity.assert_called_once_with(args, binding)
+            repair_parity.assert_called_once()
+            repair_args = repair_parity.call_args.args
+            self.assertEqual((args, binding), repair_args[:2])
+            self.assertIsNone(repair_args[2].payload)
+            self.assertEqual(
+                "internal",
+                repair_args[2].selection.app_profile,
+            )
             self.assertEqual(2, collect_parity.call_count)
             self.assertIn("Parity health: healthy", output.getvalue())
 

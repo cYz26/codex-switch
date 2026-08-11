@@ -64,6 +64,14 @@ NON_SHAREABLE_HOME_ENTRY_NAMES = {
     "vendor_imports",
     "version.json",
 }
+SHARED_SUPPORT_HOME_ENTRY_NAMES_V1 = frozenset(
+    {
+        "AGENTS.md",
+        "prompts",
+        "rules",
+        "skills",
+    }
+)
 MANAGED_COMMENT_PREFIX = "# codex-switch:"
 DESKTOP_GLOBAL_STATE_NAME = ".codex-global-state.json"
 DESKTOP_GLOBAL_STATE_TOP_LEVEL_SETTING_KEYS = {
@@ -161,12 +169,7 @@ def is_non_shareable_home_entry_name(name: str) -> bool:
 
 
 def is_shareable_home_entry(path: Path) -> bool:
-    name = path.name
-    return (
-        not is_profile_state_name(name)
-        and not is_runtime_state_name(name)
-        and not is_non_shareable_home_entry_name(name)
-    )
+    return path.name in SHARED_SUPPORT_HOME_ENTRY_NAMES_V1
 
 
 def is_desktop_global_state_atom_setting_key(key: str) -> bool:
@@ -458,11 +461,13 @@ def remove_stale_runtime_links(home: Path, source_home: Path) -> list[Path]:
 
 
 def strip_managed_comments(text: str) -> str:
-    lines = [
-        line
-        for line in text.splitlines()
-        if not line.startswith(MANAGED_COMMENT_PREFIX)
-    ]
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.startswith(MANAGED_COMMENT_PREFIX):
+            while lines and not lines[-1].strip():
+                lines.pop()
+            continue
+        lines.append(line)
     return "\n".join(lines).strip() + "\n"
 
 

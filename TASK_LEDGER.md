@@ -30,6 +30,34 @@
 - knowledge_update_target: none; durable truth is this ledger, the four OpenSpec
   changes, `.planning/STATE.md`, and per-change verification records.
 
+### 2026-07-28 Active Incident Goal Addendum
+
+- objective: repair internal-profile switching so staged installation cannot
+  reset live Plugins/UI/config state or place a failed candidate ahead of the
+  codex-switch shim, then prove one real internal switch binds the configured
+  internal backend through manifest, wrapper, App environment, proxy child,
+  and running app-server ownership.
+- scope_in: hermetic installer environment in `scripts/codex_env_setup`;
+  staged-update regression in `scripts/test_codex_update_release.py`; exact
+  backup and removal of three confirmed `.zshrc` blocks; recoverable move of
+  three confirmed candidate directories; verified-source install; one
+  update/rebind/switch and bounded ChatGPT restart; config/plugin/runtime
+  verification.
+- scope_out: Protocol Adapter changes, plugin refresh, Desktop global-state
+  allowlist expansion, credential or identity migration, provider/model/API
+  changes, legacy skill migration/cleanup, dependency changes, destructive
+  deletion, provider-backed Desktop task, Git effects, release, and archive.
+- acceptance_criteria: harmful fake installer RED becomes GREEN on Python 3.12
+  and system Python 3.9; focused/full update tests, shell/static/OpenSpec/
+  workflow/package/diff gates pass; private scratch leaves no residue; live
+  config/plugins remain complete; bare shell and Desktop ownership resolve the
+  configured internal binary after restart; status/Doctor/verify are clean for
+  this incident chain.
+- stop_conditions: any target identity or shell-block drift; need to edit
+  proxy/global-state/plugin policy; credential/identity migration; destructive
+  overwrite; public contract or dependency expansion; failure outside the
+  recorded incident chain.
+
 ## Scope Decisions
 
 - Supported product profiles are `openai-official`/`official` and `internal`.
@@ -73,6 +101,264 @@
 - openspec-routing: required / used through four Full OpenSpec changes
 - gsd-routing: skipped; this is one approved repair goal, not a new roadmap phase
 
+### 2026-07-28 Incident Skill Routing Addendum
+
+- request_kind: bug, compatibility, update-safety, and error-handling repair
+- workflow_mode: Full OpenSpec through `internal-official-feature-parity`
+- capability-research: required / used; current installer, config/plugin
+  snapshots, shell PATH, candidates, installed source, and runtime ownership
+  were inspected
+- root-cause-diagnosis: required / used; inherited installer
+  `HOME`/`CODEX_HOME`/`PATH` is the first unauthorized mutation
+- decision-resolution: required / used; the user selected hermetic Scheme A
+- implementation-planning: required / used; target, completion, slices,
+  write-set, validation, recovery, and rollback are recorded
+- architecture-guidance: skipped; reuse the existing staged installer seam
+- test-first-execution: required / used; harmful-installer RED and dual-runtime
+  GREEN/full adjacency are complete through task 8.3A.3
+- completion-proof: required / pending after the real restart verification
+- openspec-routing: required / used; existing active change updated
+- gsd-routing: skipped; this is a bounded incident in the active change
+
+### 2026-08-04 Independent App/CLI Profiles Addendum
+
+- objective: make internal shell CLI plus official ChatGPT Desktop a managed,
+  recoverable, and diagnostically healthy selection without changing existing
+  synchronized `internal`/`official` commands.
+- scope_in: additive `--app-profile official`; explicit CLI/App identities in
+  active state; one selection interface; transactional switch integration;
+  split-aware status, Doctor, verify, wrapper, docs, skill, and package tests.
+- scope_out: another profile pairing; custom split profiles; internal parity,
+  proxy, provider, model, API, auth, or update-policy changes; live install,
+  switch, App restart, dependency, Git, release, archive, cleanup, or
+  destructive effect.
+- acceptance_criteria: every delta scenario has RED/GREEN evidence; isolated
+  split commit and rollback pass; synchronized/legacy behavior stays green;
+  status/Doctor/verify use the correct surface; complete suites, static,
+  strict OpenSpec, workflow, plugin-eval, package, and diff checks pass.
+- stop_conditions: required write-set or public-state expansion, another
+  pairing, parity/proxy/update change, live/external effect, dependency, severe
+  ambiguity, or unrelated dirty-work overlap that cannot be preserved.
+- canonical_execution_source:
+  `openspec/changes/independent-app-cli-profiles/tasks.md`
+- approval: the user's explicit implementation request authorizes only the
+  source/test/docs/OpenSpec/ledger/namespaced-state/verification write set.
+
+#### Skill Routing
+
+- request_kind: feature, runtime binding, state compatibility, error handling
+- workflow_mode: Full OpenSpec
+- capability-research: required / used; current CLI, App, manifests, wrapper,
+  process ownership, transaction, diagnostics, tests, and package were audited
+- decision-resolution: required / used; internal binary/home and official
+  bundle/home are the resolved target
+- decision-grilling: skipped; no Open Question remains
+- implementation-planning: required / used through the complete change
+- architecture-guidance: required / used; the selection seam is canonical
+- domain-language-modeling: skipped; existing domain terms are sufficient
+- test-first-execution: required / used; all five slices have recorded RED/GREEN
+- change-review: required / used; two-axis spec and standards review is clean
+- completion-proof: required / used; fresh complete matrices, package identity,
+  strict/static/workflow/diff gates, review, and residual risks are recorded
+- openspec-routing: required / used
+
+### 2026-08-10 Live Bootstrap Portable-Identity Repair Addendum
+
+- objective: restore the required next-functional-CLI synchronization when the
+  internal backend reports an older installed `portable_exact` version while
+  the safely resolved marketplace source already matches the newer official
+  desired artifact, and make the cold preflight visibly active.
+- scope_in: existing `independent-app-cli-profiles` OpenSpec task 12;
+  production Plugin catalog/source interpretation; exact source and target
+  attestation; precise materialization finding; functional-preflight stderr
+  progress; focused tests; README/SKILL; ledger/state/verification evidence.
+- scope_out: physical cache sharing/copy/delete; live Plugin installation or
+  cache mutation; another codex-switch install; functional `codex` or split
+  retry; App stop/restart; internal update; project migration; dependency;
+  Git; release; archive; cleanup; credential or destructive effects.
+- acceptance_criteria: a public-seam regression using the live JSON shape is
+  RED before production edits and GREEN afterward; an older installed version
+  cannot override a source manifest/tree that exactly matches desired; source
+  mismatch and real unsafe cache remain distinct; post-add target attestation,
+  config/receipt rollback, help/version read-only behavior, unchanged
+  generation zero-write/zero-network behavior, and flushed progress pass;
+  focused/broad/static/spec/workflow/package/diff evidence is fresh.
+- stop_conditions: target backend cannot produce the exact independent
+  artifact; repair requires cache copying/deletion, a public persistence schema
+  expansion, dependency/project migration, live mutation, or another excluded
+  effect.
+- canonical_execution_source:
+  `openspec/changes/independent-app-cli-profiles/tasks.md` task 12.
+- approval: the user's confirmation authorizes this source/test/docs/OpenSpec/
+  ledger/state/verification write set only.
+
+#### Repair Skill Routing
+
+- request_kind: live acceptance bug, compatibility, error handling, and
+  startup observability
+- workflow_mode: Full OpenSpec
+- capability-research: required / used; actual official/internal homes,
+  sanitized projection, both cache layouts, target backend JSON, source
+  manifests, runtime binding, and elapsed phase timings were inspected read-only
+- decision-resolution: required / used; the user confirmed the systemic repair
+- decision-grilling: skipped; the live evidence and confirmed solution leave no
+  product question open
+- implementation-planning: required / used through updated proposal, design,
+  specs, and task 12
+- architecture-guidance: skipped; the existing materializer/preflight seams
+  remain the correct owners and no new module boundary is needed
+- domain-language-modeling: skipped; installed target state, portable source
+  identity, desired identity, and materialization receipt already cover the
+  repair
+- test-first-execution: required / ready; public seams are production shared
+  materialization/reconcile and managed functional preflight progress
+- root-cause-diagnosis: required / used; the production parser/materializer
+  conflates an installed version with portable source identity
+- change-review: required / pending after GREEN and broad proof
+- completion-proof: required / pending
+- openspec-routing: required / used; strict validation is green and task 12.1
+  is dependency-ready
+
+### 2026-08-11 Backend-Managed Functional Acceptance Repair Addendum
+
+- objective: make the next functional managed internal CLI invocation complete
+  successfully when current official Plugin sources and compatible internal
+  installed targets intentionally have different versions and bytes.
+- scope_in: existing `independent-app-cli-profiles` OpenSpec task 13; catalog
+  installed/available provenance; exact desired-source proof; batched native
+  target reconcile and fresh post-call catalog; independent target-cache/Skill
+  proof; precise findings; focused tests; README/SKILL; ledger/state/evidence;
+  exactly one non-interactive command through the current managed shim.
+- scope_out: split retry or another install; App stop/restart/mutation; internal
+  binary update or internal-App compatibility; cache copy/link/delete/cleanup;
+  dependency/project migration; Git; release; archive; credential/provider or
+  destructive effects.
+- acceptance_criteria: real-shape installed `browser@openai-bundled`
+  `26.721.41059` plus exact official source `26.803.61601` is RED before
+  production edits and GREEN afterward; installed provenance is
+  order-independent; every pending backend-managed selector invokes native add;
+  one fresh catalog proves unique installed target keys; revision-like keys and
+  manifest versions remain distinct; unverified target, invalid catalog,
+  source mismatch, and unsafe cache stay precise; focused/broad/static/spec/
+  workflow/package/review gates pass; the managed functional command exits zero
+  while App binding/process state remains unchanged.
+- stop_conditions: repair requires public persistent schema expansion, cache
+  copying/deletion, dependency/migration, App mutation, split/install/internal
+  binary update, or another excluded effect; the backend cannot produce a safe
+  independently attestable target after one bounded functional attempt.
+- canonical_execution_source:
+  `openspec/changes/independent-app-cli-profiles/tasks.md` task 13.
+- approval: the user's systemic-repair confirmation authorizes the scoped
+  source/test/docs/control-plane changes and one functional managed-shim command
+  with its bounded internal backend/cache/config/shared-generation effects.
+
+### 2026-08-11 Managed Runtime-Config Idempotence Addendum
+
+- objective: make repeated managed runtime rendering byte-idempotent so the
+  internal config does not grow one blank line per unchanged render.
+- scope_in: existing `independent-app-cli-profiles` OpenSpec task 14;
+  managed-comment cleanup in `scripts/codex_switch_home_sync.py`; one focused
+  repeated-render regression; adjacent config/profile verification; OpenSpec,
+  ledger, namespaced-state, and verification evidence.
+- scope_out: live config rewrite, profile switch, installation, App
+  stop/restart/mutation, Plugin/cache operation, dependency activation or
+  project migration, credentials, Git, release, archive, cleanup, or unrelated
+  formatting normalization.
+- acceptance_criteria: the focused regression fails before production edits
+  because two consecutive last-runtime renders differ, then passes with
+  byte-identical repeated output; unrelated user comments and non-adjacent
+  blank lines remain preserved; focused and adjacent suites, strict OpenSpec,
+  static checks, and `git diff --check` pass.
+- stop_conditions: the repair requires changing TOML semantics, broad
+  whitespace normalization, shared/profile ownership, a dependency, or any
+  excluded live/external effect.
+- canonical_execution_source:
+  `openspec/changes/independent-app-cli-profiles/tasks.md` task 14.
+- approval: the user's request to optimize the diagnosed blank-line growth
+  authorizes this bounded source/test/control-plane repair only.
+
+#### Repair Skill Routing
+
+- request_kind: live acceptance bug, compatibility, catalog provenance, error
+  handling, and functional verification
+- workflow_mode: Full OpenSpec
+- capability-research: required / used; live sanitized catalog shape, source
+  manifests, target caches, runtime binding, App process, and production seams
+  were inspected read-only
+- decision-resolution: required / used; the user confirmed the systemic repair
+  and functional acceptance boundary
+- decision-grilling: skipped; source and target ownership are already explicit
+- implementation-planning: required / used through updated proposal, design,
+  specs, and task 13
+- architecture-guidance: required / used; one catalog projection preserves the
+  two identities without adding a persistence schema or new subsystem
+- domain-language-modeling: skipped; available source, installed target,
+  materialization receipt, and backend-managed policy are sufficient
+- test-first-execution: required / ready; agreed public seams are catalog JSON,
+  production materializer, and managed functional shim
+- root-cause-diagnosis: required / used; source/target identity conflation and
+  lost installed provenance reproduce the live failure
+- change-review: required / pending after GREEN and broad proof
+- completion-proof: required / pending through source/package matrices and the
+  one authorized functional invocation
+- openspec-routing: required / used; task 13 is dependency-ready after strict
+  validation
+
+### 2026-08-05 Shared Plugin/Skill Configuration Reopen Addendum
+
+- objective: extend the supported internal-CLI/official-App split with one
+  secret-safe Plugin/Skill desired generation, independent per-backend plugin
+  materialization, automatic App-to-next-functional-CLI readiness, and an
+  explicit stopped-App apply boundary for CLI-originated pending changes.
+- scope_in: store-owned canonical projection and receipts; three-way baselines
+  and fail-closed conflict; `marketplaces.*`, `plugins.*`, and
+  `skills.config`; personal/plugin/project Skill ownership; conditional target
+  repair; internal shim preflight; `sync-shared`; status/Doctor/verify; docs,
+  package, tests, and the other-config ownership matrix.
+- scope_out: shared physical plugin cache; running-session hot load; supervisor,
+  watcher, daemon, or official App wrapper; hook-trust portability; auth,
+  credentials, MCP/apps/connectors, sessions/history/databases, models/providers,
+  permissions, automation data, broad config migration, cache cleanup, live
+  install/switch/restart/repair, dependency, Git, release, or archive.
+- acceptance_criteria: every added delta scenario has RED/GREEN evidence;
+  functional internal backend execution is blocked until desired config and
+  independent plugin/Skill materialization verify; unchanged generations are
+  zero-write/zero-network; App-running pending and stopped-App explicit sync
+  are covered; conflicts and secrets are fail-closed; complete source/static/
+  strict/workflow/package/plugin-eval/review gates pass.
+- stop_conditions: need for a new secret/public schema, shared mutable cache,
+  supervisor/watcher/App wrapper, destructive migration, live profile/cache
+  mutation, dependency, or overlap with unrelated dirty work that cannot be
+  preserved.
+- canonical_execution_source:
+  `openspec/changes/independent-app-cli-profiles/tasks.md`
+- approval: the user's explicit implementation request authorizes the reopened
+  source/test/docs/OpenSpec/ledger/state/verification write set only.
+
+#### Skill Routing
+
+- request_kind: feature, persistence, compatibility, synchronization, and
+  error handling
+- workflow_mode: Full OpenSpec
+- capability-research: required / used; official documentation plus current
+  config, cache, shim, repair, process, diagnostic, and package evidence audited
+- decision-resolution: required / used; official App is initial bootstrap
+  authority and automatic acceptance ends at the next functional internal CLI
+- decision-grilling: skipped; local evidence and the user's App-originated
+  direct-use requirement resolve the bounded lifecycle
+- implementation-planning: required / used; OpenSpec slices 6-9 are canonical
+- architecture-guidance: required / used; neutral sidecar, three-way baseline,
+  explicit artifact policy, and one deep reconcile interface
+- domain-language-modeling: skipped; desired generation, projection, receipt,
+  pending, conflict, and materialization extend existing terms sufficiently
+- test-first-execution: required / used; tasks 6-8 record public-seam RED/GREEN,
+  failure injection, and the real subprocess SIGKILL lease regression
+- change-review: required / used; independent final review closed every P1/P2,
+  including the Decision 15 orphan-backend race, and returned `APPROVE`
+- completion-proof: required / used; fresh focused/full/static/spec/workflow/
+  package/plugin-eval evidence is recorded without a live apply
+- openspec-routing: required / used
+
 ## Target State
 
 Official/internal state mutation is one locked transaction with v2 evidence and
@@ -94,6 +380,7 @@ contained, typed, recoverable, bounded, and sanitized.
 | Regression compatibility | complete profile suite zero failures | done; final post-integration profile suite 195/195 |
 | Planning integrity | all four changes complete and strict-valid | done |
 | Final source integrity | shell/Python checks, package isolation, diff check | done; Bash 5/5, AST 54/54 and imports 46/46 on both runtimes, package and diff gates green |
+| Hermetic internal installer and live recovery | harmful installer cannot mutate live shell/config state; precise residue repair and one real internal ownership proof | exact live residue recovery complete through task 8.3A.4 at 74/84; runtime proof pending |
 
 ## Finding-to-Change Map
 
@@ -133,6 +420,14 @@ contained, typed, recoverable, bounded, and sanitized.
 | VER-001 | Run final verification and update evidence/state/tasks | main | OpenSpec tasks, ledger, state, verification records; record queued parity follow-up only | exact commands/results | completion-proof review | done; transaction 215/215, profile 195/195, update/release 108/108, strict/static/package/diff gates green |
 | ROLLOUT-001 | Install the verified current source, run live official acceptance, then restore internal | main after VER-001 | supported local install path plus live profile/App/runtime bindings; no source edits unless acceptance fails | exact install/switch commands, PATH/App/profile/wrapper/running app-server ownership, task-entry proof, restored internal proof | explicitly authorized final rollout; commit/push/tag/release/destructive cleanup remain gated | done; internal restored, final source installed, normal status clean, ChatGPT/proxy/backend ownership stable, no restart job |
 | PARITY-001 | Propose and apply `internal-official-feature-parity` as an independent Full OpenSpec after the previous Goal is complete and stable | main in the active parity Goal | planning artifacts first, then serialized TDD across runtime/protocol/verify/catalog/release/control-plane seams | parity inventory, fixed allowed-difference whitelist, core/optional classification, finding codes, capability/overlay/adapter decisions, update/rebind matrix, automated regressions, Desktop Subagent smoke | design/spec/task review before task 1.1; no commit/push/release/destructive cleanup/dependency additions; internal binary/provider/model/API/auth remain fixed differences | task 8.3 source/package milestone is verified but remains unchecked at 70/79. Its thirteen-error repair now provides structured method/rule evidence, nullable-union equivalence, exact optional-extension dispositions, two-pass policy/probe ordering, receipt-v2, and versioned acceptance-trace binding. Dual-runtime producer/consumer suites and isolated package identity pass. The user is prioritizing official, so stop at `OFFICIAL_FIRST_PAUSE_READY` and `PARITY-8.3-LIVE-RETRY`; task 8.4 remains unavailable. |
+| PARITY-INC-001 | Isolate trusted-installer side effects and recover the 2026-07-28 failed internal candidates | main, serialized before renewed parity live preparation | source: `scripts/codex_env_setup`, `scripts/test_codex_update_release.py`; canonical parity artifacts/control plane; live: exact `.zshrc` backup/three blocks, three candidate moves, supported install/profile/runtime artifacts/restart | harmful-installer RED/GREEN on two runtimes; focused/full/static/OpenSpec/workflow/package/diff; exact backup audit; config/plugin/manifest/wrapper/App/proxy/app-server verification | Scheme A consumed; proposed `codex_switch_parity.py`/`test_codex_parity.py` expansion requires explicit approval | blocked after safe internal-0.145 RED; tasks 8.3A.1-8.3A.4 done at 74/84, exact-source install valid, no promotion/restart |
+| SPLIT-001 | Apply `independent-app-cli-profiles` by serialized TDD | main | selection/record/parser, transaction/switching, shared config/materialization, status/Doctor/verify, wrapper/docs/skill/package, focused tests, and main-owned control plane named by the change | public-seam RED/GREEN, rollback/drift/materialization matrix, complete suites, strict/static/workflow/plugin-eval/package/diff evidence | source implementation approved; live switch/install/restart/plugin mutation/Git/release/archive/cleanup remain gated | task 12 source repair is done; live install/functional acceptance tasks 10.3-10.4 remain separately gated |
+| SPLIT-SHORTCUT-001 | Add and install the fixed `split` preset plus `--keep-version` | main, serialized | wrapper, public wrapper tests, README, SKILL, active OpenSpec task 11, ledger/state/evidence, contract-bound package, immutable local install | ordered public-seam RED/GREEN, focused/full/adjacent tests, static/spec/package identity, release-counterpart Plugin Eval, installed/source identity, status/Doctor/process attestation | user authorized source plus immutable install only; App stop/restart, live activation, internal update, parity repair, Git/release/archive/cleanup remain gated | done; source and installed payload `b88326ff...f49d` expose the shortcut, while active CLI/App deliberately remain `openai-official` |
+| SHARED-SWITCH-OPT-001 | Apply `optimize-shared-switch-transaction` by serialized TDD | main | generic Home selector, switch transaction validation/preflight/progress, focused tests, README, SKILL, and main-owned OpenSpec/ledger/state/evidence | public-seam allowlist/preflight/progress RED-GREEN, effect-bounded recursive work, source/final CAS rollback, conditional App preserve/rebind, complete adjacent suites, strict/static/workflow/package/plugin-eval/diff evidence | source/test/docs/control-plane approved; live switch/App stop/install/dependency/Git/release/archive/cleanup remain gated | done in source at 12/12; healthy official App yields a running CLI-only preserve path with no App/global-state effect, real rebinds retain stopped proof and rollback, 545/545 source plus package-local 10/10 + 4/4 pass; install/live activation remain separate |
+| INTERNAL-CLI-ONLY-001 | Apply `internal-cli-only-runtime` by serialized TDD | main | existing OpenSpec change; split auto-update routing; internal manifest CLI generation/App readiness metadata; runtime-rebind transaction; internal shell generation; promotion validator; managed runtime smoke; conditional App guidance; focused tests; README/SKILL; namespaced evidence | CLI-only candidate commit and rollback, production-sized streaming runtime validation, promotion/managed-shim validator parity, zero App-owned writes while official App runs, preserve/rebind guidance mapping, unchanged full-parity path, focused/full/static/strict/diff proof | combined source/test/docs/control-plane repair approved by the user; no new promotion/switch/install/App restart/dependency/Git/release/archive/cleanup/provider effect | done in source at 25/25: streaming executable SHA with 2 GiB bound, prepared fresh-shim probe and byte-exact rollback, final actual-store-shim smoke, unbuffered progress, conditional restart guidance; 997/997 source, 9/9 package focus, strict/static/package/plugin-eval/diff, and two-axis rereview pass; no install/live activation |
+| SPLIT-BOOTSTRAP-001 | Apply `independent-app-cli-profiles` task 12 by serialized TDD | main | `scripts/codex_switch_plugins.py`, shared preflight/runtime seam, focused shared/runtime tests, README, SKILL, active OpenSpec task 12, ledger/state/verification evidence | live-shape stale-installed/current-source RED/GREEN, precise finding, exact post-add attestation, flushed progress, zero-write fast path, focused/broad/static/spec/package/diff evidence | source/test/docs/control-plane only; no live cache/install/codex/split/App/dependency/Git/release/archive/cleanup effect | done in source at 4/4; final shared 81/81, runtime 90/90, profile 226/226, packaged 23/23, strict/static/workflow/package/Plugin-Eval/diff gates complete; live activation remains gated |
+| SPLIT-BACKEND-MANAGED-001 | Apply `independent-app-cli-profiles` task 13 by serialized TDD | main | catalog adapter, shared materializer, focused tests, README, SKILL, active OpenSpec task 13, ledger/state/verification evidence | real-shape source/target divergence, installed precedence, mandatory reconcile, one fresh post-call batch catalog, precise findings, full/static/spec/package/review proof, managed functional exit zero with App unchanged | one managed functional command approved; no split/install/App mutation/internal binary update/direct codex-switch cache copy-link-delete/dependency/Git/release/archive/cleanup | done at 4/4: functional CLI exits zero, 18 receipts are current with App unchanged, native backend cache lifecycle is explicitly accepted, codex-switch direct cache mutation remains forbidden, source and package shared matrices pass 94/94 |
+| SPLIT-CONFIG-IDEMPOTENCE-001 | Apply `independent-app-cli-profiles` task 14 by serialized TDD | main | managed runtime annotation cleanup, focused config/profile tests, active OpenSpec task 14, ledger/state/verification evidence | repeated-render RED/GREEN, user-format preservation, adjacent suites, strict/static/diff proof | no live config/switch/install/App/plugin/cache/dependency/Git/release/archive/cleanup effect | done at 3/3; config 31/31, focused profile 4/4, complete profile 226/226, strict OpenSpec 22/22, workflow/static/diff gates pass |
 
 ## Dependency and Execution Order
 
@@ -145,6 +440,14 @@ contained, typed, recoverable, bounded, and sanitized.
 6. `ROLLOUT-001` after final source verification and integrated review.
 7. Complete and stabilize the previous core-repair Goal, including TPS-003.
 8. Start `PARITY-001` as the active independent Full OpenSpec Goal.
+9. Install the verified result of `SHARED-SWITCH-OPT-001` before any further
+   split live-activation retry; preview then decides whether App preservation
+   is possible or a stopped-App rebind is required.
+10. Complete `SPLIT-BOOTSTRAP-001` source verification before any separately
+    authorized functional CLI or split retry.
+11. Complete `SPLIT-BACKEND-MANAGED-001` source verification before its single
+    authorized functional managed-shim acceptance; stop after one bounded
+    attempt if the target cannot be independently proved.
 
 Each step is selected only after its focused verification and main-agent review
 passes. No production write task runs concurrently with another production
@@ -173,6 +476,20 @@ write task.
 | INC-006 | compare profile CLI versions with the latest official `openai/codex` release, especially before internal switches | DONE_SEPARATE_OPENSPEC | the user authorized the separate behavior; `official-release-version-advisory` implements a stable-only, bounded, non-blocking comparison without coupling it to internal installation policy | source verification complete; install/release/archive remain separately gated |
 | INC-007 | internal Desktop response-stream reconnect loops can leave a turn retrying without forward progress | DEFER_AND_CONTINUE | optional resilience behavior is not required by the active SAP Completion Contract; it changes turn lifecycle and must not expand the current main-review baseline | after the active Goal completes, create a dedicated Full OpenSpec change for profile-scoped app-stream recovery; keep official behavior unchanged |
 | INC-008 | downloaded source archives are extracted by system `tar` before fixed-allowlist validation | DEFER_AND_CONTINUE | task 1.3 proves archive-owned scripts are not executed and required top-level symlinks are rejected, but does not prove member path-traversal containment or a policy for symlinks nested inside allowlisted directories | update the Full OpenSpec design/tasks before adding archive-member prescan or contained extraction; do not treat 1.3 as source-authenticity or traversal proof |
+| INC-012 | final isolated release-counterpart Plugin Eval reports 54/100 (grade F, high risk): two static token-budget failures, four warnings for progressive disclosure/top-level README layout, Python complexity, and seven long lines, plus unavailable coverage artifacts | DEFER_AND_CONTINUE | the shared App/CLI repair is runtime safety work; reducing the current 4,684-token active estimate or 1,075,529-token deferred support tree requires a material benchmarked Skill/package architecture refactor outside this Completion Contract | create a dedicated Skill/package optimization change with observed-usage benchmarks before restructuring `SKILL.md`, release contents, or runtime modules; retain the 54/100 score and residual risk in this change's verification record |
+| INC-013 | existing switch-time shared TOML policy includes almost every non-profile table, so MCP/apps/connectors or future tables can carry credentials or runtime-specific paths across homes | DEFER_AND_CONTINUE | the new canonical layer uses a narrow allowlist and secret guard, so the Plugin/Skill Completion Contract does not require changing legacy switch semantics; silently narrowing existing behavior could break users | create a separate Full OpenSpec compatibility/security migration with field-level schema evidence, authoritative deletion rules, rollback, and explicit approval |
+| INC-014 | generic home support uses a denylist and therefore treats unknown future entries as shareable | DONE_SOURCE | `optimize-shared-switch-transaction` now selects only `AGENTS.md`, `prompts`, `rules`, and `skills`, preserves ignored targets, bounds deep validation independently of unrelated effects, and retains final CAS rollback | source/package verification is complete; installation and live split remain separate authority, with App exit required only if preview derives `rebind` |
+| INC-015 | Desktop global-state sharing currently includes permission/account/cloud/update semantics in addition to cosmetic UI/workspace values | DEFER_AND_CONTINUE | these keys are outside Plugin/Skill desired state and reclassification could alter permissions or update policy | perform a field-level ownership audit and approved migration before removing or sharing additional global-state keys |
+| INC-016 | live deployment rejected exact prior 20-path `current`/`rollback` manifests because historical validation recognized only the older 16-path generation | CONTINUE_WITH_MINIMAL_GUARD_DONE | this directly blocked safe installation of the approved split build; one public installer RED/GREEN added exact 20-path compatibility without accepting subsets, supersets, or reordering | focused historical/promotion 3/3 and package 2/2 pass; new 22-path payload installed with the prior 20-path current retained as rollback |
+| INC-017 | the running official App mutates `.codex-global-state.json` during the live split transaction's frozen-input window | DONE_SOURCE | the supported split no longer freezes, backs up, projects, or writes Desktop global state; a healthy canonical official binding produces no App-owned effect and may remain running, while a true rebind still fails closed | install the verified source separately, run a fresh split preview, and require App exit only if that preview reports `App action: rebind` |
+| INC-018 | DevFlow 0.4.0 read-only audit reports broader project refresh migration pending and the dependency checker still sees legacy project-local DevFlow source paths | DEFER_AND_CONTINUE | installed DevFlow cache is byte-current, OpenSpec 1.7 and project-local Matt TDD are available, and the drift does not invalidate shortcut behavior; applying project migration would exceed the confirmed install scope | run `dev-flow-refresh`/`plugin-project-migration` only after separate project-migration authorization; do not clean legacy paths implicitly |
+| INC-019 | an invocation-only `py_compile` check generated or refreshed `scripts/__pycache__/codex_switch_transaction.cpython-312.pyc` and `scripts/__pycache__/test_codex_transaction.cpython-312.pyc` at 2026-08-10T17:00:20+08:00 | DEFER_AND_CONTINUE | both files are ignored, absent from the verified release package, and do not affect source/test outcomes, but no Generated Artifact Contract was sealed before creation and the pre-existing directory prevents retrospective ownership proof | retain both exact paths; delete or quarantine them only under separately approved generated-artifact cleanup with current identity evidence |
+| INC-020 | one generated-wrapper protocol fixture still expected arbitrary `shared-support.txt` to cross homes after the exact V1 generic support allowlist was implemented | CONTINUE_WITH_MINIMAL_GUARD_DONE | the stale assertion blocked the required broad suite; changing only the fixture to allowlisted `AGENTS.md` preserves the approved allowlist and tests the same wrapper/proxy integration | focused protocol test and complete support matrix must pass; no production sharing rule changes |
+| INC-021 | the immutable-promotion success fixture used a 1.0-second candidate smoke budget instead of the production 5.0-second budget and flaked twice under cumulative suite load | CONTINUE_WITH_MINIMAL_GUARD_DONE | the unrelated flake blocked required broad verification; only the test helper now uses the production smoke budget, while a deterministic 1.2-second success RED and an explicit 0.05-second timeout guard preserve both contracts | focused promotion matrix and complete update/release suite must pass; production timeout behavior is unchanged |
+| INC-022 | an abrupt signal during wrapper App-action capture can leave the mode-0600 temporary receipt | DEFER_AND_CONTINUE | normal success/failure paths retire the exact file and it contains only `preserve` or `rebind`; signal-safe trap restoration is not required by the current output/rollback contract and changing wrapper signal semantics needs dedicated coverage | add a separately planned signal-delivery test and trap-lifecycle design before changing interrupt behavior; retained temp files may be removed only under exact-path cleanup authority |
+| INC-023 | managed generation validation has a same-user path-replacement window between the stable streamed digest and backend `execve` | DEFER_AND_CONTINUE | descriptor identity is stable throughout hashing and the managed backend is user-owned, but eliminating the later path window requires descriptor-based execution or a platform-specific immutable handoff beyond this compatibility repair | design a separate runtime-exec identity contract with macOS/Linux behavior, failure semantics, and regression coverage before changing the execution seam |
+| INC-024 | the latest read-only local-reference audit reports an unconfigured upstream for the OpenAI plugins mirror and a preserved local `hatch-pet` divergence; Workshop now verifies `matches-source` | DEFER_AND_CONTINUE | neither remaining item affects the codex-switch source/package Completion Contract; applying updater, marketplace changes, or overwriting a local Skill is outside the confirmed authority | review ownership of the mirror and local Skill in a separate maintenance task before any apply or cleanup |
+| INC-025 | the one task-13 live command succeeded while native internal `plugin add` replaced seven upgraded cache versions and removed their old version directories | DONE_CONTRACT_RECONCILED | the user explicitly assigned installed-version lifecycle to the native backend; OpenSpec now permits backend retention/replacement/removal while codex-switch still performs no direct cache copy/link/delete or garbage collection | no restoration, retry, or cleanup is required; future retention guarantees require a separately approved preservation architecture and cache-mutation authority |
 | INC-009 | installed `0.1.13` official switch attempted to back up internal `ipc/ipc.sock` and failed before commit | DONE_SOURCE | `ipc` and `mcp-oauth-locks` are known profile-local runtime state already inside TPS shared-support ownership; exact-name exclusion preserves unknown-special fail-closed behavior | source repair is verified; installation and live official switch require separate approval |
 | INC-010 | internal and official can drift outside the approved internal binary/model/API/provider/auth differences; current Subagent drift selects v1 because internal Azure model metadata lacks `multi_agent_version=v2` | ACTIVE_FULL_OPENSPEC_PLAN_REVIEW | the previous Goal and TPS live recovery are complete; the parity proposal, design, delta spec, and implementation ledger are complete and strictly valid, but production execution has not started | review the active change, then begin task 1.1 RED through `openspec-apply-change`; capability-gate the v2 overlay and forbid silent fallback |
 | INC-011 | installed strict `0.1.13` validates the same-version historical `v0.1.13` asset before comparing versions and emits `source_invalid` | DONE_SOURCE_AND_ROLLOUT | trusted version metadata now short-circuits same/older releases before download or staging; newer malformed candidates remain fail closed | final source installed; normal `status` prints `already up to date 0.1.13` with no `source_invalid` or sync warning |
@@ -2211,6 +2528,329 @@ write task.
   cleanup occurred. This establishes `OFFICIAL_FIRST_PAUSE_READY`; task 8.3
   remains unchecked at 70/79 and execution stops at
   `PARITY-8.3-LIVE-RETRY`.
+- 2026-07-28: Live diagnosis proved the reported missing Plugins/default UI
+  and apparent internal-bin bypass share one preparation defect. The trusted
+  installer inherited live `HOME`, `CODEX_HOME`, and `PATH`; it overwrote the
+  live config and appended each sibling candidate to `.zshrc` before parity
+  promotion. Direct official/internal plugin inventories are identical,
+  synchronized safe config values agree, the internal manifest and generated
+  wrapper name `/Users/cY/.local/bin/codex`, and direct app-server smoke passes,
+  so proxy behavior, plugin catalogs, and global-state projection are not the
+  repair path. The user selected Scheme A: hermetic installer scratch plus
+  exact recoverable live repair and one controlled update/rebind/switch/restart.
+  The active change now has 84 tasks and remains at 70 completed until the five
+  incident tasks execute.
+- 2026-07-28: Installer isolation tasks 8.3A.1-8.3A.3 are complete at 73/84.
+  The harmful public-seam test reproduced live-config mutation before the
+  production change. The final helper uses one identity-bound mode-0700
+  private installer root, private `HOME`/`CODEX_HOME`, candidate-first child
+  PATH, explicit signal forwarding/reaping, and exact cleanup on success,
+  failure, `HUP`, `INT`, and `TERM`. Final serial update/release suites pass
+  132/132 on Python 3.12 and 132/132 on system Python 3.9. Strict active/all
+  OpenSpec, AI-plan lint, workflow validation, Bash/dual-runtime AST, isolated
+  package validation/source identity, diff/write-set, and scratch/config/
+  credential/bytecode residue checks are clean. The earlier parallel full
+  runs hit unrelated one-second candidate-smoke timeouts under contention;
+  each serial rerun passed without changing production timeouts or unrelated
+  tests. Task 8.3A.4 exact backup/repair is next.
+- 2026-07-28: Task 8.3A.4 is complete at 74/84. All exact live targets matched
+  their diagnosed bytes, text counts, types, owners, modes, inodes, and
+  versions before mutation. Recovery directory
+  `/Users/cY/.codex-switch/backups/20260728T161949+0800-installer-side-effect-recovery`
+  is mode 0700 and contains a byte-identical mode-0600 `.zshrc` copy plus all
+  three original mode-0700 candidate directories with their original inodes.
+  The live `.zshrc` diff removes only the three named installer blocks; the
+  plugin app-server path and canonical shim block remain. A clean-environment
+  interactive zsh resolves bare `codex` to
+  `/Users/cY/.codex-switch/bin/codex` and reports official
+  `codex-cli 0.146.0-alpha.3.1`. Nothing was deleted.
+- 2026-07-28: Task 8.3A.5 installed exact source payload
+  `275ad2e2...71dab`; strict immutable validation reports 66 files and the
+  installed env helper is byte-identical to source. The one authorized update
+  staged internal 0.145.0 in private candidate
+  `.codex-internal-update-6efc91d3f6359549077f8a00` and failed safely before
+  promotion with `parity.feature.core_drift`. Installer isolation is proven:
+  `.zshrc`, official/internal configs, and bound 0.144.6 hashes/modes are
+  unchanged and scratch is absent. A forced-stop read-only diagnostic shows
+  only `item_ids` is unhealthy: the exact `thread/resume.params.history`
+  dependency is present, current `client_request:thread/resume` is natively
+  compatible with no reasons, and therefore no adapter coverage record exists.
+  Current policy incorrectly requires adapter coverage even when the method is
+  natively compatible. The exact systemic correction and negative matrix are
+  planned, but Scheme A's source write set excludes
+  `scripts/codex_switch_parity.py` and `scripts/test_codex_parity.py`.
+  Implementation, retry, switch, and restart stop at a new explicit Human
+  Gate; no parity bypass, second download, or old-backend completion claim is
+  permitted.
+- 2026-07-28: The user explicitly consumed
+  `PARITY-0.145-NATIVE-RESUME-IMPLEMENT`. The approved source write set is
+  exactly `scripts/codex_switch_parity.py` and
+  `scripts/test_codex_parity.py`, plus main-owned control-plane evidence.
+  Execute the named native-compatible `thread/resume` RED/GREEN and the
+  recorded dual-runtime/source/package checks first. A live retry may use only
+  the already retained, freshly re-attested 0.145.0 candidate; it may not
+  download another candidate or expand proxy/plugin/provider/Git/release/
+  cleanup scope.
+- 2026-07-28: The named Python 3.12 native-resume test is RED exactly at the
+  expected `healthy` assertion (1 run, 1 failure). The fixture supplies both
+  current `client_request:thread/resume` schemas, `compatible=true`, no reason
+  codes, the sole `thread/resume.params.history` dependency, and no adapter
+  coverage. This records the current policy false negative before any
+  production edit.
+- 2026-07-28: The minimal production correction accepts the sole exact resume
+  dependency only when the current direction/method comparison contains both
+  schemas and is compatible, or when the existing exact adapter coverage
+  remains accepted. The named regression and all four recorded negatives pass
+  on Python 3.12/system Python 3.9; `ParityMethodCoverageTests` passes 6/6 and
+  the complete parity suite passes 94/94 on each runtime. Update/release
+  adjacency and source/package review remain pending before live reuse.
+- 2026-07-28: Two-axis read-only review found one in-scope fail-closed guard:
+  `ProtocolInventoryComparisonEntry` permits contradictory
+  `compatible=true` with non-empty reason codes. The new isolated negative is
+  RED with 1 test/1 failure only at that contradiction. Spec evidence was also
+  tightened so missing-side checks retain `compatible=true` and assert the
+  feature-level `item_ids` core finding, while wrong direction and wrong method
+  cannot satisfy the exact resume proof.
+- 2026-07-28: The review guard is closed and both final review axes report no
+  remaining findings. Method coverage passes 7/7 and complete parity 95/95 on
+  Python 3.12/system Python 3.9. Fresh post-review update/release passes
+  132/132 in 284.472s and 132/132 in 348.351s respectively. Dual-runtime
+  AST/import, active/all strict OpenSpec 18/18, AI-plan lint, workflow
+  `ok=true`/zero issues, diff integrity, and an isolated 66-file package with
+  byte-exact changed files pass. Checkpoint
+  `.planning/checkpoints/2026-07-28-internal-0145-native-resume-source-verified.md`
+  is the live-retry authority.
+- 2026-07-28: The exact retained-candidate promotion retried after fresh
+  source/live attestation and failed safely before transaction with
+  `parity.probe.missing_response`. Bound/candidate inodes and hashes, every
+  live shell/config/manifest/launcher/active hash, backup absence, marker
+  absence, and zero runtime/installer scratch prove no mutation. A
+  credential-free differential shows official 0.146, bound 0.144.6, and
+  candidate 0.145 all return only initialize when the current runner closes
+  stdin immediately; response-paced sends return all three required IDs from
+  candidate in order. This is a new core-probe EOF contract, not candidate
+  protocol drift. Planning stops at
+  `PARITY-CORE-PROBE-INTERACTIVE-IMPLEMENT`; checkpoint
+  `.planning/checkpoints/2026-07-28-internal-0145-core-probe-eof-gate.md`.
+- 2026-08-04: `independent-app-cli-profiles` intake and planning are complete.
+  Live read-only evidence proves Desktop official ownership and an unmanaged
+  shell/internal PATH mismatch; `--skip-app-cli` is not a persistent healthy
+  selection. The new complete OpenSpec defines the explicit internal-CLI/
+  official-App command, additive legacy-compatible state, atomic rollback,
+  split-aware diagnostics/smokes, unchanged defaults, and packaged behavior.
+  Active/all strict OpenSpec passes 20/20, workflow validation is healthy, and
+  the TDD dependency gate is ready. The user's request authorizes the named
+  source/test/docs/control-plane write set. No live switch, install, restart,
+  parity-gate execution, dependency, Git, release, archive, cleanup, or
+  destructive effect occurred. Task 1.1 RED is next.
+- 2026-08-04: `independent-app-cli-profiles` completed all 18 tasks through
+  serialized RED/GREEN and two-axis review. Fresh final results are Runtime
+  Binding 88/88, Transaction 241/241, Verify 33/33 (362 combined), Profile
+  210/210, Update/Release 133/133, and Parity 95/95. Python/Bash static checks,
+  active and repository-wide strict OpenSpec 20/20, DevFlow workflow validation
+  with zero issues/warnings, source/package identity, isolated packaged split
+  preview, and diff integrity pass. Release-counterpart Plugin Eval remains
+  54/100 and is classified under INC-012 `DEFER_AND_CONTINUE`; fixing the
+  pre-existing bundle/token/complexity findings needs a separate benchmarked
+  package/skill change. No live install, switch, App restart, parity-gate
+  execution, dependency, Git, release, archive, cleanup, or destructive effect
+  occurred. The terminal outcome is `READY_FOR_EXTERNAL_EFFECT` only if the
+  user separately authorizes installation and the live split switch.
+- 2026-08-05: the shared Plugin/Skill reopen reached 40/40 focused GREEN and
+  fresh Profile 210/210 plus Update/Release 133/133, but the independent final
+  review correctly returned `BLOCKED`. Required Completion Contract failures
+  were stale-receipt cache trust, value-level marketplace secrets, Plugin-Skill
+  path escape, incomplete stopped-App proof, missing target CAS, uninspectable
+  backend-managed receipts, retained-version policy loss, state/generation
+  integrity, and non-recoverable multi-file publication. These findings are
+  in-scope rather than deferred incidental work. The existing OpenSpec was
+  updated with prepared-journal recovery, state commit-point, collision-safe
+  orphan generation retention, cache re-attestation, second stopped proof,
+  target CAS, and stricter secret/path policy; strict validation passes. New
+  isolated RED evidence runs 46 shared config/materialization tests with 21
+  expected failures. The production materializer `uninspectable` path is now
+  GREEN at 14/14 without invoking native add; the shared-core recovery/safety
+  closure and fresh integrated proof remain active. No live App/profile/cache,
+  backend/network, Git, dependency, install, release, archive, or cleanup
+  effect occurred.
+- 2026-08-05: Decision 14 closed the prepared-commit ordering gap with a private
+  pre-backend `pending-materialization.json`, exact target/config/selector
+  binding, selective owned-delta recovery, target CAS, stopped-App proofs,
+  intent/main-journal exclusion, and retained-untrusted cache artifacts. The
+  focused shared matrix reached 69/69. Independent review then reproduced one
+  final P1: parent `SIGKILL` could leave `codex plugin add` alive after early
+  recovery retired an unchanged intent. OpenSpec Decision 15 promoted that
+  required behavior instead of deferring it.
+- 2026-08-05: Decision 15 is GREEN and independently approved. Locked reconcile
+  exposes its exact active store-root flock FD through a private identity-bound
+  seam; the production materializer independently validates it and passes it to
+  both catalog/list and plugin/add subprocesses. A real task-owned subprocess
+  proves parent `SIGKILL`, surviving backend, store-busy early apply with exact
+  intent/config preservation, late selector write, backend exit, and Decision
+  14 recovery before new planning. Main reruns passed the named race 1/1,
+  shared configuration/materialization/lifecycle 72/72, and transaction
+  241/241. Final independent review returned `APPROVE` with no P1/P2 blocker.
+- 2026-08-05: fresh terminal source evidence passes Runtime Binding 88/88,
+  Verify 33/33, Profile 211/211, Update/Release 133/133, Parity 95/95, and
+  config-document 29/29. Python compile, five Bash syntax checks, eval JSON,
+  active/all strict OpenSpec 20/20, diff integrity, and the final workflow
+  validator pass. The isolated package at
+  `/private/tmp/codex-switch-final-release.SJEkjM/codex-switch.tar.gz` runs the
+  shared matrix 72/72 plus split preview 1/1; key source/package hashes are
+  byte-exact. Final release-counterpart Plugin Eval is 58/100, grade D, with
+  two budget failures and three warnings under INC-012. The read-only updater
+  confirms DevFlow installed cache `matches-source` and project Skill layout is
+  current, while broader project migration remains pending and was not applied.
+  No install, live switch/sync, App restart, real backend/cache mutation,
+  dependency, Git, release, archive, cleanup, or destructive effect occurred.
+- 2026-08-06: the user authorized deployment. The first two supported install
+  attempts failed before promotion because the live installed references use
+  the exact prior 20-path manifest generation while the new validator accepted
+  only current 22-path or legacy 16-path lists. INC-016 consumed the change's
+  one bounded guard: the public installer RED failed 1/1 with the live error;
+  exact 16/20 generation matching plus reordered-list rejection is GREEN 3/3,
+  and package checks are GREEN 2/2. A fresh contract-bound package produced
+  payload `e6caa91b...e4983` and archive `fc279ac8...b287`; supported install
+  now points `current` at the 22-path payload and retains prior `6a23d04f...f132`
+  as rollback. The installed wrapper is byte-exact with source and exposes the
+  new commands.
+- 2026-08-06: two live split attempts explicitly skipped the gated internal
+  0.145 update. The running official App changed `.codex-global-state.json`
+  during each frozen-input window; backups `20260806T043745Z...` and
+  `20260806T044114Z...` rolled back exactly, and read-only status remains
+  synchronized `openai-official` with the official App/app-server chain intact.
+  INC-017 is `BLOCKED_AWAITING_HUMAN` at `SPLIT-DEPLOY-APP-RESTART`: quit the
+  App, run one exact background split switch, reopen it, and verify. No further
+  retry, App restart, internal update, Git, release, archive, or cleanup is
+  authorized yet.
+- 2026-08-10: the user confirmed the concise interface. Public wrapper RED 1
+  failed with `Unknown command: split`; RED 2 proved an unnormalized
+  `--keep-version` leaked into the Python parser; RED 3 proved the fixed preset
+  could be retargeted with `--app-profile`. The wrapper-only GREEN maps
+  `split` to the existing `internal --app-profile official` workflow, rejects
+  preset overrides, preserves normal self-update plus internal update checks,
+  and makes `split --keep-version` suppress only those two update paths while
+  retaining Plugin repair, verify, Doctor, status, and result handling.
+  Focused wrapper coverage passed 10/10 in 27.496 seconds, the full profile
+  suite passed 219/219 in 316.252 seconds, and adjacent update/release coverage
+  passed 4/4 in 9.317 seconds. Bash/Python static checks, strict OpenSpec 20/20,
+  and `git diff --check` passed.
+- 2026-08-10: Generated Artifact Contract
+  `SPLIT-SHORTCUT-20260810T120157+0800` retained the final package at
+  `/private/tmp/codex-switch-shortcut-20260810T120157+0800`. The 22-path
+  package has payload `b88326ff...f49d`, archive SHA-256
+  `c38a619f...e174b`, and byte-exact wrapper, README, SKILL, and complete
+  profile-test source. Final release-counterpart Plugin Eval is 58/100 under
+  INC-012. Supported immutable installation promoted `b88326ff...f49d` and
+  retained prior `e6caa91b...e4983` as rollback; no installer staging remains.
+  Installed help exposes `split` and `--keep-version`, Doctor passes, and an
+  isolated packaged preview passes. Read-only status and process attestation
+  prove CLI/App remain `openai-official`, ChatGPT remains pid 2375, and its
+  official app-server remains pid 2920. Internal verification remains
+  intentionally unhealthy before activation with active-selection mismatches
+  and `parity.receipt.missing`. No App stop/restart, live split, internal
+  update, parity repair, Git, release, archive, migration, or cleanup ran.
+
+- 2026-08-10: Live split acceptance invalidated `INTERNAL-CLI-ONLY-001` source
+  completion. `/Users/cY/.codex-switch/bin/codex --version` deterministically
+  failed with `Internal runtime generation invalid: CLI backend exceeds the
+  size limit`, while direct `/Users/cY/.local/bin/codex --version` returned
+  `codex-cli 0.145.0`; manifest SHA-256 matched the 276,128,448-byte backend.
+  Root cause is the shared 16 MiB text-artifact reader in managed generation
+  validation plus final verifier routing to the raw backend. The user approved
+  the combined repair with conditional final App guidance. OpenSpec now has
+  25 tasks with 20 complete and strict validation passes. No install, update,
+  split retry, App stop/restart, dependency, Git, release, archive, migration,
+  cleanup, or destructive effect ran during reopen.
+- 2026-08-10: `INTERNAL-CLI-ONLY-001` live-acceptance repair completed 25/25.
+  Public RED/GREEN closed the 16 MiB executable rejection, raw-backend final
+  smoke, unconditional `preserve` restart guidance, prepared managed-shim
+  omission, and upstream Python buffering. Final source discover passed
+  997/997 in 788.299 seconds; package-local focus passed 9/9. Python/Bash/JSON,
+  strict OpenSpec 22/22, workflow `ok=true`, source/package identity,
+  release-counterpart Plugin Eval 58/100 under INC-012, diff integrity, and
+  independent Standards/Spec rereview pass. Read-only live
+  `/Users/cY/.codex-switch/bin/codex --version` returns `codex-cli 0.145.0` in
+  0.28 seconds. No install, internal update, split retry, App stop/restart,
+  cache refresh, dependency/migration, Git, release, archive, cleanup,
+  provider, credential, or destructive effect ran.
+- 2026-08-10: `SPLIT-BOOTSTRAP-001` completed task 12 at 4/4. Public REDs
+  reproduced stale installed-version authority as `unsafe_cache`, collapsed a
+  safe source drift into the same code, observed no progress before the target
+  materializer, and proved a catalog-source root symlink could reach native add.
+  GREEN separates target version from exact source manifest/tree identity,
+  reports `source_mismatch`, rejects unsafe roots before backend effects,
+  re-attests the independent target after add, retains old cache/config
+  evidence, and flushes both source-attestation and counted materialization
+  progress. Final source proof is shared 81/81, Runtime Binding 90/90, and
+  Profile 226/226; static Python/Bash/JSON, strict OpenSpec 22/22, workflow
+  `ok=true`, package identity, Plugin Eval, and diff integrity pass.
+- 2026-08-10: Generated Artifact Contract
+  `SPLIT-BOOTSTRAP-20260810T213729+0800` was sealed while its exact root was
+  absent and now retains the task-owned release counterpart at
+  `/private/tmp/codex-switch-bootstrap-repair-20260810T213729+0800`. The
+  22-path, 71-file package has payload SHA-256 `809aeda5...2583`, archive
+  SHA-256 `3734296c...961e9`, and manifest SHA-256 `c8f3b731...37c0`; the five
+  repaired source/test/doc paths are byte-exact and packaged materialization
+  tests pass 23/23. Plugin Eval is the existing 58/100 under INC-012. Terminal
+  disposition remains `RETAIN`; no wildcard, recursive deletion, installation,
+  promotion, cache refresh, release, or cleanup is authorized.
+- 2026-08-11: `SPLIT-BACKEND-MANAGED-001` opened under confirmed task-13
+  authority. Read-only live evidence proved the internal catalog valid but
+  source/target versions intentionally divergent (`browser@openai-bundled`
+  source `26.803.61601`, installed target `26.721.41059`). The catalog parser
+  drops installed provenance and the backend-managed classifier incorrectly
+  requires official and internal manifests/trees to match, producing the false
+  `unverified_catalog` pre-add block. OpenSpec now requires independent source
+  and target axes, mandatory reconcile for a pending generation, one fresh
+  batch catalog, unique installed target proof, revision-key compatibility,
+  and precise `unverified_target`. Task 13.1 is next; no production source or
+  live Plugin/App/split/install/internal-update effect occurred during planning.
+- 2026-08-11: Task 13.3 completed the source/package gate. The raw catalog
+  model now preserves source and installed target axes; every pending
+  backend-managed selector reconciles through the target backend and receives
+  one fresh batch-catalog target proof. Four independent-review boundary REDs
+  closed source-path fallback, source identity, dangling-link, and catalog
+  spawn classifications. Fresh source results are shared 93/93, Runtime 90/90,
+  Profile 226/226, and Update/Release 140/140; package shared is 93/93. Static,
+  strict OpenSpec 22/22, workflow, identity, diff, and both rereviews pass.
+  Generated Artifact Contract `SPLIT-BACKEND-MANAGED-20260811T113820+0800`
+  retains payload `23477b06...428f1`; Plugin Eval is 54/100 under INC-012.
+- 2026-08-11: The one authorized managed-shim functional command ran exactly
+  once while ChatGPT stayed open. `codex plugin list --json` exited zero after
+  visible source-attestation and 18-Plugin materialization. Readback reports
+  generation 1, 18/18 current target receipts, CLI-ready true, no pending state,
+  and zero findings. ChatGPT PID 68428, official app-server PID 68766, active
+  record, shim, LaunchAgent, and official bundle remained unchanged. Internal
+  config/cache changed only through the authorized shared/backend path.
+- 2026-08-11: That acceptance also proved seven upgraded old version
+  directories absent after native `plugin add`; raw help exposes no retention
+  option. INC-025 is `BLOCKED_AWAITING_HUMAN` because this contradicts the
+  active retention/no-deletion contract. No retry, restoration, copy, cleanup,
+  split, install, App action, binary update, migration, Git, release, or archive
+  followed. Task 13.4 remains unchecked pending one cache-lifecycle decision.
+- 2026-08-11: The user selected native Plugin cache lifecycle. OpenSpec, README,
+  SKILL, and characterization tests now make backend retention/replacement/
+  removal explicit while preserving the prohibition on direct codex-switch
+  cache copy/link/delete/GC. INC-025 is reconciled and task 13 is complete at
+  4/4 without another live command. Final source results are shared 94/94,
+  Runtime 90/90, Profile 226/226, and serial Update/Release 140/140; strict
+  OpenSpec 22/22, static, workflow, diff, and local spec/standards review pass.
+  Retained Generated Artifact Contract
+  `SPLIT-NATIVE-CACHE-LIFECYCLE-20260811T123157+0800` has payload
+  `3f2852e6...48ab`, source/package identity, package shared 94/94, and Plugin
+  Eval 54/100 under INC-012. No install, split retry, App action, internal
+  update, direct cache mutation, cleanup, migration, Git, release, or archive
+  followed. Historical live-deployment tasks 10.3-10.4 remain separate.
+- 2026-08-11: `SPLIT-CONFIG-IDEMPOTENCE-001` completed task 14 at 3/3. RED
+  proved consecutive last-runtime renders added one blank line. GREEN removes
+  only blank lines immediately preceding generated managed annotations and
+  preserves unrelated user spacing. Config tests pass 31/31, focused profile
+  tests 4/4, and the complete profile suite 226/226; AST, strict OpenSpec
+  22/22, workflow, and diff checks pass. A read-only old/new render comparison
+  preserves TOML semantics while reducing the maximum blank run from 245 to 1.
+  No live config write, switch, install, App, Plugin/cache, dependency,
+  migration, credential, Git, release, archive, or cleanup effect occurred.
 
 ## Validation Commands
 
@@ -2238,9 +2878,17 @@ git diff --check
   current source through the supported path, run live `official` acceptance,
   and restore/attest `internal`. This approval does not authorize any earlier
   workstation mutation.
-- Still required before plugin mutation, commit/push/tag/release,
-  destructive cleanup, provider/root-state migration, legacy skill cleanup,
-  dependency addition, or public compatibility expansion.
+- Task 13 authorizes only the single bounded managed-shim acceptance and its
+  required internal backend Plugin/config/cache/shared-generation effects.
+  Separate approval is still required before any other Plugin mutation,
+  commit/push/tag/release, destructive cleanup, provider/root-state migration,
+  legacy skill cleanup, dependency addition, or public compatibility expansion.
+- `SPLIT-BACKEND-MANAGED-CACHE-RETENTION-DECISION` is the current gate. The
+  recommended answer assigns installed-version lifecycle to native add while
+  preserving codex-switch's no-direct-cache-mutation rule. Enforcing retention
+  instead requires a newly approved crash-safe cache-preservation design,
+  cache-mutation authority, and a separate live retry. Neither answer is
+  inferred from the successful CLI startup.
 - `PARITY-8.3-IMPLEMENT` is required before changing the exact two production,
   two test, one retained fixture, and two operator-contract paths named by task
   8.3. It authorizes no live or external effect.
@@ -2248,6 +2896,16 @@ git diff --check
   evidence before an exact-source install, one same-backend rebind, or its
   bounded provider-backed typed-v2 probe. It does not authorize ChatGPT
   restart, the Desktop acceptance task, Git, release, archive, or cleanup.
+- On 2026-07-28 the user consumed a narrower Scheme A live-repair gate for the
+  exact-source install, one internal update/rebind/switch, precise recoverable
+  `.zshrc`/candidate repair, and one bounded ChatGPT restart. It does not
+  authorize the provider-backed Desktop task, plugin refresh, proxy/global
+  state changes, credential/identity migration, destructive deletion, Git,
+  release, archive, or legacy cleanup.
 - Not required for isolated temporary-directory/process tests, generated-schema
   inspection, fake Git/GitHub adapters, or source changes already specified by
   the four approved OpenSpec changes.
+- `SPLIT-DEPLOY-APP-RESTART` remains required before live activation. The user
+  must completely quit ChatGPT before running the installed shortcut; this
+  gate does not authorize an internal binary update, parity repair, Git,
+  release, archive, project migration, or retained-artifact cleanup.

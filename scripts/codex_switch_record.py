@@ -4,6 +4,7 @@ from pathlib import Path
 
 from codex_switch_constants import CONFIG_MODE_SHARED
 from codex_switch_io import now_stamp
+from codex_switch_selection import active_profile_fields, requested_profile_selection
 
 
 def optional_path(path: Path | None) -> str | None:
@@ -23,10 +24,12 @@ def active_record(
     home_mode: str | None = None,
     shared_sync_source: Path | None = None,
     shared_sync_target: Path | None = None,
+    app_profile: str | None = None,
 ) -> dict[str, str | None]:
     shared_config_base = str(base_config_path) if config_mode == CONFIG_MODE_SHARED else None
+    selection = requested_profile_selection(name, app_profile)
     return {
-        "profile": name,
+        **active_profile_fields(selection),
         "switched_at": now_stamp(),
         "live_codex_home": str(codex_home),
         "codex_home": str(codex_home),

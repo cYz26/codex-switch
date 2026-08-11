@@ -350,18 +350,186 @@ assert_bound_binary_identity() {
   fi
 }
 
+manage_installer_scratch() {
+  "$PYTHON_BIN" -I -B - "$@" <<'PY'
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+action = sys.argv[1]
+path = Path(sys.argv[2])
+tmp_root = Path("/tmp").resolve(strict=True)
+if (
+    not path.is_absolute()
+    or not path.name.startswith("codex-switch-internal-installer.")
+    or path.parent.resolve(strict=True) != tmp_root
+):
+    print("Internal installer scratch path is invalid.", file=sys.stderr)
+    raise SystemExit(1)
+state = os.lstat(path)
+if (
+    stat.S_ISLNK(state.st_mode)
+    or not stat.S_ISDIR(state.st_mode)
+):
+    print(
+        "Internal installer scratch root is not a private directory.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+identity = f"{state.st_dev}:{state.st_ino}"
+
+if action == "identity":
+    if stat.S_IMODE(state.st_mode) != 0o700:
+        print(
+            "Internal installer scratch root is not mode 0700.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    print(identity)
+elif action == "cleanup-empty":
+    os.rmdir(path)
+elif action == "cleanup":
+    if len(sys.argv) != 4 or identity != sys.argv[3]:
+        print("Refusing to clean foreign installer scratch state.", file=sys.stderr)
+        raise SystemExit(1)
+    shutil.rmtree(path)
+else:
+    print("Unknown internal installer scratch action.", file=sys.stderr)
+    raise SystemExit(1)
+
+if action.startswith("cleanup") and os.path.lexists(path):
+    print("Internal installer scratch cleanup was incomplete.", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 run_trusted_internal_installer() {
   local install_ak="$1"
-  local status
-  set +e
-  curl -fsSL "$INSTALLER_URL" |
-    CODEX_INSTALL_DIR="$INSTALL_DIR" \
-    CODEX_INSTALL_MODEL="$INSTALL_MODEL" \
-    CODEX_INSTALL_AK="$install_ak" \
-    CODEX_INSTALL_AZURE_BASE_URL="$INSTALL_AZURE_BASE_URL" \
-    bash -s -- "$INSTALL_VERSION"
-  status=$?
-  set -e
+  local status installer_root installer_identity cleanup_status
+  local installer_signal_status installer_pipeline_pid
+
+  status=0
+  installer_root=""
+  installer_identity=""
+  installer_signal_status=0
+  installer_pipeline_pid=""
+
+  cleanup_installer_state() {
+    if [[ -z "$installer_root" ]]; then
+      return 0
+    fi
+    if [[ -n "$installer_identity" ]]; then
+      manage_installer_scratch \
+        cleanup "$installer_root" "$installer_identity"
+    else
+      manage_installer_scratch cleanup-empty "$installer_root"
+    fi
+  }
+
+  cleanup_installer_state_on_exit() {
+    local exit_status=$?
+    trap - EXIT HUP INT TERM
+    if [[ -n "$installer_pipeline_pid" ]]; then
+      kill -TERM "$installer_pipeline_pid" 2>/dev/null || true
+      wait "$installer_pipeline_pid" 2>/dev/null || true
+      installer_pipeline_pid=""
+    fi
+    cleanup_status=0
+    cleanup_installer_state || cleanup_status=$?
+    if [[ "$cleanup_status" != 0 ]]; then
+      echo "Failed to remove private internal installer scratch state." >&2
+      if [[ "$exit_status" == 0 ]]; then
+        exit_status="$cleanup_status"
+      fi
+    fi
+    exit "$exit_status"
+  }
+  forward_installer_signal() {
+    installer_signal_status="$1"
+    if [[ -n "$installer_pipeline_pid" ]]; then
+      kill "-$2" "$installer_pipeline_pid" 2>/dev/null || true
+    fi
+  }
+  trap cleanup_installer_state_on_exit EXIT
+  trap 'forward_installer_signal 129 HUP' HUP
+  trap 'forward_installer_signal 130 INT' INT
+  trap 'forward_installer_signal 143 TERM' TERM
+
+  if installer_root="$(
+    mktemp -d /tmp/codex-switch-internal-installer.XXXXXX
+  )"; then
+    true
+  else
+    status=$?
+  fi
+  if [[ "$status" == 0 ]]; then
+    if chmod 700 "$installer_root"; then
+      true
+    else
+      status=$?
+    fi
+  fi
+  if [[ "$status" == 0 ]]; then
+    if installer_identity="$(
+      manage_installer_scratch identity "$installer_root"
+    )"; then
+      true
+    else
+      status=$?
+    fi
+  fi
+
+  if [[ "$status" == 0 ]]; then
+    if mkdir -m 700 "$installer_root/home" "$installer_root/codex-home"; then
+      true
+    else
+      status=$?
+    fi
+  fi
+
+  if [[ "$installer_signal_status" != 0 ]]; then
+    status="$installer_signal_status"
+  fi
+  if [[ "$status" == 0 ]]; then
+    set +e
+    curl -fsSL "$INSTALLER_URL" |
+      HOME="$installer_root/home" \
+      CODEX_HOME="$installer_root/codex-home" \
+      PATH="$INSTALL_DIR:$PATH" \
+      CODEX_INSTALL_DIR="$INSTALL_DIR" \
+      CODEX_INSTALL_MODEL="$INSTALL_MODEL" \
+      CODEX_INSTALL_AK="$install_ak" \
+      CODEX_INSTALL_AZURE_BASE_URL="$INSTALL_AZURE_BASE_URL" \
+      bash -s -- "$INSTALL_VERSION" &
+    installer_pipeline_pid=$!
+    if [[ "$installer_signal_status" != 0 ]]; then
+      kill -TERM "$installer_pipeline_pid" 2>/dev/null || true
+    fi
+    wait "$installer_pipeline_pid"
+    status=$?
+    if [[ "$installer_signal_status" != 0 ]]; then
+      kill -TERM "$installer_pipeline_pid" 2>/dev/null || true
+      wait "$installer_pipeline_pid" 2>/dev/null || true
+    fi
+    installer_pipeline_pid=""
+    set -e
+  fi
+  if [[ "$installer_signal_status" != 0 ]]; then
+    status="$installer_signal_status"
+  fi
+
+  cleanup_status=0
+  cleanup_installer_state || cleanup_status=$?
+  if [[ "$cleanup_status" != 0 ]]; then
+    echo "Failed to remove private internal installer scratch state." >&2
+    if [[ "$status" == 0 ]]; then
+      status="$cleanup_status"
+    fi
+  fi
+  installer_root=""
+  trap - EXIT HUP INT TERM
   return "$status"
 }
 

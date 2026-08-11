@@ -451,6 +451,85 @@ Modify only as required:
 - [x] 8.2 After authorization, install the exact verified source only through:
   `CODEX_SWITCH_SOURCE_DIR=/Users/cY/dev/codex-switch CODEX_SWITCH_PYTHON="$(command -v python3.12)" /Users/cY/dev/codex-switch/install.sh`;
   verify immutable installed payload identity before any restart.
+- [x] 8.3A.1 Add a hermetic-installer RED regression at the public
+  `codex_env_setup update-internal` seam. The fake trusted installer SHALL try
+  to overwrite `$CODEX_HOME/config.toml` and append its candidate to
+  `$HOME/.zshrc`; the test SHALL prove current production exposes the live
+  sentinels, then require private `HOME`/`CODEX_HOME`, candidate-first child
+  PATH, unchanged live bytes/modes, and no surviving scratch root.
+- [x] 8.3A.2 Implement Scheme A in `scripts/codex_env_setup`: create one
+  validated mode-0700 installer root, run the trusted installer with private
+  `HOME` and `CODEX_HOME` plus candidate-first child `PATH`, and exact-clean
+  that root on success, ordinary failure, `HUP`, `INT`, or `TERM`. Preserve
+  installer status, bound/candidate semantics, and all promotion behavior.
+- [x] 8.3A.3 Run the named RED/GREEN on Python 3.12 and system Python 3.9,
+  then the complete staged-update/update-release adjacency, Bash syntax,
+  strict active/all OpenSpec, AI-plan lint, workflow validation, isolated
+  package/source identity, and diff/write-set checks. Record zero scratch,
+  credential, config, shell, and bytecode residue.
+- [x] 8.3A.4 Before live mutation, re-attest exact targets; create a private
+  timestamped codex-switch recovery directory; copy `.zshrc` with mode and
+  digest; remove only the three confirmed `# Added by Codex installer` blocks
+  naming `.codex-internal-update-{cb601999175c954128459e72,8c8e097f976e26a0ed76655a,a17a48054bfaf3fedbae231a}`;
+  and move only those three mode-0700 candidate directories into the recovery
+  directory. Stop without editing on any identity/text/mode drift. Do not
+  delete the backup.
+- [ ] 8.3A.5 Install the exact verified repository source, run one supported
+  internal update/rebind/switch, fully quit/reopen ChatGPT once, and verify:
+  live official config remained byte/mode-stable during staging; internal
+  managed config retained the synchronized safe settings and exact intended
+  provider/model overrides; direct plugin inventories remain identical;
+  manifest, generated wrapper, App environment, proxy child, and running
+  app-server all resolve the configured internal `codex_bin`; status, Doctor,
+  and `verify internal --repair=none` are clean for the repaired chain. Stop
+  before any provider-backed Desktop task, plugin refresh, proxy edit,
+  allowlist expansion, cleanup, Git, release, or archive effect.
+
+  **2026-07-28 internal-0.145 compatibility deviation:** the exact-source
+  install promoted payload `275ad2e2...71dab`, then the one authorized update
+  staged a private mode-0700 internal 0.145.0 candidate and stopped before
+  promotion with one error: `item_ids` / `parity.feature.core_drift`. Live
+  `.zshrc`, official config, internal config, bound 0.144.6 backend, manifest,
+  launcher, and active profile remain unchanged; installer scratch is absent.
+  A forced-stop read-only diagnostic proves:
+
+  ```text
+  item_ids official: removed / isolated_default=true / effective=true
+  item_ids internal: under development / isolated_default=false / effective=false
+  client_request:thread/resume: compatible=true / reasons=none
+  thread/resume method coverage records: 0
+  observed dependency: thread/resume.params.history only
+  ```
+
+  The policy currently accepts that exact dependency only through adapter
+  coverage, so it rejects stronger native-compatibility evidence. Before any
+  retry, revise task-8.3 behavior by TDD:
+
+  ```text
+  RED:
+    ParityMethodCoverageTests.
+      test_item_ids_accepts_exact_native_resume_compatibility_without_adapter_coverage
+  GREEN:
+    scripts/codex_switch_parity.py accepts the exact dependency when the
+    current client_request:thread/resume comparison has both sides and
+    compatible=true, or when the existing exact adapter coverage passes
+  negatives:
+    missing side
+    incompatible without exact accepted coverage
+    extra observed dependency
+    absence of coverage without an exact compatible comparison
+  ```
+
+  Proposed source expansion is exactly
+  `scripts/codex_switch_parity.py` and `scripts/test_codex_parity.py`, which
+  are existing task-8.3-owned paths but are outside the narrower Scheme A
+  incident write set. It requires explicit approval before implementation.
+  After GREEN, run focused/full parity on both runtimes, dual-runtime update/
+  release adjacency, strict/static/package/source identity, reinstall exact
+  source, then retry promotion using the already retained attested candidate
+  only if every candidate/live fingerprint is freshly revalidated. Do not
+  download another candidate or cross the restart boundary before promotion
+  succeeds.
 - [ ] 8.3 Close the saved same-backend preparation failure as one complete
   method-scoped evidence RED/GREEN, then—only after both new Human Gates—run
   the supported same-backend parity preparation/rebind for
@@ -649,6 +728,62 @@ Modify only as required:
   at `OFFICIAL_FIRST_PAUSE_READY` and `PARITY-8.3-LIVE-RETRY`. No live effect
   occurred, this checkbox remains open at 70/79, and tasks 8.4-8.7 are not
   dependency-ready.
+
+  **2026-07-28 Scheme A authorization and write set:** the user explicitly
+  authorized tasks 8.3A.1-8.3A.5, including the exact recoverable shell/
+  candidate repair, exact-source installation, one internal
+  update/rebind/switch, and one bounded ChatGPT restart. Production/test writes
+  are limited to `scripts/codex_env_setup` and
+  `scripts/test_codex_update_release.py`, plus this change and main-owned
+  control-plane evidence. `scripts/codex-switch` remains read-only unless a
+  wrapper-seam RED proves the helper cannot enforce the invariant and the
+  write-set expansion is first recorded. Live writes are limited to the exact
+  backup, `.zshrc` blocks, three candidate moves, supported installation,
+  profile/runtime artifacts, and restart named in 8.3A.4-8.3A.5. This approval
+  excludes credential/identity migration, destructive overwrite/deletion,
+  proxy behavior, plugin refresh, global-state allowlist expansion, legacy
+  skill migration/cleanup, dependency, provider-backed Desktop task, Git,
+  release, and archive effects. Current progress after adding the five repair
+  tasks is 70/84.
+
+  **New source-expansion Human Gate:** Scheme A did not authorize new writes
+  to `scripts/codex_switch_parity.py` or `scripts/test_codex_parity.py`.
+  Internal 0.145.0 exposed the exact native-resume false negative above.
+  Planning and read-only diagnosis are complete; implementation and any update
+  retry stop until the user explicitly approves this two-file expansion.
+
+  **2026-07-28 source-expansion approval consumed:** the user explicitly
+  approved `PARITY-0.145-NATIVE-RESUME-IMPLEMENT`. Execute only the named
+  two-file TDD correction and its recorded source/package validation before
+  freshly re-attesting the already retained candidate. Do not download another
+  candidate or broaden the live/excluded-effect boundary.
+
+  **RED recorded:** Python 3.12 ran only
+  `ParityMethodCoverageTests.test_item_ids_accepts_exact_native_resume_compatibility_without_adapter_coverage`;
+  it failed at the expected healthy assertion (1 test, 1 failure) because
+  current production still requires adapter coverage for the exact natively
+  compatible resume method. No production file had changed.
+
+  **Focused/full GREEN recorded:** the named test and its missing-side,
+  incompatible-without-coverage, extra-dependency, and absent-exact-comparison
+  negatives pass on Python 3.12 and system Python 3.9. The complete
+  `ParityMethodCoverageTests` class passes 6/6 on both runtimes, and the full
+  parity suite passes 94/94 on both runtimes.
+
+  **Read-only review guard RED:** the Standards axis found that the comparison
+  type permits contradictory `compatible=true` plus non-empty reason codes.
+  A focused Python 3.12 negative now fails only for that contradiction (1
+  test, 1 failure); missing-side checks preserve `compatible=true` and assert
+  an `item_ids` core finding, and wrong-direction/wrong-method exactness
+  negatives are included. Require empty reason codes before native proof.
+
+  **Final source/package verification:** native proof now also requires empty
+  reason codes. Both read-only review axes report no remaining findings.
+  Method coverage passes 7/7 and full parity 95/95 on both runtimes; fresh
+  post-review update/release passes 132/132 on Python 3.12 and system Python
+  3.9. Strict/static/workflow/diff checks and the isolated 66-file package/
+  source identity pass. Continue only with supported exact-source install and
+  fresh retained-candidate/live attestation; do not download another candidate.
 - [ ] 8.4 Fully quit and reopen ChatGPT with a bounded one-shot controller; do
   not use `launchctl submit`; attest one new ChatGPT pid, GUI
   `CODEX_CLI_PATH`, managed launcher, proxy parent, exact backend child, and the
@@ -688,6 +823,7 @@ Modify only as required:
 | Config/probes | Internal-only v2 projection, exact stale-key migration, bounded typed-role proof | Config Document/home-sync/probe tests | no v1 fallback or credential-bearing evidence |
 | Runtime bundle/rebind | All parity-sensitive runtime files recover together | fault matrix, legacy marker, runtime/profile suites | retire compatibility adapter only after caller migration |
 | Staged update | Bound binary remains last-known-good until parity handshake | installer/swap/rollback/update suites | remove only classified candidate/backup state after success |
+| Installer isolation and live recovery | Trusted installer cannot mutate live config/shell state; confirmed residue is backed up and repaired before one controlled retry | harmful fake-installer RED/GREEN, dual-runtime update suites, exact target/hash audit, installed ownership/config/plugin checks | scratch exact-cleaned; failed live candidates moved to recoverable backup, never deleted |
 | Diagnostics/package | One receipt drives health, queue, repair route, and packaged runtime | verify/Doctor/package/docs checks | no second policy implementation |
 | Task-8.3 evidence repair | All thirteen saved errors close through exact semantic, adapter, optional-extension, and post-probe evidence | retained exact fixture, dual-runtime adapter/parity/receipt consumers, package and planning gates | no global/method-only suppression; receipt-v1 is regenerated, not patched |
 | Live acceptance | Real Desktop typed Subagent and runtime ownership proof | pre/post attestation, metadata, markers, screenshot | preserve evidence; no unrelated live changes |
@@ -703,8 +839,9 @@ Modify only as required:
 | Staged update | main, serialized | env helper/wrapper/promotion/update tests | sibling install/swap/rollback log | real internal update | CONTINUE_NEXT_ITEM | complete; tasks 5.1-5.10 pass the slice-closure matrix. Python 3.12 passes update/release 123/123, transaction 239/239, Runtime Binding 75/75, parity 83/83, and complete profile 201/201. System Python 3.9 passes update/release 123/123, transaction 239/239, Runtime Binding 75/75, parity 83/83, and the supported profile projection routes 2/2; direct profile CLI exits 2 before store creation at the established Python 3.11+ `tomllib` boundary. No production code changed during 5.10. Task 6.1 next |
 | Diagnostics/package | main, serialized | verify/Doctor/status/package/docs/tests | shared findings, package/import proof | public CLI expansion | VERIFY_ACTIVE_CHANGE | complete; tasks 6.1-6.10 share one parity report/classification owner, read-only diagnostics, staged repair routing, immutable package imports, operator docs, and clean authority boundaries. The slice-focused matrix passes 71/71 on Python 3.12.13 and 71/71 on system Python 3.9.6: 9 reference/ownership, 8 verifier, 4 profile diagnostics/package seams, 37 release-bundle, 10 staged-update, and 3 package/promotion/workflow adjacency tests per runtime. No production code changed during 6.10. Task 7.1 integrated parity verification is next |
 | Integrated review | main | tests and control-plane evidence only | dual-runtime/full/static/package/diff review | unresolved production contract | BLOCKED_AWAITING_HUMAN or CONTINUE_NEXT_ITEM | complete through task 8.1 at 69/79. The verification record consolidates the automated/static/package/review evidence and records the user's explicit authorization for the exact-source install, same-backend rebind, resulting profile/App/runtime mutations, bounded ChatGPT restart, and one real provider-backed typed `explorer` task. Task 8.2 is next |
-| Task-8.3 evidence repair | main, serialized after `PARITY-8.3-IMPLEMENT` | exact two production, two test, one fixture, two operator-doc, and main-owned control-plane sets named in 8.3 | complete thirteen-error RED/GREEN, receipt-v2 negative matrix, dual-runtime consumers, package/write-set proof | implementation consumed; live retry still required | BLOCKED_AWAITING_HUMAN | source/package verified at `OFFICIAL_FIRST_PAUSE_READY`: Protocol Adapter 41/41, parity 93/93, verifier 30/30, and Runtime Binding 75/75 pass on both runtimes; isolated package matches source. Stop at `PARITY-8.3-LIVE-RETRY`; task 8.3 remains unchecked at 70/79 |
-| Live acceptance | main after explicit approval | supported local install and live profile/App state only | typed role, markers, screenshot, full ownership | required | BLOCKED_AWAITING_HUMAN | prior task-8.3 live attempt and diagnostic are retained RED evidence, but their runtime snapshot is stale because current ownership is official. No retry or task 8.4 may start before the evidence repair is implemented, verified, and `PARITY-8.3-LIVE-RETRY` is explicitly authorized |
+| Task-8.3 evidence repair | main, serialized after `PARITY-8.3-IMPLEMENT` | exact two production, two test, one fixture, two operator-doc, and main-owned control-plane sets named in 8.3 | complete thirteen-error RED/GREEN, receipt-v2 negative matrix, dual-runtime consumers, package/write-set proof | implementation consumed; Scheme A live retry now consumed | CONTINUE_NEXT_ITEM | source/package verified at `OFFICIAL_FIRST_PAUSE_READY`: Protocol Adapter 41/41, parity 93/93, verifier 30/30, and Runtime Binding 75/75 pass on both runtimes; isolated package matches source. Installer-isolation tasks now precede the authorized live retry; task 8.3 remains unchecked |
+| Installer side-effect repair | main, serialized before renewed task 8.3 live preparation | `scripts/codex_env_setup`, staged-update test, canonical artifacts; exact recoverable live targets in 8.3A.4-8.3A.5 | harmful installer RED/GREEN, dual-runtime focused/full, strict/static/package, exact backup/repair, config/plugin/runtime ownership | Scheme A and exact two-file parity expansion consumed | CONTINUE_NEXT_ITEM | source/package verified at 74/84; native resume fail-closed TDD and review are complete, dual-runtime parity/update adjacency and isolated identity pass; supported exact-source reinstall plus fresh retained-candidate/live attestation is next |
+| Live acceptance | main after explicit approval | supported local install and live profile/App state only | typed role, markers, screenshot, full ownership | Scheme A update/restart consumed; provider-backed Desktop task remains required | CONTINUE_NEXT_ITEM | Scheme A authorizes the exact update/rebind/switch and task-8.4 restart after installer isolation verifies. Task 8.5 and broader live effects remain gated |
 | Closure | main | OpenSpec/ledger/state/evidence | fresh final command set | archive/Git/release/cleanup | COMPLETE | pending |
 
 ## SubAgent Strategy

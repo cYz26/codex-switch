@@ -20,6 +20,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import codex_switch_bindings as bindings_module
+import codex_switch_doctor as doctor_module
+import codex_switch_doctor_active as doctor_active_module
+import codex_switch_status_active as status_active_module
 from codex_switch_capture import capture_profile
 from codex_switch_bindings import (
     cmd_promote_internal_update,
@@ -59,6 +62,7 @@ from codex_switch_runtime_binding import (
 from codex_switch_store import Store
 from codex_switch_switching import switch_profile
 from codex_switch_constants import SwitchError
+from codex_switch_selection import ProfileSelection
 from codex_switch_verify import collect_active_state_problems, run_app_server_smoke
 from codex_switch_transaction import (
     TransactionRequest,
@@ -72,6 +76,95 @@ def write_executable(path: Path, body: str = "#!/bin/sh\nexit 0\n") -> Path:
     path.write_text(body)
     path.chmod(0o755)
     return path
+
+
+class ActiveProfileSelectionTests(unittest.TestCase):
+    def selection_module(self):
+        import codex_switch_selection
+
+        return codex_switch_selection
+
+    def test_requested_internal_cli_official_app_normalizes_alias(self) -> None:
+        selection = self.selection_module().requested_profile_selection(
+            "internal",
+            "official",
+        )
+
+        self.assertEqual("internal", selection.cli_profile)
+        self.assertEqual("openai-official", selection.app_profile)
+        self.assertTrue(selection.is_split)
+
+    def test_requested_profile_without_override_remains_synchronized(self) -> None:
+        selection = self.selection_module().requested_profile_selection(
+            "internal",
+            None,
+        )
+
+        self.assertEqual("internal", selection.cli_profile)
+        self.assertEqual("internal", selection.app_profile)
+        self.assertFalse(selection.is_split)
+
+    def test_requested_unsupported_split_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            SwitchError,
+            "selection.unsupported.*supported split: internal/openai-official",
+        ):
+            self.selection_module().requested_profile_selection(
+                "openai-official",
+                "internal",
+            )
+
+    def test_requested_explicit_app_and_skip_app_cli_conflict(self) -> None:
+        with self.assertRaisesRegex(SwitchError, "selection.app_skip_conflict"):
+            self.selection_module().requested_profile_selection(
+                "internal",
+                "official",
+                skip_app_cli=True,
+            )
+
+    def test_legacy_active_record_maps_both_surfaces_to_profile(self) -> None:
+        selection = self.selection_module().active_profile_selection(
+            {"profile": "openai-official"}
+        )
+
+        self.assertEqual("openai-official", selection.cli_profile)
+        self.assertEqual("openai-official", selection.app_profile)
+
+    def test_explicit_active_record_preserves_split_and_cli_alias(self) -> None:
+        selection = self.selection_module().active_profile_selection(
+            {
+                "profile": "internal",
+                "cli_profile": "internal",
+                "app_profile": "openai-official",
+            }
+        )
+
+        self.assertEqual("internal", selection.cli_profile)
+        self.assertEqual("openai-official", selection.app_profile)
+        self.assertEqual(
+            {
+                "profile": "internal",
+                "cli_profile": "internal",
+                "app_profile": "openai-official",
+            },
+            self.selection_module().active_profile_fields(selection),
+        )
+
+    def test_partial_explicit_active_record_fails_closed(self) -> None:
+        with self.assertRaisesRegex(SwitchError, "active.selection.partial"):
+            self.selection_module().active_profile_selection(
+                {"profile": "internal", "cli_profile": "internal"}
+            )
+
+    def test_conflicting_legacy_cli_alias_fails_closed(self) -> None:
+        with self.assertRaisesRegex(SwitchError, "active.selection.cli_conflict"):
+            self.selection_module().active_profile_selection(
+                {
+                    "profile": "openai-official",
+                    "cli_profile": "internal",
+                    "app_profile": "openai-official",
+                }
+            )
 
 
 class RuntimeBindingTests(unittest.TestCase):
@@ -226,6 +319,76 @@ class RuntimeBindingTests(unittest.TestCase):
             DesktopInventory(current=None),
         )
         return store, backend, launcher, binding
+
+    def write_split_store_fixture(
+        self,
+        root: Path,
+    ) -> tuple[Store, Path, Path, object, object, RuntimeObservation]:
+        from codex_switch_launch import launch_agent_payload
+
+        store, backend, launcher, internal_binding = (
+            self.write_internal_store_fixture(root)
+        )
+        roots = self.make_roots(root)
+        _main, official_cli = self.write_bundle(
+            roots.chatgpt,
+            bundle_id=CURRENT_CHATGPT_BUNDLE_ID,
+            main_name="ChatGPT",
+        )
+        official_profile = store.profile_dir("openai-official")
+        official_profile.mkdir(parents=True, exist_ok=True)
+        (official_profile / "config.toml").write_text('profile = "openai-official"\n')
+        official_manifest = {
+            "name": "openai-official",
+            "codex_bin": str(official_cli),
+            "app_cli_path": str(official_cli),
+            "runtime_binding": "canonical",
+            "app_cli_binding": "launchagent",
+        }
+        (official_profile / "manifest.json").write_text(
+            json.dumps(official_manifest)
+        )
+        official_binding = resolve_runtime_binding(
+            self.make_context(root, "openai-official", official_manifest),
+            discover_desktop_hosts(roots),
+        )
+        home = store.internal_codex_home
+        assert home is not None
+        internal_binding = replace(internal_binding, codex_home=home)
+        write_codex_shim(
+            store,
+            str(internal_binding.shell_cli),
+            home,
+            profile_name="internal",
+        )
+        store.launch_agent_path.write_bytes(
+            launch_agent_payload(store.launch_agent_label, official_cli)
+        )
+        store.active_path.write_text(
+            json.dumps(
+                {
+                    "profile": "internal",
+                    "cli_profile": "internal",
+                    "app_profile": "openai-official",
+                    "codex_home": str(home),
+                    "shim_path": str(store.bin_dir / "codex"),
+                    "shell_cli_path": str(backend),
+                    "app_cli_path": str(official_cli),
+                }
+            )
+        )
+        observation = RuntimeObservation(
+            gui_app_cli=str(official_cli),
+            launch_agent_cli=str(official_cli),
+        )
+        return (
+            store,
+            backend,
+            official_cli,
+            internal_binding,
+            official_binding,
+            observation,
+        )
 
     def rebind_args(
         self,
@@ -2011,6 +2174,234 @@ class RuntimeBindingTests(unittest.TestCase):
             self.assertIn("GUI CODEX_CLI_PATH: <unset>", rendered)
             self.assertIn(f"Expected Desktop CLI: {launcher}", rendered)
 
+    def test_split_status_reports_separate_cli_and_app_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (
+                store,
+                backend,
+                official_cli,
+                internal_binding,
+                official_binding,
+                _observation,
+            ) = self.write_split_store_fixture(root)
+            output = io.StringIO()
+
+            def resolve_binding(_store, profile, **_kwargs):
+                return (
+                    internal_binding
+                    if profile == "internal"
+                    else official_binding
+                )
+
+            with (
+                patch.object(
+                    status_active_module,
+                    "resolve_store_runtime_binding",
+                    side_effect=resolve_binding,
+                ),
+                redirect_stdout(output),
+            ):
+                selection = status_active_module.print_active_profile_status(store)
+
+            self.assertIsNotNone(selection)
+            self.assertEqual("internal", selection.cli_profile)
+            self.assertEqual("openai-official", selection.app_profile)
+            rendered = output.getvalue()
+            self.assertIn("CLI profile: internal", rendered)
+            self.assertIn("App profile: openai-official", rendered)
+            self.assertIn(f"Active configured CLI: {backend}", rendered)
+            self.assertIn(f"Active configured App CLI: {official_cli}", rendered)
+
+    def test_split_doctor_uses_official_app_binding_without_cross_surface_drift(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (
+                store,
+                _backend,
+                _official_cli,
+                internal_binding,
+                official_binding,
+                observation,
+            ) = self.write_split_store_fixture(root)
+
+            def resolve_binding(_store, profile, **_kwargs):
+                return (
+                    internal_binding
+                    if profile == "internal"
+                    else official_binding
+                )
+
+            with patch.object(
+                doctor_module,
+                "resolve_store_runtime_binding",
+                side_effect=resolve_binding,
+            ) as resolve_doctor:
+                observed_binding = doctor_module.active_runtime_binding_for_observation(
+                    store
+                )
+            self.assertEqual("openai-official", observed_binding.profile)
+            self.assertEqual(
+                "openai-official",
+                resolve_doctor.call_args.args[1],
+            )
+
+            with patch.object(
+                doctor_active_module,
+                "resolve_store_runtime_binding",
+                side_effect=resolve_binding,
+            ):
+                problems = active_profile_problems(
+                    store,
+                    runtime_observation=observation,
+                )
+            self.assertEqual([], problems)
+
+    def test_split_doctor_reports_only_the_drifted_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (
+                store,
+                _backend,
+                _official_cli,
+                internal_binding,
+                official_binding,
+                observation,
+            ) = self.write_split_store_fixture(root)
+
+            def resolve_binding(_store, profile, **_kwargs):
+                return (
+                    internal_binding
+                    if profile == "internal"
+                    else official_binding
+                )
+
+            shim = store.bin_dir / "codex"
+            shim.write_text("#!/bin/sh\nexit 42\n")
+            shim.chmod(0o755)
+            with patch.object(
+                doctor_active_module,
+                "resolve_store_runtime_binding",
+                side_effect=resolve_binding,
+            ):
+                shell_problems = active_profile_problems(
+                    store,
+                    runtime_observation=observation,
+                )
+            self.assertTrue(
+                any("switch shim mismatch" in problem for problem in shell_problems),
+                shell_problems,
+            )
+            self.assertFalse(
+                any("attestation." in problem for problem in shell_problems),
+                shell_problems,
+            )
+
+            home = store.internal_codex_home
+            assert home is not None
+            write_codex_shim(
+                store,
+                str(internal_binding.shell_cli),
+                home,
+                profile_name="internal",
+            )
+            app_drift = RuntimeObservation(
+                gui_app_cli=str(root / "wrong-app"),
+                launch_agent_cli=str(root / "wrong-app"),
+            )
+            with patch.object(
+                doctor_active_module,
+                "resolve_store_runtime_binding",
+                side_effect=resolve_binding,
+            ):
+                app_problems = active_profile_problems(
+                    store,
+                    runtime_observation=app_drift,
+                )
+            self.assertTrue(
+                any("attestation." in problem for problem in app_problems),
+                app_problems,
+            )
+            self.assertFalse(
+                any("switch shim mismatch" in problem for problem in app_problems),
+                app_problems,
+            )
+
+    def test_split_doctor_rejects_active_cli_home_and_matching_shim_drift(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (
+                store,
+                _backend,
+                _official_cli,
+                internal_binding,
+                official_binding,
+                observation,
+            ) = self.write_split_store_fixture(root)
+            drift_home = root / "drifted-internal-home"
+            drift_home.mkdir()
+            active = json.loads(store.active_path.read_text())
+            active["codex_home"] = str(drift_home)
+            store.active_path.write_text(json.dumps(active))
+            write_codex_shim(
+                store,
+                str(internal_binding.shell_cli),
+                drift_home,
+                profile_name="internal",
+            )
+
+            def resolve_binding(_store, profile, **_kwargs):
+                return (
+                    internal_binding
+                    if profile == "internal"
+                    else official_binding
+                )
+
+            with patch.object(
+                doctor_active_module,
+                "resolve_store_runtime_binding",
+                side_effect=resolve_binding,
+            ):
+                problems = active_profile_problems(
+                    store,
+                    runtime_observation=observation,
+                )
+
+            self.assertTrue(
+                any(
+                    "recorded CODEX_HOME" in problem
+                    and str(internal_binding.codex_home) in problem
+                    for problem in problems
+                ),
+                problems,
+            )
+
+    def test_malformed_split_active_selection_is_reported_stably(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _backend, _launcher, _binding = self.write_internal_store_fixture(
+                root
+            )
+            active = json.loads(store.active_path.read_text())
+            active["cli_profile"] = "internal"
+            store.active_path.write_text(json.dumps(active))
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                selection = status_active_module.print_active_profile_status(store)
+
+            self.assertIsNone(selection)
+            self.assertIn("active.selection.partial", output.getvalue())
+            problems = active_profile_problems(store)
+            self.assertTrue(
+                any("active.selection.partial" in problem for problem in problems),
+                problems,
+            )
+
     def test_status_doctor_and_verify_share_finding_codes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -3331,6 +3722,131 @@ class RuntimeBindingTests(unittest.TestCase):
             self.assertEqual(manifest_path.read_bytes(), foreign_payload)
             self.assertFalse(
                 (store.root / ".runtime-binding-rebind.json").exists()
+            )
+
+    def test_full_rebind_rejects_active_selection_drift_before_preparation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _old_backend, _launcher, _binding = (
+                self.write_internal_store_fixture(root)
+            )
+            candidate = self.write_rebind_backend(
+                root / "candidate" / "codex"
+            )
+            args = self.rebind_args(store, candidate)
+            args.expected_active_selection_payload = (
+                store.active_path.read_bytes()
+            )
+            changed = json.loads(store.active_path.read_text())
+            changed["cli_profile"] = "internal"
+            changed["app_profile"] = "openai-official"
+            store.active_path.write_text(json.dumps(changed) + "\n")
+            manifest_before = store.manifest_path("internal").read_bytes()
+
+            with patch.object(
+                bindings_module,
+                "prepare_parity_bundle",
+                side_effect=AssertionError(
+                    "selection CAS must fail before parity preparation"
+                ),
+            ) as prepare_parity, self.assertRaisesRegex(
+                SwitchError,
+                "active.selection.changed_before_repair",
+            ), redirect_stdout(io.StringIO()):
+                cmd_set_bin(args)
+
+            prepare_parity.assert_not_called()
+            self.assertEqual(
+                manifest_before,
+                store.manifest_path("internal").read_bytes(),
+            )
+            self.assertFalse(
+                (store.root / ".runtime-binding-rebind.json").exists()
+            )
+
+    def test_doctor_uses_one_active_selection_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _backend, _launcher, _binding = (
+                self.write_internal_store_fixture(root)
+            )
+            split = {
+                "profile": "internal",
+                "cli_profile": "internal",
+                "app_profile": "openai-official",
+            }
+            snapshot = SimpleNamespace(
+                record=split,
+                selection=ProfileSelection(
+                    cli_profile="internal",
+                    app_profile="openai-official",
+                ),
+                problem=None,
+                payload=(json.dumps(split) + "\n").encode(),
+            )
+            args = SimpleNamespace()
+            output = io.StringIO()
+            with (
+                patch.object(doctor_module, "make_store", return_value=store),
+                patch.object(
+                    doctor_module,
+                    "read_active_profile_selection_snapshot",
+                    return_value=snapshot,
+                    create=True,
+                ) as read_snapshot,
+                patch.object(
+                    doctor_module,
+                    "active_runtime_binding_for_observation",
+                    return_value=None,
+                ) as resolve_app,
+                patch.object(
+                    doctor_module,
+                    "collect_store_runtime_observation",
+                    return_value=None,
+                ),
+                patch.object(
+                    doctor_module,
+                    "active_shared_configuration_report",
+                    return_value=None,
+                ) as shared_report,
+                patch.object(
+                    doctor_module,
+                    "collect_doctor_problems",
+                    return_value=[],
+                ) as collect_problems,
+                patch.object(
+                    doctor_module,
+                    "active_cli_runtime_binding_for_parity",
+                    return_value=None,
+                ) as parity_binding,
+                patch.object(
+                    doctor_module,
+                    "active_internal_app_profile",
+                    return_value="openai-official",
+                ) as app_profile,
+                redirect_stdout(output),
+            ):
+                doctor_module.cmd_doctor(args)
+
+            read_snapshot.assert_called_once_with(store.active_path)
+            resolve_app.assert_called_once_with(store, snapshot=snapshot)
+            shared_report.assert_called_once_with(store, snapshot=snapshot)
+            collect_problems.assert_called_once_with(
+                store,
+                None,
+                None,
+                shared_configuration=None,
+                snapshot=snapshot,
+            )
+            parity_binding.assert_called_once_with(store, snapshot=snapshot)
+            app_profile.assert_called_once_with(store, snapshot=snapshot)
+            self.assertIn("Doctor passed", output.getvalue())
+            self.assertIn(
+                "Internal App parity: not applicable "
+                "(App profile: openai-official)",
+                output.getvalue(),
             )
 
     def test_rebind_commit_failure_restores_manifest_and_launcher_bytes(self) -> None:

@@ -43,11 +43,14 @@ from codex_switch_protocol_adapter import (
     protocol_adapter_rule_set_digest,
 )
 from codex_switch_running_app import managed_launcher_fingerprint
+from codex_switch_selection import require_active_profile_selection_payload
+from codex_switch_shim import render_codex_shim_payload
 from codex_switch_runtime_binding import (
     DesktopInventory,
     RuntimeObservation,
     attest_runtime_binding,
     resolve_store_runtime_binding,
+    validate_internal_cli_runtime_generation,
 )
 from codex_switch_transaction import (
     RuntimeBindingExecutableSwap,
@@ -529,6 +532,8 @@ def cmd_set_bin(
     ):
         raise SwitchError("Internal executable swap contract is invalid")
     candidate_manifest = dict(manifest)
+    candidate_manifest.pop("internal_cli_generation", None)
+    candidate_manifest.pop("internal_app_readiness", None)
     candidate_manifest["codex_bin"] = str(bin_path)
     candidate_manifest["app_cli_path"] = str(store.bin_dir / "codex-internal-app")
     candidate_manifest["app_cli_binding"] = "launchagent"
@@ -561,6 +566,22 @@ def cmd_set_bin(
     with preparation_lock as locked_store:
         if locked_store is not None:
             locked_store.revalidate()
+        if hasattr(args, "expected_active_selection_payload"):
+            expected_active_payload = getattr(
+                args,
+                "expected_active_selection_payload",
+            )
+            if expected_active_payload is not None and not isinstance(
+                expected_active_payload,
+                bytes,
+            ):
+                raise SwitchError(
+                    "Expected active selection snapshot is invalid"
+                )
+            require_active_profile_selection_payload(
+                store.active_path,
+                expected_active_payload,
+            )
         manifest_path = store.manifest_path("internal")
         current_manifest = store.load_manifest("internal")
         if current_manifest != manifest:
@@ -1291,6 +1312,188 @@ def _verify_internal_update_promotion(
             )
 
 
+def _verify_internal_cli_update_promotion(
+    store: object,
+    *,
+    expected_manifest: Mapping[str, object],
+    executable_swap: RuntimeBindingExecutableSwap,
+    target_version: str,
+) -> None:
+    bound_path, bound_mode, bound_sha256 = _stable_executable_identity(
+        executable_swap.bound_path,
+        label="Promoted internal CLI",
+    )
+    if (
+        bound_path != executable_swap.bound_path
+        or bound_mode != executable_swap.new_mode
+        or bound_sha256 != executable_swap.new_sha256
+    ):
+        raise SwitchError(
+            "Promoted internal CLI does not match the staged candidate"
+        )
+    _backup_path, backup_mode, backup_sha256 = _stable_executable_identity(
+        executable_swap.backup_path,
+        label="Last-known-good internal CLI backup",
+    )
+    if (
+        backup_mode != executable_swap.old_mode
+        or backup_sha256 != executable_swap.old_sha256
+    ):
+        raise SwitchError(
+            "Last-known-good internal CLI backup does not match the prior binary"
+        )
+    if os.path.lexists(executable_swap.candidate_path):
+        raise SwitchError(
+            "Promoted internal CLI candidate path was not retired by the swap"
+        )
+    _exact_executable_version(
+        bound_path,
+        expected_version=target_version,
+        label="Promoted internal CLI",
+    )
+    manifest = store.load_manifest("internal")
+    if manifest != dict(expected_manifest):
+        raise SwitchError(
+            "Internal manifest does not match the promoted CLI generation"
+        )
+    try:
+        manifest_backend = Path(
+            str(manifest.get("codex_bin") or "")
+        ).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise SwitchError(
+            "Promoted internal CLI manifest backend is unavailable"
+        ) from exc
+    if manifest_backend != bound_path:
+        raise SwitchError(
+            "Promoted internal CLI manifest does not select the bound binary"
+        )
+    expected_generation = {
+        "schema_version": 1,
+        "scope": "cli-only",
+        "backend_sha256": executable_swap.new_sha256,
+        "backend_version": target_version,
+    }
+    if manifest.get("internal_cli_generation") != expected_generation:
+        raise SwitchError(
+            "Promoted internal CLI generation metadata is invalid"
+        )
+    if manifest.get("internal_app_readiness") != "unverified":
+        raise SwitchError(
+            "Promoted internal App readiness metadata is invalid"
+        )
+    internal_home = getattr(store, "internal_codex_home", None)
+    if internal_home is None:
+        internal_home = store.managed_home("internal")
+    generation = validate_internal_cli_runtime_generation(
+        manifest=manifest,
+        fallback_home=Path(internal_home),
+        fallback_backend=bound_path,
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="codex-switch-cli-promotion-shim-"
+    ) as temp_dir:
+        managed_shim = Path(temp_dir) / "codex"
+        atomic_write(
+            managed_shim,
+            render_codex_shim_payload(
+                store,
+                str(generation.backend_cli),
+                generation.codex_home,
+                profile_name="internal",
+            ),
+            mode=0o755,
+        )
+        _exact_executable_version(
+            managed_shim,
+            expected_version=target_version,
+            label="Managed internal CLI shell",
+        )
+
+
+def _promote_internal_cli_update(
+    store: object,
+    *,
+    manifest: Mapping[str, object],
+    executable_swap: RuntimeBindingExecutableSwap,
+    target_version: str,
+) -> None:
+    manifest_path = store.manifest_path("internal")
+    original_manifest_payload = manifest_path.read_bytes()
+    candidate_manifest = dict(manifest)
+    candidate_manifest["internal_cli_generation"] = {
+        "schema_version": 1,
+        "scope": "cli-only",
+        "backend_sha256": executable_swap.new_sha256,
+        "backend_version": target_version,
+    }
+    candidate_manifest["internal_app_readiness"] = "unverified"
+    candidate_manifest["updated_at"] = now_stamp()
+    manifest_payload = (
+        json.dumps(candidate_manifest, indent=2, sort_keys=True).encode()
+        + b"\n"
+    )
+
+    def validate_inputs() -> None:
+        marker_present = (
+            store.root / ".runtime-binding-rebind.json"
+        ).exists()
+        observed_manifest = store.load_manifest("internal")
+        observed_payload = manifest_path.read_bytes()
+        if not marker_present:
+            matches = (
+                observed_manifest == dict(manifest)
+                and observed_payload == original_manifest_payload
+            )
+        else:
+            matches = (
+                observed_manifest == dict(manifest)
+                and observed_payload == original_manifest_payload
+            ) or (
+                observed_manifest == candidate_manifest
+                and observed_payload == manifest_payload
+            )
+        if not matches:
+            raise SwitchError(
+                "Internal manifest changed before CLI-only promotion"
+            )
+
+    def validate_promoted_generation() -> None:
+        _verify_internal_cli_update_promotion(
+            store,
+            expected_manifest=candidate_manifest,
+            executable_swap=executable_swap,
+            target_version=target_version,
+        )
+
+    artifact = RuntimeBindingTextArtifact(
+        role="manifest",
+        path=manifest_path,
+        payload=manifest_payload,
+        mode=0o600,
+    )
+    with locked_store_mutation(
+        store,
+        operation="internal CLI-only update promotion",
+    ) as locked_store:
+        commit_runtime_binding_bundle(
+            locked_store,
+            artifacts=(artifact,),
+            executable_swap=executable_swap,
+            input_validator=validate_inputs,
+            prepared_validator=validate_promoted_generation,
+            retire_executable_backup=True,
+            bundle_scope="cli-only",
+        )
+
+    print(f"update-internal: verified CLI version {target_version}.")
+    print("CLI-only promotion: passed")
+    print(
+        "Internal App readiness: unverified; split keeps Codex App on the "
+        "official bundle."
+    )
+
+
 def cmd_promote_internal_update(args: argparse.Namespace) -> None:
     store = make_store(args)
     manifest = store.load_manifest("internal")
@@ -1376,6 +1579,15 @@ def cmd_promote_internal_update(args: argparse.Namespace) -> None:
         new_mode=new_mode,
         new_sha256=new_sha256,
     )
+
+    if getattr(args, "cli_only", False):
+        _promote_internal_cli_update(
+            store,
+            manifest=manifest,
+            executable_swap=executable_swap,
+            target_version=args.target_version,
+        )
+        return
 
     def promotion_validator(
         result: _InternalRuntimeRebindResult,

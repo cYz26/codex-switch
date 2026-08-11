@@ -1411,7 +1411,10 @@ class _StoreLock:
         descriptor = self._descriptor
         if descriptor is None:
             raise SwitchError("Profile store lock is not active")
-        locked = os.fstat(descriptor)
+        try:
+            locked = os.fstat(descriptor)
+        except OSError as exc:
+            raise SwitchError("Profile store lock descriptor is unavailable") from exc
         try:
             current = self.root.lstat()
         except FileNotFoundError as exc:
@@ -1424,6 +1427,20 @@ class _StoreLock:
             or (current.st_dev, current.st_ino) != (locked.st_dev, locked.st_ino)
         ):
             raise SwitchError(f"Profile store changed while locked: {self.root}")
+
+    def _active_root_descriptor(self) -> int:
+        """Return the exact locked root FD for one private inheritance seam."""
+        self.revalidate()
+        descriptor = self._descriptor
+        if descriptor is None:
+            raise SwitchError("Profile store lock is not active")
+        try:
+            locked = os.fstat(descriptor)
+        except OSError as exc:
+            raise SwitchError("Profile store lock descriptor is unavailable") from exc
+        if not stat.S_ISDIR(locked.st_mode):
+            raise SwitchError("Profile store lock descriptor is not a directory")
+        return descriptor
 
 
 def _raise_blocking_store_evidence(
@@ -1466,6 +1483,11 @@ _RUNTIME_BINDING_BUNDLE_OPTIONAL_ROLES = frozenset(
         "shared_config",
         "active_runtime_config",
     }
+)
+_RUNTIME_BINDING_BUNDLE_SCOPE_FULL = "full"
+_RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY = "cli-only"
+_RUNTIME_BINDING_BUNDLE_CLI_ONLY_REQUIRED_ROLES = frozenset(
+    {"manifest"}
 )
 _RUNTIME_BINDING_BUNDLE_ACTIVATION_ORDER = (
     "parity_overlay",
@@ -1690,7 +1712,20 @@ def _validate_runtime_rebind_bundle_target_route(
 def _validated_runtime_binding_bundle_artifacts(
     store: Store,
     artifacts: tuple[RuntimeBindingTextArtifact, ...],
+    *,
+    bundle_scope: str = _RUNTIME_BINDING_BUNDLE_SCOPE_FULL,
 ) -> tuple[RuntimeBindingTextArtifact, ...]:
+    if bundle_scope == _RUNTIME_BINDING_BUNDLE_SCOPE_FULL:
+        required_roles = _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES
+        allowed_roles = (
+            _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES
+            | _RUNTIME_BINDING_BUNDLE_OPTIONAL_ROLES
+        )
+    elif bundle_scope == _RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY:
+        required_roles = _RUNTIME_BINDING_BUNDLE_CLI_ONLY_REQUIRED_ROLES
+        allowed_roles = _RUNTIME_BINDING_BUNDLE_CLI_ONLY_REQUIRED_ROLES
+    else:
+        raise SwitchError("Runtime binding bundle scope is invalid")
     if not isinstance(artifacts, tuple) or not artifacts:
         raise SwitchError("Runtime binding bundle artifacts are invalid")
     validated: list[RuntimeBindingTextArtifact] = []
@@ -1720,14 +1755,10 @@ def _validated_runtime_binding_bundle_artifacts(
 
     expected_paths = _runtime_binding_bundle_expected_paths(store)
     supplied_roles = set(roles)
-    allowed_roles = (
-        _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES
-        | _RUNTIME_BINDING_BUNDLE_OPTIONAL_ROLES
-    )
     unexpected_roles = supplied_roles - allowed_roles
     if unexpected_roles:
         raise SwitchError("Runtime binding bundle has unexpected targets")
-    missing_roles = _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES - supplied_roles
+    missing_roles = required_roles - supplied_roles
     if missing_roles:
         raise SwitchError("Runtime binding bundle is missing required targets")
     for artifact in validated:
@@ -3033,10 +3064,32 @@ def _validated_runtime_rebind_bundle_marker(
 ) -> dict[str, object]:
     base_fields = {"schema_version", "state", "artifacts"}
     marker_fields = set(raw)
-    if marker_fields not in (
-        base_fields,
-        base_fields | {"executable_swap"},
-    ):
+    schema_version = raw.get("schema_version")
+    if schema_version == 3:
+        bundle_scope = _RUNTIME_BINDING_BUNDLE_SCOPE_FULL
+        allowed_marker_fields = (
+            base_fields,
+            base_fields | {"executable_swap"},
+        )
+        required_roles = _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES
+        allowed_roles = (
+            _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES
+            | _RUNTIME_BINDING_BUNDLE_OPTIONAL_ROLES
+        )
+    elif schema_version == 4:
+        bundle_scope = raw.get("bundle_scope")
+        if bundle_scope != _RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY:
+            raise SwitchError("Runtime rebind bundle marker scope is invalid")
+        scoped_fields = base_fields | {"bundle_scope"}
+        allowed_marker_fields = (
+            scoped_fields,
+            scoped_fields | {"executable_swap"},
+        )
+        required_roles = _RUNTIME_BINDING_BUNDLE_CLI_ONLY_REQUIRED_ROLES
+        allowed_roles = _RUNTIME_BINDING_BUNDLE_CLI_ONLY_REQUIRED_ROLES
+    else:
+        raise SwitchError("Runtime rebind bundle marker schema is invalid")
+    if marker_fields not in allowed_marker_fields:
         raise SwitchError("Runtime rebind bundle marker fields are invalid")
     raw_entries = raw.get("artifacts")
     if not isinstance(raw_entries, list) or not raw_entries:
@@ -3093,13 +3146,9 @@ def _validated_runtime_rebind_bundle_marker(
                     "Runtime rebind bundle marker has overlapping targets"
                 )
     supplied_roles = set(roles)
-    allowed_roles = (
-        _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES
-        | _RUNTIME_BINDING_BUNDLE_OPTIONAL_ROLES
-    )
     if supplied_roles - allowed_roles:
         raise SwitchError("Runtime rebind bundle marker has unexpected targets")
-    if _RUNTIME_BINDING_BUNDLE_REQUIRED_ROLES - supplied_roles:
+    if required_roles - supplied_roles:
         raise SwitchError(
             "Runtime rebind bundle marker is missing required targets"
         )
@@ -3151,6 +3200,13 @@ def _validated_runtime_rebind_bundle_marker(
                         "target"
                     )
         validated["executable_swap"] = executable_swap
+    if (
+        bundle_scope == _RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY
+        and "executable_swap" not in validated
+    ):
+        raise SwitchError(
+            "Runtime rebind CLI-only marker requires an executable swap"
+        )
     return validated
 
 
@@ -3166,13 +3222,13 @@ def _validated_runtime_rebind_marker(
     if (
         not isinstance(raw, dict)
         or type(schema_version) is not int
-        or schema_version not in {1, 2, 3}
+        or schema_version not in {1, 2, 3, 4}
     ):
         raise SwitchError("Runtime rebind marker schema is invalid")
     state = raw.get("state")
     if state not in {"prepared", "committed"}:
         raise SwitchError("Runtime rebind marker state is invalid")
-    if raw.get("schema_version") == 3:
+    if raw.get("schema_version") in {3, 4}:
         return _validated_runtime_rebind_bundle_marker(store, raw)
     expected_manifest = store.manifest_path("internal")
     expected_launcher = store.bin_dir / "codex-internal-app"
@@ -3247,7 +3303,7 @@ def _recover_runtime_binding_rebind(
         store,
         raw_marker,
     )
-    if marker["schema_version"] == 3:
+    if marker["schema_version"] in {3, 4}:
         raw_entries = marker["artifacts"]
         if not isinstance(raw_entries, list):
             raise SwitchError(
@@ -3446,6 +3502,7 @@ def commit_runtime_binding_bundle(
     prepared_validator: Callable[[], None] | None = None,
     retire_executable_backup: bool = False,
     fault_hook: Callable[[str], None] | None = None,
+    bundle_scope: str = _RUNTIME_BINDING_BUNDLE_SCOPE_FULL,
 ) -> None:
     locked_store.revalidate()
     if input_validator is not None and not callable(input_validator):
@@ -3462,6 +3519,18 @@ def commit_runtime_binding_bundle(
         raise SwitchError(
             "Runtime binding bundle backup retirement requires an executable swap"
         )
+    if bundle_scope not in {
+        _RUNTIME_BINDING_BUNDLE_SCOPE_FULL,
+        _RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY,
+    }:
+        raise SwitchError("Runtime binding bundle scope is invalid")
+    if (
+        bundle_scope == _RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY
+        and executable_swap is None
+    ):
+        raise SwitchError(
+            "Runtime binding CLI-only bundle requires an executable swap"
+        )
     store = locked_store.store
     marker_path = _runtime_rebind_marker_path(store)
     if _runtime_rebind_marker_present(marker_path):
@@ -3469,6 +3538,7 @@ def commit_runtime_binding_bundle(
     ordered_artifacts = _validated_runtime_binding_bundle_artifacts(
         store,
         artifacts,
+        bundle_scope=bundle_scope,
     )
     executable_swap_marker: dict[str, object] | None = None
     if executable_swap is not None:
@@ -3535,10 +3605,16 @@ def commit_runtime_binding_bundle(
             phase="marker publication",
         )
     marker: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": (
+            4
+            if bundle_scope == _RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY
+            else 3
+        ),
         "state": "prepared",
         "artifacts": entries,
     }
+    if bundle_scope == _RUNTIME_BINDING_BUNDLE_SCOPE_CLI_ONLY:
+        marker["bundle_scope"] = bundle_scope
     if executable_swap_marker is not None:
         marker["executable_swap"] = executable_swap_marker
     write_json(marker_path, marker)
@@ -3847,6 +3923,25 @@ class LockedStoreMutation:
         if not self._active:
             raise SwitchError("Store mutation lock is not active")
         self._lock.revalidate()
+
+    def _shared_materializer_lease_descriptor(self, store: Store) -> int:
+        """Expose the active exact-root lease only to locked shared reconcile."""
+        if not self._active or store is not self.store:
+            raise SwitchError("Store mutation lock is not active for this store")
+        descriptor = self._lock._active_root_descriptor()
+        try:
+            current = store.root.lstat()
+            locked = os.fstat(descriptor)
+        except OSError as exc:
+            raise SwitchError("Profile store lock descriptor is unavailable") from exc
+        if (
+            stat.S_ISLNK(current.st_mode)
+            or not stat.S_ISDIR(current.st_mode)
+            or not stat.S_ISDIR(locked.st_mode)
+            or (current.st_dev, current.st_ino) != (locked.st_dev, locked.st_ino)
+        ):
+            raise SwitchError("Profile store lock descriptor does not match store root")
+        return descriptor
 
     def __exit__(
         self,
@@ -6334,21 +6429,17 @@ def _capture_shared_support_entry_set_state(
         if entry.parent != home:
             raise SwitchError(f"Shared support entry escaped its home: {entry}")
         identity_before = adapter.capture_identity(entry)
-        state = adapter.capture_state(entry)
         identity_after = adapter.capture_identity(entry)
         if (
             not isinstance(identity_before, dict)
-            or not isinstance(state, dict)
             or not isinstance(identity_after, dict)
             or identity_before != identity_after
-            or state.get("kind") != identity_before.get("kind")
         ):
             raise SwitchError(f"Shared support entry changed during capture: {entry}")
         records.append(
             {
                 "name": entry.name,
                 "role": role,
-                "state": state,
                 "identity": identity_before,
             }
         )
@@ -6423,21 +6514,30 @@ def _require_frozen_switch_inputs(
     *,
     phase: str,
     commit: bool,
+    complete: bool = True,
 ) -> None:
     for frozen in inputs:
         expected = _immutable_state_object(
             frozen.commit_state_json if commit else frozen.before_state_json
         )
-        current = _capture_switch_input_state(
-            adapter,
-            frozen.path,
-            capture_kind=frozen.capture_kind,
+        require_state = (
+            complete
+            or commit
+            or frozen.capture_kind != "path"
+            or expected.get("kind") != "directory"
         )
-        state_matches = (
-            isinstance(current, dict)
-            and _immutable_state_bytes(current)
-            == _immutable_state_bytes(expected)
-        )
+        state_matches = True
+        if require_state:
+            current = _capture_switch_input_state(
+                adapter,
+                frozen.path,
+                capture_kind=frozen.capture_kind,
+            )
+            state_matches = (
+                isinstance(current, dict)
+                and _immutable_state_bytes(current)
+                == _immutable_state_bytes(expected)
+            )
         identity_matches = True
         if not commit or not frozen.commit_replaces_identity:
             current_identity = adapter.capture_identity(frozen.path)
@@ -11706,16 +11806,25 @@ class _SwitchMutationJournal:
             raw_path = str(frozen.path)
             expected = self._frozen_expected_states[raw_path]
             expected_identity = self._frozen_expected_identities[raw_path]
-            current = _capture_switch_input_state(
-                self.adapter,
-                frozen.path,
-                capture_kind=frozen.capture_kind,
+            require_state = (
+                frozen.capture_kind != "path"
+                or expected.get("kind") != "directory"
             )
+            state_matches = True
+            if require_state:
+                current = _capture_switch_input_state(
+                    self.adapter,
+                    frozen.path,
+                    capture_kind=frozen.capture_kind,
+                )
+                state_matches = (
+                    isinstance(current, dict)
+                    and _immutable_state_bytes(current)
+                    == _immutable_state_bytes(expected)
+                )
             current_identity = self.adapter.capture_identity(frozen.path)
             if (
-                not isinstance(current, dict)
-                or _immutable_state_bytes(current)
-                != _immutable_state_bytes(expected)
+                not state_matches
                 or not isinstance(current_identity, dict)
                 or _immutable_state_bytes(current_identity)
                 != _immutable_state_bytes(expected_identity)
@@ -11846,6 +11955,8 @@ class _SwitchMutationJournal:
         phase: str,
         action: Callable[[], None],
         planned_after_state: Mapping[str, object] | None = None,
+        pre_action_guard: Callable[[], None] | None = None,
+        post_action_guard: Callable[[], None] | None = None,
     ) -> None:
         effect = self.begin(
             kind="filesystem",
@@ -11889,6 +12000,8 @@ class _SwitchMutationJournal:
                     f"{path}"
                 )
             self.validate_frozen_inputs(phase=f"after {phase} intent")
+            if pre_action_guard is not None:
+                pre_action_guard()
             action_started = True
             action()
             action_produced_identity = (
@@ -11919,6 +12032,8 @@ class _SwitchMutationJournal:
                 raise SwitchError(
                     f"Switch effect did not install its persisted stage: {path}"
                 )
+            if post_action_guard is not None:
+                post_action_guard()
             os.fsync(parent_descriptor)
         except BaseException:
             try:
@@ -13406,6 +13521,8 @@ def _recover_prepared_switch(
 def _read_strict_active_record(
     store: Store,
 ) -> tuple[dict[str, object], str | None, Path | None]:
+    from codex_switch_selection import active_profile_selection
+
     if not store.active_path.exists():
         return {}, None, None
     raw_active = read_json(store.active_path)
@@ -13417,6 +13534,7 @@ def _read_strict_active_record(
         raise SwitchError(
             f"active record has an invalid required profile: {store.active_path}"
         )
+    profile = active_profile_selection(active).cli_profile
     raw_home = active.get("codex_home") or active.get("live_codex_home")
     if not isinstance(raw_home, str) or not raw_home:
         raise SwitchError(
@@ -13428,6 +13546,179 @@ def _read_strict_active_record(
             f"active record home must be absolute: {store.active_path}: {raw_home}"
         )
     return active, profile, home
+
+
+_SPLIT_STOPPED_APP_REQUIREMENT = (
+    "fully quit ChatGPT/Codex App and keep it closed until the switch completes"
+)
+
+
+@dataclass(frozen=True)
+class _SplitAppRuntimeObservation:
+    running: bool
+    compatible: bool
+
+
+@dataclass(frozen=True)
+class _SplitAppEffectPlan:
+    action: str
+
+    @property
+    def requires_rebind(self) -> bool:
+        return self.action == "rebind"
+
+
+def _default_split_app_runtime_observation(
+    store: Store,
+    selection: object,
+    expected_app_cli: Path,
+    desktop_observation: object,
+) -> _SplitAppRuntimeObservation:
+    del selection
+    from codex_switch_io import run_quiet
+    from codex_switch_paths import equivalent_paths
+    from codex_switch_running_app import (
+        app_server_matches_expected_cli,
+        is_default_desktop_context,
+        running_codex_processes,
+    )
+
+    if not is_default_desktop_context(store):
+        return _SplitAppRuntimeObservation(running=False, compatible=True)
+
+    code, output = run_quiet(["/bin/ps", "-axo", "pid=,ppid=,args="])
+    if code != 0:
+        raise OSError("process inventory unavailable")
+    processes = tuple(
+        process
+        for process in running_codex_processes(process_output=output)
+        if getattr(process, "kind", "") in {"desktop", "app-server"}
+    )
+    gui_env = getattr(desktop_observation, "gui_env", None)
+    compatible = True
+    for process in processes:
+        kind = getattr(process, "kind", "")
+        if kind == "desktop":
+            if getattr(process, "host_kind", "") == "legacy-codex":
+                compatible = False
+                continue
+            process_app_cli = str(getattr(process, "app_cli_env", "") or "")
+            observed_app_cli = process_app_cli or str(gui_env or "")
+            if not equivalent_paths(observed_app_cli, str(expected_app_cli)):
+                compatible = False
+        elif not app_server_matches_expected_cli(
+            process,
+            str(expected_app_cli),
+        ):
+            compatible = False
+    return _SplitAppRuntimeObservation(
+        running=bool(processes),
+        compatible=compatible,
+    )
+
+
+def _observe_split_app_runtime(
+    store: Store,
+    request: TransactionRequest,
+    selection: object,
+    expected_app_cli: Path,
+    desktop_observation: object,
+) -> _SplitAppRuntimeObservation:
+    callback = request.options.get("split_app_is_running")
+    if callback is not None:
+        if not callable(callback):
+            raise SwitchError("Switch split_app_is_running must be callable")
+        running = callback(store, selection)
+        if type(running) is not bool:
+            raise OSError("process inventory returned an invalid result")
+        return _SplitAppRuntimeObservation(
+            running=running,
+            compatible=True,
+        )
+    return _default_split_app_runtime_observation(
+        store,
+        selection,
+        expected_app_cli,
+        desktop_observation,
+    )
+
+
+def _split_static_app_binding_is_compatible(
+    store: Store,
+    active: Mapping[str, object],
+    selection: object,
+    expected_app_cli: Path,
+    desktop_observation: object,
+    launch_agent_payload_bytes: bytes,
+) -> bool:
+    from codex_switch_launch import launch_agent_payload
+    from codex_switch_paths import equivalent_paths
+    from codex_switch_selection import active_profile_selection
+
+    try:
+        active_selection = active_profile_selection(active)
+    except SwitchError:
+        return False
+    active_app_cli = active.get("app_cli_path")
+    gui_env = getattr(desktop_observation, "gui_env", None)
+    service_loaded = getattr(desktop_observation, "service_loaded", None)
+    return bool(
+        getattr(selection, "app_profile", None) == "openai-official"
+        and active_selection.app_profile == "openai-official"
+        and isinstance(active_app_cli, str)
+        and equivalent_paths(active_app_cli, str(expected_app_cli))
+        and isinstance(gui_env, str)
+        and equivalent_paths(gui_env, str(expected_app_cli))
+        and service_loaded is True
+        and launch_agent_payload_bytes
+        == launch_agent_payload(store.launch_agent_label, expected_app_cli)
+    )
+
+
+def _derive_split_app_effect_plan(
+    store: Store,
+    request: TransactionRequest,
+    selection: object,
+    active: Mapping[str, object],
+    expected_app_cli: Path,
+    desktop_observation: object,
+    launch_agent_payload_bytes: bytes,
+    *,
+    dry_run: bool,
+) -> _SplitAppEffectPlan:
+    static_compatible = _split_static_app_binding_is_compatible(
+        store,
+        active,
+        selection,
+        expected_app_cli,
+        desktop_observation,
+        launch_agent_payload_bytes,
+    )
+    if dry_run:
+        return _SplitAppEffectPlan(
+            action="preserve" if static_compatible else "rebind"
+        )
+    try:
+        runtime = _observe_split_app_runtime(
+            store,
+            request,
+            selection,
+            expected_app_cli,
+            desktop_observation,
+        )
+    except Exception as exc:
+        raise SwitchError(
+            "Unable to prove ChatGPT/Codex App is stopped; "
+            f"{_SPLIT_STOPPED_APP_REQUIREMENT}"
+        ) from exc
+    if static_compatible and runtime.compatible:
+        return _SplitAppEffectPlan(action="preserve")
+    if runtime.running:
+        raise SwitchError(
+            "Supported split requires you to "
+            f"{_SPLIT_STOPPED_APP_REQUIREMENT}"
+        )
+    return _SplitAppEffectPlan(action="rebind")
 
 
 def _execute_switch(
@@ -13475,6 +13766,8 @@ def _execute_switch(
         transaction_switch_preview_lines,
     )
     from codex_switch_record import active_record
+    from codex_switch_runtime_binding import require_internal_app_readiness
+    from codex_switch_selection import requested_profile_selection
     from codex_switch_restore import create_switch_backup, finalize_backup
     from codex_switch_shell import (
         replace_managed_block,
@@ -13496,6 +13789,12 @@ def _execute_switch(
     )
     skip_shim = _switch_bool_option(request, "skip_shim", default=False)
     skip_app_cli = _switch_bool_option(request, "skip_app_cli", default=False)
+    selection = requested_profile_selection(
+        request.profile,
+        _switch_optional_string_option(request, "app_profile"),
+        skip_app_cli=skip_app_cli,
+    )
+    app_profile = selection.app_profile
     skip_launchctl = _switch_bool_option(
         request,
         "skip_launchctl",
@@ -13520,7 +13819,12 @@ def _execute_switch(
     manifest = store.load_manifest(request.profile)
     internal_manifest = store.load_manifest("internal")
     official_manifest = store.load_manifest("openai-official")
+    app_manifest = (
+        internal_manifest if app_profile == "internal" else official_manifest
+    )
     planning_inputs.finish(manifest_observations)
+    if app_profile == "internal":
+        require_internal_app_readiness(app_manifest)
     canonical_app_cli_path = _switch_optional_string_option(
         request,
         "canonical_app_cli_path",
@@ -13557,13 +13861,13 @@ def _execute_switch(
     planning_inputs.finish(
         (*codex_bin_alias_observations, *canonical_codex_bin_observations)
     )
-    raw_manifest_app_cli_path = str(manifest.get("app_cli_path", ""))
+    raw_manifest_app_cli_path = str(app_manifest.get("app_cli_path", ""))
     raw_manifest_app_cli = Path(raw_manifest_app_cli_path).expanduser()
     expected_internal_wrapper = managed_profile_app_cli_path(store, "internal")
     if canonical_app_cli_path is not None:
         canonical_app_cli = Path(canonical_app_cli_path).expanduser()
         if (
-            request.profile == "internal"
+            app_profile == "internal"
             and canonical_app_cli != expected_internal_wrapper
         ):
             raise SwitchError(
@@ -13574,7 +13878,7 @@ def _execute_switch(
             if canonical_app_cli.exists()
             else tuple()
         )
-        if request.profile == "internal" and not canonical_app_cli.exists():
+        if app_profile == "internal" and not canonical_app_cli.exists():
             manifest_app_cli_path = str(canonical_app_cli)
         else:
             manifest_app_cli_path = str(
@@ -13591,7 +13895,7 @@ def _execute_switch(
             else tuple()
         )
         planned_missing_internal_wrapper = (
-            request.profile == "internal"
+            app_profile == "internal"
             and config_mode == "shared"
             and not skip_app_cli
             and raw_manifest_app_cli.is_absolute()
@@ -13612,7 +13916,7 @@ def _execute_switch(
     active_observations = planning_inputs.begin(
         ((store.active_path, "active collision input"),)
     )
-    _active, active_profile, active_home = _read_strict_active_record(store)
+    active, active_profile, active_home = _read_strict_active_record(store)
     planning_inputs.finish(active_observations)
     homes = resolve_independent_homes(
         store,
@@ -13637,8 +13941,10 @@ def _execute_switch(
         homes.internal if request.profile == "internal" else homes.official
     )
     target_home = target_binding.path
+    app_binding = homes.internal if app_profile == "internal" else homes.official
+    app_home = app_binding.path
     if (
-        request.profile == "openai-official"
+        app_profile == "openai-official"
         and canonical_app_cli_path is not None
     ):
         updated_official_manifest = dict(
@@ -13647,7 +13953,7 @@ def _execute_switch(
                 official_manifest,
             )
         )
-        updated_official_manifest["codex_bin"] = codex_bin
+        updated_official_manifest["codex_bin"] = manifest_app_cli_path
         updated_official_manifest["app_cli_path"] = manifest_app_cli_path
         updated_official_manifest["runtime_binding"] = "canonical"
         updated_official_manifest.setdefault(
@@ -13658,6 +13964,35 @@ def _execute_switch(
         homes.manifest_updates["openai-official"] = (
             updated_official_manifest
         )
+    desktop_adapter = None
+    desktop_observation = None
+    app_effect_plan = _SplitAppEffectPlan(action="rebind")
+    if selection.is_split and not skip_app_cli:
+        launch_agent_observations = planning_inputs.begin(
+            ((store.launch_agent_path, "current App LaunchAgent binding"),)
+        )
+        try:
+            current_launch_agent_payload = store.launch_agent_path.read_bytes()
+        except OSError:
+            current_launch_agent_payload = b""
+        desktop_adapter = _switch_desktop_binding_adapter(store, request)
+        desktop_observation = desktop_adapter.observe(
+            skip_launchctl=skip_launchctl
+        )
+        app_effect_plan = _derive_split_app_effect_plan(
+            store,
+            request,
+            selection,
+            active,
+            Path(app_cli_path),
+            desktop_observation,
+            current_launch_agent_payload,
+            dry_run=dry_run,
+        )
+        planning_inputs.finish(launch_agent_observations)
+    app_effect_requires_rebind = (
+        not skip_app_cli and app_effect_plan.requires_rebind
+    )
     created_target_directories = _missing_parent_paths(
         target_home / ".codex-switch-target"
     )
@@ -13770,10 +14105,10 @@ def _execute_switch(
         raise SwitchError(f"Profile is missing config.toml: {config_path}")
     validate_toml(config_path)
     if (
-        request.profile == "internal"
+        app_profile == "internal"
         and (config_mode == "shared" or canonical_app_cli_path is not None)
     ):
-        app_cli_path = str(managed_profile_app_cli_path(store, request.profile))
+        app_cli_path = str(managed_profile_app_cli_path(store, app_profile))
     profile_config_text = build_profile_v2_config_text(
         request.profile,
         config_path,
@@ -13869,7 +14204,7 @@ def _execute_switch(
         (Path(codex_bin), "codex_bin"),
         (Path(app_cli_path), "app_cli_path"),
     ]
-    if request.profile == "internal":
+    if app_profile == "internal":
         planned_app_receipt_path = capability_receipt_path_for_launcher(
             Path(app_cli_path)
         )
@@ -13879,20 +14214,20 @@ def _execute_switch(
     wrapper_observations = planning_inputs.begin(
         tuple(wrapper_input_specs)
     )
-    if not skip_app_cli and should_refresh_profile_app_wrapper(
+    if app_effect_requires_rebind and should_refresh_profile_app_wrapper(
         store,
-        request.profile,
+        app_profile,
         app_cli_path,
     ):
-        planned_manifest = dict(manifest)
-        planned_manifest["codex_home"] = str(target_home)
-        if request.profile == "internal":
+        planned_manifest = dict(app_manifest)
+        planned_manifest["codex_home"] = str(app_home)
+        if app_profile == "internal":
             planned_manifest["codex_bin"] = codex_bin
         receipt_artifact = None
-        if request.profile == "internal":
+        if app_profile == "internal":
             if planned_app_receipt_path is None:
                 raise SwitchError("Internal capability receipt path is unavailable")
-            raw_receipt_path = manifest.get("app_capability_receipt_path")
+            raw_receipt_path = app_manifest.get("app_capability_receipt_path")
             receipt_path_matches = (
                 isinstance(raw_receipt_path, str)
                 and Path(raw_receipt_path).expanduser()
@@ -13906,12 +14241,12 @@ def _execute_switch(
                     else None
                 ),
                 expected_payload_sha256=(
-                    str(manifest.get("app_capability_receipt_sha256") or "")
+                    str(app_manifest.get("app_capability_receipt_sha256") or "")
                     if receipt_path_matches
                     else ""
                 ),
                 expected_schema_sha256=(
-                    str(manifest.get("app_schema_sha256") or "")
+                    str(app_manifest.get("app_schema_sha256") or "")
                     if receipt_path_matches
                     else ""
                 ),
@@ -13930,14 +14265,14 @@ def _execute_switch(
             )
         render_store = _SwitchWrapperRenderStore(
             store,
-            request.profile,
+            app_profile,
             planned_manifest,
         )
         with tempfile.TemporaryDirectory(prefix="codex-switch-wrapper-plan-") as temp_dir:
             rendered_path = Path(temp_dir) / "planned-app-wrapper"
             write_profile_app_wrapper(
                 store=render_store,  # type: ignore[arg-type]
-                name=request.profile,
+                name=app_profile,
                 app_cli_path=str(rendered_path),
                 codex_bin=codex_bin,
                 switch_scripts=Path(__file__).resolve().parent,
@@ -13963,7 +14298,7 @@ def _execute_switch(
     planning_inputs.finish(wrapper_observations)
 
     if (
-        request.profile == "internal"
+        app_profile == "internal"
         and (
             config_mode == "shared"
             or canonical_app_cli_path is not None
@@ -14041,6 +14376,17 @@ def _execute_switch(
                 mode=0o600,
             )
         )
+    if app_effect_requires_rebind:
+        planned_source_commit_states[store.launch_agent_path] = (
+            _expected_file_state(
+                store.launch_agent_path,
+                launch_agent_payload(
+                    store.launch_agent_label,
+                    Path(app_cli_path),
+                ),
+                mode=0o644,
+            )
+        )
     for name, updated_manifest in homes.manifest_updates.items():
         manifest_path = store.manifest_path(name)
         planned_source_commit_states[manifest_path] = _expected_json_file_state(
@@ -14087,6 +14433,9 @@ def _execute_switch(
     shared_stale_links: tuple[Path, ...] = tuple()
     shared_actions: tuple[str, ...] = tuple()
     shared_planned_states: dict[Path, dict[str, object]] = {}
+    desktop_state_sync_enabled = not selection.is_split
+    desktop_source: Path | None = None
+    desktop_state_target: Path | None = None
     desktop_state_planned: dict[str, object] | None = None
     desktop_state_payload: bytes | None = None
     desktop_state_mode = 0o600
@@ -14095,13 +14444,21 @@ def _execute_switch(
             shared_source_home = homes.official.path
             shared_target_home = homes.internal.path
             shared_prefer_link = True
-            shared_actions = (
+            internal_shared_actions = [
                 f"sync shared state from {shared_source_home} to {shared_target_home}",
-                "merge Desktop global settings state from "
-                f"{shared_source_home} to {shared_target_home}",
-                f"write managed internal config: {target_config_path}",
-                f"remove managed internal auth: {target_auth_path}",
+            ]
+            if desktop_state_sync_enabled:
+                internal_shared_actions.append(
+                    "merge Desktop global settings state from "
+                    f"{shared_source_home} to {shared_target_home}"
+                )
+            internal_shared_actions.extend(
+                (
+                    f"write managed internal config: {target_config_path}",
+                    f"remove managed internal auth: {target_auth_path}",
+                )
             )
+            shared_actions = tuple(internal_shared_actions)
         else:
             shared_source_home = homes.internal.path
             shared_target_home = homes.official.path
@@ -14119,11 +14476,15 @@ def _execute_switch(
             )
         shared_sources = tuple(shared_support_entries(shared_source_home))
         if request.profile == "openai-official":
-            shared_actions = (
+            official_shared_actions = [
                 f"sync shared state from {shared_source_home} to {shared_target_home}",
-                "merge Desktop global settings state from "
-                f"{shared_source_home} to {shared_target_home}",
-            )
+            ]
+            if desktop_state_sync_enabled:
+                official_shared_actions.append(
+                    "merge Desktop global settings state from "
+                    f"{shared_source_home} to {shared_target_home}"
+                )
+            shared_actions = tuple(official_shared_actions)
         desktop_source = desktop_global_state_path(shared_source_home)
         desktop_state_target = desktop_global_state_path(shared_target_home)
         shared_child_observations = planning_inputs.begin(
@@ -14140,7 +14501,11 @@ def _execute_switch(
                         )
                         for source in shared_sources
                     ),
-                    (desktop_source, "Desktop global-state source"),
+                    *(
+                        ((desktop_source, "Desktop global-state source"),)
+                        if desktop_state_sync_enabled
+                        else tuple()
+                    ),
                     *(
                         (
                             stale_link,
@@ -14152,7 +14517,9 @@ def _execute_switch(
             )
         )
         state_sources = list(shared_sources)
-        if desktop_source.exists() or desktop_source.is_symlink():
+        if desktop_state_sync_enabled and (
+            desktop_source.exists() or desktop_source.is_symlink()
+        ):
             state_sources.append(desktop_source)
         shared_source_states = {
             path: filesystem_adapter.capture_state(path) for path in state_sources
@@ -14225,11 +14592,15 @@ def _execute_switch(
                 )
             else:
                 shared_planned_states[target] = dict(target_state)
-        desktop_source_data = read_json_object_if_valid(desktop_source)
-        desktop_source_subset = desktop_global_state_settings_subset(
-            desktop_source_data
-        )
-        if desktop_source_subset:
+        if desktop_state_sync_enabled:
+            desktop_source_data = read_json_object_if_valid(desktop_source)
+            desktop_source_subset = desktop_global_state_settings_subset(
+                desktop_source_data
+            )
+        else:
+            desktop_source_data = {}
+            desktop_source_subset = {}
+        if desktop_source_subset and desktop_state_target is not None:
             desktop_target_observations = planning_inputs.begin(
                 (
                     (
@@ -14285,6 +14656,8 @@ def _execute_switch(
         for target, planned_state in shared_planned_states.items():
             planned_source_commit_states[target] = planned_state
         if desktop_state_planned is not None:
+            if desktop_state_target is None:
+                raise SwitchError("Desktop global-state target is unavailable")
             planned_source_commit_states[desktop_state_target] = (
                 desktop_state_planned
             )
@@ -14302,7 +14675,10 @@ def _execute_switch(
             target_auth_path,
             *(
                 [desktop_state_target]
-                if desktop_state_planned is not None
+                if (
+                    desktop_state_planned is not None
+                    and desktop_state_target is not None
+                )
                 else []
             ),
             *(shared_target_home / source.name for source in shared_sources),
@@ -14317,10 +14693,10 @@ def _execute_switch(
         ]
         if not skip_shim:
             backup_paths.append(store.bin_dir / "codex")
-        if not skip_app_cli:
+        if app_effect_requires_rebind:
             if should_refresh_profile_app_wrapper(
                 store,
-                request.profile,
+                app_profile,
                 app_cli_path,
             ):
                 backup_paths.append(Path(app_cli_path))
@@ -14368,10 +14744,10 @@ def _execute_switch(
     )
     if not skip_shim:
         backup_paths.append(store.bin_dir / "codex")
-    if not skip_app_cli:
+    if app_effect_requires_rebind:
         if should_refresh_profile_app_wrapper(
             store,
-            request.profile,
+            app_profile,
             app_cli_path,
         ):
             backup_paths.append(Path(app_cli_path))
@@ -14393,12 +14769,29 @@ def _execute_switch(
                 preview_actions.append(
                     f"ensure command-line codex PATH bootstrap: {shell_bootstrap}"
                 )
-        if not skip_app_cli:
+        if app_effect_requires_rebind:
             preview_actions.append(
                 f"update ChatGPT Desktop binding: {store.launch_agent_path}"
             )
         preview_lines = (
             f"switch to profile {request.profile}",
+            f"CLI profile: {request.profile}",
+            f"App profile: {app_profile}",
+            f"CLI binary: {codex_bin}",
+            f"App binary: {app_cli_path}",
+            *(
+                (f"App action: {app_effect_plan.action}",)
+                if selection.is_split
+                else tuple()
+            ),
+            *(
+                (
+                    "Stopped-App requirement: "
+                    f"{_SPLIT_STOPPED_APP_REQUIREMENT}",
+                )
+                if selection.is_split and app_effect_plan.requires_rebind
+                else tuple()
+            ),
             "Home plan:",
             f"- internal: {homes.internal.path} ({homes.internal.mode})",
             f"- openai-official: {homes.official.path} ({homes.official.mode})",
@@ -14434,7 +14827,7 @@ def _execute_switch(
             preview_actions.append(
                 f"write app capability receipt: {planned_app_receipt_path}"
             )
-        if not skip_app_cli:
+        if app_effect_requires_rebind:
             preview_actions.append(
                 f"update ChatGPT Desktop binding: {store.launch_agent_path}"
             )
@@ -14446,6 +14839,27 @@ def _execute_switch(
             backup_paths=backup_paths,
             mutation_actions=preview_actions,
         )
+        preview_lines = (
+            preview_lines[0],
+            f"CLI profile: {request.profile}",
+            f"App profile: {app_profile}",
+            f"CLI binary: {codex_bin}",
+            f"App binary: {app_cli_path}",
+            *(
+                (f"App action: {app_effect_plan.action}",)
+                if selection.is_split
+                else tuple()
+            ),
+            *(
+                (
+                    "Stopped-App requirement: "
+                    f"{_SPLIT_STOPPED_APP_REQUIREMENT}",
+                )
+                if selection.is_split and app_effect_plan.requires_rebind
+                else tuple()
+            ),
+            *preview_lines[1:],
+        )
     if dry_run:
         return TransactionReceipt(
             operation="switch",
@@ -14454,9 +14868,7 @@ def _execute_switch(
             backup_id=None,
         )
 
-    desktop_adapter = None
-    desktop_observation = None
-    if not skip_app_cli:
+    if not skip_app_cli and desktop_adapter is None:
         desktop_adapter = _switch_desktop_binding_adapter(store, request)
         desktop_observation = desktop_adapter.observe(skip_launchctl=skip_launchctl)
 
@@ -14483,7 +14895,12 @@ def _execute_switch(
         ),
     )
     shim_path = store.bin_dir / "codex" if not skip_shim else None
-    launch_agent_path = store.launch_agent_path if not skip_app_cli else None
+    active_launch_agent_path = (
+        store.launch_agent_path if not skip_app_cli else None
+    )
+    launch_agent_path = (
+        store.launch_agent_path if app_effect_requires_rebind else None
+    )
     active_payload = active_record(
         name=request.profile,
         codex_home=target_home,
@@ -14493,7 +14910,7 @@ def _execute_switch(
         shim_path=shim_path,
         shell_cli_path=codex_bin,
         app_cli_path=app_cli_path,
-        launch_agent_path=launch_agent_path,
+        launch_agent_path=active_launch_agent_path,
         home_mode=target_binding.mode,
         shared_sync_source=(
             shared_source_home if config_mode == "shared" else None
@@ -14501,6 +14918,7 @@ def _execute_switch(
         shared_sync_target=(
             shared_target_home if config_mode == "shared" else None
         ),
+        app_profile=app_profile,
     )
     active_commit_state = _expected_json_file_state(
         store.active_path,
@@ -14539,15 +14957,8 @@ def _execute_switch(
             frozen_switch_inputs,
             phase="after backup",
             commit=False,
+            complete=False,
         )
-        for source, expected_state in shared_source_states.items():
-            if not _states_match(
-                filesystem_adapter.capture_state(source),
-                expected_state,
-            ):
-                raise SwitchError(
-                    f"Shared support source changed after backup: {source}"
-                )
     except Exception as preapply_error:
         try:
             raw_prepared_manifest = read_json(backup_dir / "backup.json")
@@ -14700,7 +15111,11 @@ def _execute_switch(
             backup_dir,
             prepared_switch_manifest,
             frozen_inputs=frozen_switch_inputs,
-            desktop_observation=desktop_observation,
+            desktop_observation=(
+                desktop_observation
+                if app_effect_requires_rebind
+                else None
+            ),
             expected_path_states={
                 directory: target_directory_before_states[directory]
                 for directory in target_directories_to_ensure
@@ -14759,16 +15174,24 @@ def _execute_switch(
                 ),
             )
         if shared_target_home is not None:
-            for source, expected_state in shared_source_states.items():
-                if not _states_match(
-                    filesystem_adapter.capture_state(source),
-                    expected_state,
-                ):
-                    raise SwitchError(
-                        f"Shared support source changed before apply: {source}"
-                    )
-            for source in shared_sources:
+            for shared_index, source in enumerate(shared_sources, start=1):
                 shared_target = shared_target_home / source.name
+                expected_source_state = shared_source_states[source]
+
+                def require_shared_source(
+                    *,
+                    expected: Mapping[str, object] = expected_source_state,
+                    source_path: Path = source,
+                    phase: str,
+                ) -> None:
+                    if not _states_match(
+                        filesystem_adapter.capture_state(source_path),
+                        expected,
+                    ):
+                        raise SwitchError(
+                            f"Shared support source changed {phase}: {source_path}"
+                        )
+
                 shared_file_payload = shared_file_payloads.get(source)
                 if shared_file_payload is not None:
                     payload, mode = shared_file_payload
@@ -14792,11 +15215,22 @@ def _execute_switch(
                             phase="shared_support_sync",
                         )
                     )
+                if progress_callback is not None:
+                    progress_callback(
+                        "Applying shared support "
+                        f"[{shared_index}/{len(shared_sources)}]: {source.name}"
+                    )
                 switch_journal.apply_path(
                     shared_target,
                     phase="shared_support_sync",
                     planned_after_state=shared_planned_states[shared_target],
                     action=shared_action,
+                    pre_action_guard=lambda guard=require_shared_source: guard(
+                        phase="before apply"
+                    ),
+                    post_action_guard=lambda guard=require_shared_source: guard(
+                        phase="during apply"
+                    ),
                 )
             if desktop_state_payload is not None:
                 if desktop_state_planned is None:
@@ -14822,14 +15256,6 @@ def _execute_switch(
                         phase="stale_runtime_link_remove",
                     ),
                 )
-            for source, expected_state in shared_source_states.items():
-                if not _states_match(
-                    filesystem_adapter.capture_state(source),
-                    expected_state,
-                ):
-                    raise SwitchError(
-                        f"Shared support source changed during apply: {source}"
-                    )
         switch_journal.apply_path(
             target_config_path,
             phase="config_write",
@@ -14959,7 +15385,7 @@ def _execute_switch(
                         phase="shell_bootstrap_write",
                     ),
                 )
-        if not skip_app_cli:
+        if app_effect_requires_rebind:
             if (
                 planned_app_receipt_path is not None
                 and planned_app_receipt_payload is not None
@@ -15046,12 +15472,6 @@ def _execute_switch(
                 active_payload,
                 phase="active_write",
             ),
-        )
-        _require_frozen_switch_inputs(
-            filesystem_adapter,
-            frozen_switch_inputs,
-            phase="before backup finalize",
-            commit=True,
         )
         finalize_effect = switch_journal.begin(
             kind="finalize",
@@ -15224,7 +15644,11 @@ def _execute_switch(
                     filesystem_adapter.unbind_restore_parent_cleanup()
             except Exception as directory_cleanup_error:
                 rollback_failures.append(directory_cleanup_error)
-        if desktop_adapter is not None and desktop_observation is not None:
+        if (
+            app_effect_requires_rebind
+            and desktop_adapter is not None
+            and desktop_observation is not None
+        ):
             try:
                 desktop_adapter.rollback(
                     desktop_observation,

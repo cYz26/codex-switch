@@ -2323,6 +2323,156 @@ class ParityMethodCoverageTests(unittest.TestCase):
             ).healthy
         )
 
+    def test_item_ids_accepts_exact_native_resume_compatibility_without_adapter_coverage(
+        self,
+    ) -> None:
+        comparison = self.comparison(
+            normalized=True,
+            methods=frozenset(
+                {("client_request", "thread/resume")}
+            ),
+        )
+        resume = comparison.entry(
+            "client_request",
+            "thread/resume",
+        )
+        native_compatible = ProtocolInventoryComparison(
+            entries=(
+                replace(
+                    resume,
+                    compatible=True,
+                    reason_codes=(),
+                ),
+            )
+        )
+        exact = frozenset({"thread/resume.params.history"})
+
+        self.assertTrue(
+            self.evaluate(
+                protocol=native_compatible,
+                features=self.feature_comparison("item_ids"),
+                item_ids_observed_dependencies=exact,
+            ).healthy
+        )
+
+    def test_item_ids_native_resume_compatibility_proof_is_exact_and_consistent(
+        self,
+    ) -> None:
+        comparison = self.comparison(
+            normalized=True,
+            methods=frozenset(
+                {("client_request", "thread/resume")}
+            ),
+        )
+        resume = comparison.entry(
+            "client_request",
+            "thread/resume",
+        )
+        native_compatible = replace(
+            resume,
+            compatible=True,
+            reason_codes=(),
+        )
+        exact = frozenset({"thread/resume.params.history"})
+
+        def assert_item_ids_core_drift(
+            protocol: ProtocolInventoryComparison,
+            dependencies: frozenset[str] = exact,
+        ) -> None:
+            evaluation = self.evaluate(
+                protocol=protocol,
+                features=self.feature_comparison("item_ids"),
+                item_ids_observed_dependencies=dependencies,
+            )
+            self.assertFalse(evaluation.healthy)
+            self.assertTrue(
+                any(
+                    finding.category == "feature"
+                    and finding.code == "parity.feature.core_drift"
+                    and finding.message
+                    == "item_ids does not match parity policy."
+                    for finding in evaluation.findings
+                )
+            )
+
+        for missing_side in ("official", "internal"):
+            with self.subTest(missing_side=missing_side):
+                missing = ProtocolInventoryComparison(
+                    entries=(
+                        replace(
+                            native_compatible,
+                            official=(
+                                None
+                                if missing_side == "official"
+                                else resume.official
+                            ),
+                            internal=(
+                                None
+                                if missing_side == "internal"
+                                else resume.internal
+                            ),
+                        ),
+                    )
+                )
+                assert_item_ids_core_drift(missing)
+
+        contradictory = ProtocolInventoryComparison(
+            entries=(
+                replace(
+                    native_compatible,
+                    reason_codes=(
+                        "parity.protocol.required_incompatible",
+                    ),
+                ),
+            )
+        )
+        assert_item_ids_core_drift(contradictory)
+
+        self.assertIsNotNone(resume.official)
+        self.assertIsNotNone(resume.internal)
+        assert resume.official is not None
+        assert resume.internal is not None
+        for direction, method in (
+            ("client_notification", "thread/resume"),
+            ("client_request", "thread/not-resume"),
+        ):
+            with self.subTest(direction=direction, method=method):
+                wrong_method = ProtocolInventoryComparison(
+                    entries=(
+                        replace(
+                            native_compatible,
+                            direction=direction,
+                            method=method,
+                            official=_FixtureProtocolMethodRecord(
+                                direction=direction,
+                                method=method,
+                                schema_sha256=(
+                                    resume.official.schema_sha256
+                                ),
+                            ),
+                            internal=_FixtureProtocolMethodRecord(
+                                direction=direction,
+                                method=method,
+                                schema_sha256=(
+                                    resume.internal.schema_sha256
+                                ),
+                            ),
+                        ),
+                    )
+                )
+                assert_item_ids_core_drift(wrong_method)
+
+        assert_item_ids_core_drift(comparison)
+        assert_item_ids_core_drift(
+            ProtocolInventoryComparison(
+                entries=(native_compatible,)
+            ),
+            exact | frozenset({"turn/start.params.items"}),
+        )
+        assert_item_ids_core_drift(
+            ProtocolInventoryComparison(entries=())
+        )
+
     def test_multi_agent_v2_requires_final_typed_probe(self) -> None:
         protocol = ProtocolInventoryComparison(entries=())
         features = self.feature_comparison("multi_agent_v2")

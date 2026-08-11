@@ -1,0 +1,58 @@
+{
+  "checkedAt": "2026-08-04T09:12:56.952907+00:00",
+  "codexHome": "/Users/cY/.codex",
+  "ok": true,
+  "pluginRoot": "/Users/cY/.codex/plugins/cache/cy-codex-skills/dev-flow/0.3.0+codex.20260529145038",
+  "plugins": [
+    {
+      "changes": [],
+      "conflicts": [],
+      "controlPlane": {
+        "missingFiles": [],
+        "requiredFiles": [
+          "ENGINEERING_POLICY.md",
+          "EVIDENCE_TEMPLATE.md",
+          "REVIEW_CHECKLIST.md",
+          "TASK_LEDGER.md"
+        ],
+        "status": "current"
+      },
+      "missingProjectSkills": [],
+      "name": "dev-flow",
+      "pendingVersion": false,
+      "runtimeVersion": "0.3.0+codex.20260529145038",
+      "skillLayout": {
+        "applyCommand": [
+          "python3",
+          "/Users/cY/.codex/plugins/cache/cy-codex-skills/dev-flow/0.3.0+codex.20260529145038/scripts/devflow_runtime.pyz/activate_project_dependencies.py",
+          "--repo",
+          "/Users/cY/dev/codex-switch",
+          "--skip-official-installs",
+          "--migrate-official-skill-layout",
+          "--apply",
+          "--json"
+        ],
+        "dryRunCommand": [
+          "python3",
+          "/Users/cY/.codex/plugins/cache/cy-codex-skills/dev-flow/0.3.0+codex.20260529145038/scripts/devflow_runtime.pyz/activate_project_dependencies.py",
+          "--repo",
+          "/Users/cY/dev/codex-switch",
+          "--skip-official-installs",
+          "--migrate-official-skill-layout",
+          "--dry-run",
+          "--json"
+        ],
+        "items": [],
+        "legacyPathKind": "legacy_codex_skill_path",
+        "pathKind": "official_repo_skill_path",
+        "status": "current"
+      },
+      "staleProjectSkills": [],
+      "state": "present",
+      "storedVersion": "0.3.0+codex.20260529145038"
+    }
+  ],
+  "recommendation": "No project migration action needed.",
+  "repo": "/Users/cY/dev/codex-switch",
+  "status": "applied"
+}

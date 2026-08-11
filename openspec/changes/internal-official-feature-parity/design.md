@@ -71,6 +71,26 @@ check onto the current sequence.
 - openspec-routing: required and used
 - Open Questions: none
 
+### 2026-07-28 Installer Incident Routing Addendum
+
+- request kind: bug, compatibility, update-safety, and error-handling repair
+- workflow mode: Full OpenSpec in this existing change
+- capability-research: required / used; live manifest/wrapper/process
+  ownership, official/internal config and plugin parity, failed-switch
+  snapshots, `.zshrc`, retained candidates, installed-source identity, and the
+  current trusted installer were compared
+- root-cause-diagnosis: required / used; the first live mutation outside the
+  staged candidate was traced to inherited installer environment state
+- decision-resolution: used; the user selected Scheme A after the hermetic,
+  cleanup-only, and update-bypass alternatives were compared
+- implementation-planning: required / used; the target, completion contract,
+  slices, exact write set, recovery, rollback, and validation are recorded here
+- architecture-guidance: skipped; the existing staged installer seam remains
+  the owner and needs containment rather than a new subsystem
+- domain-language-modeling: skipped; installer scratch, live state, candidate,
+  bound binary, and backup already have unambiguous ownership
+- Open Questions: none
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -90,6 +110,8 @@ check onto the current sequence.
   exact config changes as one crash-recoverable runtime bundle.
 - Stage internal binary updates beside the bound binary and preserve
   last-known-good until parity promotion and post-promotion verification pass.
+- Make the external installer incapable of mutating live Codex config or shell
+  startup state while a sibling candidate is being prepared.
 - Make verify, Doctor, reports, packaging, and an explicitly authorized live
   Desktop Subagent acceptance consume the same parity evidence.
 
@@ -104,8 +126,12 @@ check onto the current sequence.
   official Desktop reference.
 - Adding a production dependency or a general JSON Schema compatibility
   framework.
-- Automatically restarting ChatGPT, running a live update, publishing a
-  release, committing, pushing, archiving, or deleting retained probe evidence.
+- Automatically or repeatedly restarting ChatGPT or running a live update
+  outside the exact authorized acceptance/recovery gates; publishing a release,
+  committing, pushing, archiving, or deleting retained probe evidence.
+- Changing Protocol Adapter behavior, plugin catalogs, Desktop global-state
+  projection policy, provider identity, credentials, or legacy skill layout as
+  part of the installer incident repair.
 
 ## Target State
 
@@ -117,6 +143,31 @@ receipt. Runtime rebind and internal update promote that complete bundle or
 leave the previous healthy runtime effective. Diagnostics load the same
 receipt, reject stale or foreign state, and expose optional work without
 claiming that it is core parity.
+
+### Installer Isolation and Recovery Target State
+
+Candidate installation runs inside a mode-0700 scratch root whose private
+`HOME` and `CODEX_HOME` absorb installer-owned config and shell writes. The
+validated candidate directory is first in the child `PATH`, so the current
+installer does not append it even inside the private shell profile. Cleanup is
+bound to the exact scratch root and runs for success, ordinary failure,
+`HUP`, `INT`, and `TERM`. The scratch config may transiently contain provider
+material required by the installer, but no scratch bytes, path, secret, or
+generated config survive the helper.
+
+The live `HOME`, live `CODEX_HOME/config.toml`, `.zshrc`, active profile
+record, internal manifest, generated Desktop wrapper, bound binary, and current
+runtime bundle are immutable throughout installer preparation. Candidate
+retention after a later parity failure remains unchanged, but retained
+candidates are inert because they never enter live PATH.
+
+One-time recovery is exact and reversible: preserve a timestamped copy of
+`.zshrc`; remove only the three confirmed two-line installer blocks that name
+the 2026-07-28 failed candidate paths; move only those three validated candidate
+directories into the same codex-switch backup root; then install the verified
+source and run one normal internal update/rebind/switch. Unrelated shell lines,
+plugins, configs, candidates, processes, and user data are not recovery
+targets.
 
 ### Task 8.3 Repair Target State
 
@@ -157,7 +208,7 @@ sets to construct a different policy view.
 | Current error | Exact planned disposition | Required proof |
 |---|---|---|
 | feature `multi_agent_v2` | provisional core, then satisfied | internal effective v2, exact overlay/config projection, and passed `typed_subagent_v2` probe |
-| feature `item_ids` | core dependency satisfied only for the observed resume path; remaining metadata drift queued | method-scoped `thread/resume` ID/opaque-reasoning adapter rule plus no other observed core dependency |
+| feature `item_ids` | core dependency satisfied only for the observed resume path; remaining metadata drift queued | current `thread/resume` is either natively compatible or method-scoped ID/opaque-reasoning adapter-covered, plus no other observed core dependency |
 | client `thread/resume` | adapter transform plus optional `input_audio` extension | exact rule digest and exact schema-pair optional record |
 | client `thread/realtime/start` | common method remains core; v3/handoff/initial-item additions are optional-unless-observed | exact schema pair and extension identifier |
 | client `turn/start` | common method remains core; `localAudio`/`audio` additions are optional-unless-observed | exact schema pair and extension identifier |
@@ -295,6 +346,31 @@ official Desktop core acceptance trace invokes or requires it. Any new drift
 without an explicit policy entry is `unclassified` and unhealthy. This prevents
 a newly added official feature or method from silently entering the optional
 queue.
+
+### Decision: Native compatibility and adapter coverage are alternative exact proofs
+
+Internal 0.145.0 changes `item_ids` from the official `removed/default-on`
+metadata to `under-development/default-off`, but its current
+`client_request:thread/resume` schema is natively compatible with the official
+producer. The method comparator therefore reports `compatible=true` with zero
+reason codes, and `build_method_coverage` correctly emits no record because
+there is no incompatible method to cover.
+
+For the exact acceptance-trace dependency
+`thread/resume.params.history`, parity SHALL treat these as alternative
+proofs:
+
+1. both current schemas contain `client_request:thread/resume` and the
+   direction-aware comparator proves native compatibility; or
+2. the current method is incompatible only in ways discharged by the exact
+   `thread/resume` adapter rule and its schema-bound method-coverage record.
+
+This is deliberately not a generic “no coverage means compatible” fallback.
+The policy reads the exact current comparison entry and requires both sides
+plus `compatible=true`. A missing side, incompatible entry without accepted
+coverage, stale/broader coverage, a different method, or any extra observed
+`item_ids` dependency remains an error. Receipt construction still binds the
+full protocol inventory digests, so the native proof expires on schema change.
 
 Alternative A was declaring every raw schema or stage difference core. It was
 rejected because documentation and additive optional changes would make every
@@ -463,8 +539,10 @@ promotion.
 `update-internal` becomes prepare-then-promote:
 
 1. Resolve the bound internal binary and intended semantic version.
-2. Run the trusted team installer with `CODEX_INSTALL_DIR` set to a private
-   sibling staging directory instead of the bound directory.
+2. Create a mode-0700 disposable installer root, use private child `HOME` and
+   `CODEX_HOME`, prepend the validated sibling candidate to the child `PATH`,
+   and run the trusted team installer with `CODEX_INSTALL_DIR` set to that
+   candidate instead of the bound directory.
 3. Validate the candidate executable, version, mode, code signature where
    applicable, generated schema, capability receipt, parity inventory, overlay,
    config projection, and bounded behavior probes.
@@ -477,6 +555,13 @@ promotion.
    the bound path, promote the runtime bundle, mark committed, and run the
    post-promotion binding/parity handshake.
 7. Retire the old backup only after the handshake succeeds.
+
+The installer root is not a promotion artifact. An exact cleanup trap removes
+it on success, ordinary failure, `HUP`, `INT`, or `TERM`; cleanup refuses a
+foreign or empty path. The live parent environment is never rewritten. The
+candidate remains under the existing validated sibling policy and retains the
+existing failure-retention behavior, but it cannot become a shell-selected
+binary merely because installation ran.
 
 Recovery accepts only the expected old/new binary digests and exact sibling
 paths. A `prepared` marker restores the old binary and old runtime bundle; a
@@ -492,6 +577,13 @@ deletion. It was rejected because the bound path is still unavailable or
 partially replaced while the installer and parity probes run. Alternative B was
 copying a large binary into the text journal. It was rejected because sibling
 rename state with digest validation is smaller and recoverable.
+
+For the 2026-07-28 incident, a cleanup-only repair was rejected because the
+next update would recreate the mutation, and bypassing internal update was
+rejected because it would leave the configured backend stale and parity
+evidence incomplete. Hermetic installer execution is the systemic repair;
+precise backup-and-move recovery addresses only the already-created live
+residue.
 
 ### Decision 8: Diagnostics and packaging consume, but do not recreate, policy
 
@@ -553,6 +645,13 @@ this gate.
   config to all-old or all-new state.
 - Internal update does not replace or retire last-known-good before candidate
   parity and post-promotion handshake pass.
+- Installer preparation leaves live shell/config/profile/runtime state
+  byte-for-byte unchanged on success and every pre-promotion failure.
+- Installer scratch is private, exact-cleaned on all supported exits, and
+  retains no generated config or credential-bearing material.
+- The one-time live recovery changes only the confirmed installer blocks and
+  failed candidates, preserves recoverable backups, and leaves unrelated
+  settings/plugins untouched.
 - Status, Doctor, verify, reports, and packaged runtime agree on receipt health
   and stable finding codes.
 - Focused parity, protocol, runtime, transaction, profile, verify, and
@@ -604,6 +703,12 @@ queue. It is never silently emulated or promoted to the Critical Path.
   recovery.
 - [Binary promotion crosses the store and install directory] -> restrict it to
   validated sibling paths and exact digests; foreign state blocks recovery.
+- [The trusted installer writes config and shell state by design] -> give it a
+  private `HOME`/`CODEX_HOME`, put the candidate first in its child PATH, and
+  regression-test live sentinels at the public update seam.
+- [Scratch config can contain installation credentials] -> use a private
+  mode-0700 root, never log its content, and exact-clean it on every supported
+  exit.
 - [Live Subagent behavior depends on the provider] -> keep it behind an
   explicit Human Gate and require both behavioral marker and runtime ownership
   evidence.
@@ -627,18 +732,26 @@ Rollback restores the old binary when update owns it and restores every old
 text artifact from the journal. The configured source catalog is never a
 rollback target because parity never modifies it.
 
+Before the authorized 2026-07-28 retry, copy the live `.zshrc` into a private
+timestamped codex-switch backup root, record its hash/mode, remove only the
+three confirmed installer blocks, and move the exact three failed candidate
+directories into that root. If any path, ownership, mode, or block text differs
+from preflight, stop without editing. The backup remains recoverable; this
+change authorizes no deletion.
+
 ## Continuation Policy
 
-- Current boundary: planning only; stop for user review after strict OpenSpec
-  and workflow validation.
+- Current boundary: Scheme A was explicitly approved on 2026-07-28; execute the
+  installer-isolation tasks serially after strict planning validation.
 - Execution policy after approval: `auto-until-terminal`.
 - Canonical execution source: this change's `tasks.md`.
 - Select only the next dependency-ready parity task after its predecessor's
   RED/GREEN evidence and main-agent review pass.
 - Genuine Human Gates: broader classification/overlay policy, public CLI
   expansion, provider/model/endpoint/auth change, dependency addition, live
-  internal update, ChatGPT restart/Desktop task, destructive cleanup, release,
-  commit, push, and archive.
+  Desktop provider task, destructive cleanup, release, commit, push, and
+  archive. The exact one-time install/update/rebind/switch and bounded ChatGPT
+  restart recorded above are already authorized; any broader live effect stops.
 - Ordinary successful items continue with `CONTINUE_NEXT_ITEM`; unexpected
   production-contract failure uses `BLOCKED_AWAITING_HUMAN`; optional findings
   use `DEFER_AND_CONTINUE`; bounded in-scope guards use

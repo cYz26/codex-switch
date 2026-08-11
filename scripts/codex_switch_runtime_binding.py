@@ -13,12 +13,20 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from codex_switch_constants import SwitchError
+from codex_switch_shared_configuration import (
+    preflight_internal_shared_configuration,
+)
+from codex_switch_update_policy import parse_semantic_version
 
 
 CURRENT_CHATGPT_BUNDLE_ID = "com.openai.codex"
 _MAX_INTERNAL_GENERATION_MANIFEST_BYTES = 1024 * 1024
 _MAX_INTERNAL_GENERATION_ARTIFACT_BYTES = 16 * 1024 * 1024
+_MAX_INTERNAL_GENERATION_EXECUTABLE_BYTES = 2 * 1024 * 1024 * 1024
 _INTERNAL_PARITY_MANIFEST_PREFIX = "parity_"
+_INFORMATIONAL_INTERNAL_ARGS = frozenset(
+    {"-h", "--help", "-V", "--version"}
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +130,14 @@ class InternalRuntimeGeneration:
     overlay_sha256: str
 
 
+@dataclass(frozen=True)
+class InternalCliRuntimeGeneration:
+    backend_cli: Path
+    codex_home: Path
+    backend_sha256: str
+    backend_version: str
+
+
 class RuntimeBindingError(SwitchError):
     def __init__(
         self,
@@ -192,6 +208,33 @@ def _generation_error(message: str) -> RuntimeBindingError:
     return RuntimeBindingError(
         "binding.internal.generation_invalid",
         f"Internal runtime generation invalid: {message}",
+    )
+
+
+def _cli_generation_error(message: str) -> RuntimeBindingError:
+    return RuntimeBindingError(
+        "binding.internal.cli_generation_invalid",
+        f"Internal CLI generation invalid: {message}",
+    )
+
+
+def require_internal_app_readiness(
+    manifest: Mapping[str, object],
+) -> None:
+    readiness = manifest.get("internal_app_readiness")
+    has_cli_generation = "internal_cli_generation" in manifest
+    if readiness is None and not has_cli_generation:
+        return
+    if readiness == "unverified":
+        raise RuntimeBindingError(
+            "internal.app_readiness.unverified",
+            "internal.app_readiness.unverified: the current internal backend "
+            "was promoted for CLI-only use and is not verified for Codex App",
+        )
+    raise RuntimeBindingError(
+        "internal.app_readiness.invalid",
+        "internal.app_readiness.invalid: internal App readiness metadata is "
+        "missing or invalid",
     )
 
 
@@ -364,6 +407,108 @@ def _generation_file_digest(
     return payload, hashlib.sha256(payload).hexdigest()
 
 
+def _generation_executable_digest(
+    path: Path,
+    *,
+    label: str,
+    max_bytes: int = _MAX_INTERNAL_GENERATION_EXECUTABLE_BYTES,
+) -> tuple[int, str]:
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise _generation_error(f"{label} is missing or unreadable") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise _generation_error(
+            f"{label} must be a regular non-symlink executable"
+        )
+    if before.st_mode & 0o111 == 0:
+        raise _generation_error(f"{label} is not executable")
+    if before.st_size > max_bytes:
+        raise _generation_error(
+            f"{label} exceeds the executable size limit"
+        )
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        raise _generation_error(f"{label} cannot be opened safely") from exc
+    try:
+        opened = os.fstat(descriptor)
+        identity = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mode,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_mode & 0o111 == 0
+            or opened.st_size > max_bytes
+            or identity
+            != (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mode,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            )
+        ):
+            raise _generation_error(
+                f"{label} identity changed before executable read"
+            )
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise _generation_error(
+                    f"{label} exceeds the executable size limit"
+                )
+            digest.update(chunk)
+        completed = os.fstat(descriptor)
+        try:
+            after = path.lstat()
+        except OSError as exc:
+            raise _generation_error(
+                f"{label} changed during executable read"
+            ) from exc
+        if (
+            (
+                completed.st_dev,
+                completed.st_ino,
+                completed.st_size,
+                completed.st_mode,
+                completed.st_mtime_ns,
+                completed.st_ctime_ns,
+            )
+            != identity
+            or (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mode,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            != identity
+            or total != opened.st_size
+        ):
+            raise _generation_error(
+                f"{label} changed during executable read"
+            )
+        return total, digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
 def _require_generation_path(
     observed: object,
     expected: Path,
@@ -432,6 +577,85 @@ def manifest_has_internal_runtime_generation(
     )
 
 
+def manifest_has_internal_cli_generation(
+    manifest: Mapping[str, object],
+) -> bool:
+    return "internal_cli_generation" in manifest
+
+
+def validate_internal_cli_runtime_generation(
+    *,
+    manifest: Mapping[str, object],
+    fallback_home: Path,
+    fallback_backend: Path,
+) -> InternalCliRuntimeGeneration:
+    raw_generation = manifest.get("internal_cli_generation")
+    expected_fields = {
+        "schema_version",
+        "scope",
+        "backend_sha256",
+        "backend_version",
+    }
+    if (
+        not isinstance(raw_generation, Mapping)
+        or set(raw_generation) != expected_fields
+    ):
+        raise _cli_generation_error("metadata fields are invalid")
+    if raw_generation.get("schema_version") != 1:
+        raise _cli_generation_error("schema version is invalid")
+    if raw_generation.get("scope") != "cli-only":
+        raise _cli_generation_error("scope is invalid")
+    if manifest.get("internal_app_readiness") != "unverified":
+        raise _cli_generation_error("App readiness is not unverified")
+    expected_digest = raw_generation.get("backend_sha256")
+    if (
+        not isinstance(expected_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+    ):
+        raise _cli_generation_error("backend digest is invalid")
+    backend_version = raw_generation.get("backend_version")
+    if (
+        not isinstance(backend_version, str)
+        or parse_semantic_version(backend_version) is None
+    ):
+        raise _cli_generation_error("backend version is invalid")
+    backend = _canonical_generation_path(
+        manifest.get("codex_bin"),
+        label="CLI backend",
+    )
+    expected_backend = _canonical_generation_path(
+        fallback_backend,
+        label="fallback CLI backend",
+    )
+    if backend != expected_backend:
+        raise _cli_generation_error(
+            "backend path does not match the managed shell fallback"
+        )
+    if not _is_regular_executable(backend, allow_symlink=False):
+        raise _cli_generation_error(
+            "backend is not a regular non-symlink executable"
+        )
+    _backend_size, observed_digest = _generation_executable_digest(
+        backend,
+        label="CLI backend",
+    )
+    if observed_digest != expected_digest:
+        raise _cli_generation_error(
+            "backend digest does not match the manifest"
+        )
+    raw_home = manifest.get("codex_home")
+    home = _canonical_generation_path(
+        raw_home if isinstance(raw_home, str) and raw_home else fallback_home,
+        label="CLI CODEX_HOME",
+    )
+    return InternalCliRuntimeGeneration(
+        backend_cli=backend,
+        codex_home=home,
+        backend_sha256=expected_digest,
+        backend_version=backend_version,
+    )
+
+
 def validate_internal_runtime_generation(
     *,
     store_root: Path,
@@ -458,6 +682,7 @@ def validate_internal_runtime_generation(
         ),
         label="manifest",
     )
+    require_internal_app_readiness(manifest)
 
     expected_launcher = (
         canonical_store / "bin" / "codex-internal-app"
@@ -554,7 +779,7 @@ def validate_internal_runtime_generation(
         capability_receipt.get("backend_sha256"),
         label="capability backend",
     )
-    _backend_payload, observed_backend_digest = _generation_file_digest(
+    _backend_size, observed_backend_digest = _generation_executable_digest(
         backend,
         label="backend",
     )
@@ -1319,6 +1544,32 @@ def _internal_generation_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _is_informational_internal_invocation(
+    backend_args: Sequence[str],
+) -> bool:
+    return bool(backend_args) and all(
+        argument in _INFORMATIONAL_INTERNAL_ARGS
+        for argument in backend_args
+    )
+
+
+def _require_cli_ready_shared_configuration(receipt: object) -> None:
+    if getattr(receipt, "cli_ready", False):
+        return
+    codes = tuple(
+        str(getattr(finding, "code", "")).strip()
+        for finding in getattr(receipt, "findings", ())
+        if str(getattr(finding, "code", "")).strip()
+    )
+    detail = ", ".join(codes) if codes else str(
+        getattr(receipt, "status", "not-ready")
+    )
+    raise SwitchError(
+        "shared_configuration.not_cli_ready: internal CLI preflight "
+        f"did not produce a ready generation ({detail})"
+    )
+
+
 def _run_internal_generation_command(
     argv: Sequence[str] | None = None,
 ) -> int:
@@ -1358,19 +1609,38 @@ def _run_internal_generation_command(
             ),
             label="manifest",
         )
-        generation = (
+        cli_generation = (
+            validate_internal_cli_runtime_generation(
+                manifest=manifest,
+                fallback_home=args.fallback_home,
+                fallback_backend=args.fallback_backend,
+            )
+            if manifest_has_internal_cli_generation(manifest)
+            else None
+        )
+        app_generation = (
             validate_internal_runtime_generation(
                 store_root=canonical_store,
                 fallback_home=args.fallback_home,
             )
-            if manifest_has_internal_runtime_generation(manifest)
+            if cli_generation is None
+            and manifest_has_internal_runtime_generation(manifest)
             else None
         )
         backend_args = list(args.backend_args)
         if backend_args and backend_args[0] == "--":
             backend_args = backend_args[1:]
         environment = os.environ.copy()
-        if generation is None:
+        if cli_generation is not None:
+            backend = cli_generation.backend_cli
+            environment["CODEX_HOME"] = str(cli_generation.codex_home)
+            for name in (
+                "CODEX_SWITCH_CAPABILITY_RECEIPT",
+                "CODEX_SWITCH_EXPECTED_SCHEMA_SHA256",
+                "CODEX_SWITCH_EXPECTED_RECEIPT_SHA256",
+            ):
+                environment.pop(name, None)
+        elif app_generation is None:
             backend = _canonical_generation_path(
                 args.fallback_backend,
                 label="legacy backend",
@@ -1388,17 +1658,24 @@ def _run_internal_generation_command(
             ):
                 environment.pop(name, None)
         else:
-            backend = generation.backend_cli
-            environment["CODEX_HOME"] = str(generation.codex_home)
+            backend = app_generation.backend_cli
+            environment["CODEX_HOME"] = str(app_generation.codex_home)
             environment["CODEX_SWITCH_CAPABILITY_RECEIPT"] = str(
-                generation.capability_receipt_path
+                app_generation.capability_receipt_path
             )
             environment["CODEX_SWITCH_EXPECTED_SCHEMA_SHA256"] = (
-                generation.schema_sha256
+                app_generation.schema_sha256
             )
             environment["CODEX_SWITCH_EXPECTED_RECEIPT_SHA256"] = (
-                generation.capability_receipt_sha256
+                app_generation.capability_receipt_sha256
             )
+        if not _is_informational_internal_invocation(backend_args):
+            shared_receipt = preflight_internal_shared_configuration(
+                store_root=canonical_store,
+                internal_home=Path(environment["CODEX_HOME"]),
+                backend_args=tuple(backend_args),
+            )
+            _require_cli_ready_shared_configuration(shared_receipt)
         try:
             os.execve(
                 backend,

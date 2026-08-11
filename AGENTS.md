@@ -2,9 +2,9 @@
 
 ## Purpose
 
-This repository uses a Codex-first development workflow with GSD-style planning, OpenSpec change management, engineering discipline, and plan-first gates.
-
-Do not implement non-trivial changes directly from chat memory.
+This repository uses a Codex-first, plan-first workflow. Durable repository
+artifacts, not chat memory or external skill scratch files, are the source of
+truth. Do not implement a non-trivial change from chat memory alone.
 
 ## Codex Internal Binary Upgrade Context
 
@@ -28,31 +28,43 @@ Before treating internal mode as healthy after an internal binary update:
 
 ## Workflow Ownership
 
-- GSD owns roadmap, milestones, phases, and phase verification.
-- OpenSpec owns behavior-level proposal, specs, design, tasks, verification, sync, and archive.
-- Engineering discipline governs clarification, brainstorming, planning, TDD, review, and finishing.
-- Codex planning behavior is required before major design or implementation boundaries.
+- OpenSpec owns behavior proposal, design, specs, tasks, verification, sync,
+  and archive.
+- DevFlow owns intake, routing, readiness, execution ledgers, evidence, review,
+  release gates, and state below `.planning/devflow/`.
+- Matt skills provide bounded engineering primitives only. They never own the
+  workflow, canonical plans, task state, release, or archive.
+- `TASK_LEDGER.md` owns sequencing when an OpenSpec task list is not the active
+  execution ledger.
+
+The active configuration is minimal:
+
+```json
+{"workflow":{"mode":"full-openspec"}}
+```
+
+OpenSpec 1.7 contributes exactly six project-local skills:
+`openspec-propose`, `openspec-explore`, `openspec-apply-change`,
+`openspec-update-change`, `openspec-sync-specs`, and
+`openspec-archive-change`. DevFlow generates and verifies them in isolation
+before copying them to `.agents/skills/`.
 
 ## Project Control Plane
 
-Use these checked-in files as the durable execution control plane:
+- `AGENTS.md`: durable workflow and routing rules.
+- `ENGINEERING_POLICY.md`: dependency, testing, evidence, review, and release
+  policy.
+- `TASK_LEDGER.md`: Goal Contract, task owner, write set, evidence, review
+  gate, status, execution log, and the cross-change Incidental Finding Register.
+- `EVIDENCE_TEMPLATE.md`: TDD and verification evidence format.
+- `REVIEW_CHECKLIST.md`: correctness, scope, release, and archive checks.
+- `.planning/devflow/STATE.md`: namespaced workflow state.
 
-- `AGENTS.md` routes Codex to the workflow and required skills.
-- `ENGINEERING_POLICY.md` records durable engineering, dependency, testing, evidence, review, and release policy.
-- `TASK_LEDGER.md` records the Goal Contract, task decomposition, owner, write set, required evidence, review gate, status, and execution log.
-- `EVIDENCE_TEMPLATE.md` defines the evidence format for TDD, validation commands, changed files, risks, and reviewer notes.
-- `REVIEW_CHECKLIST.md` defines correctness, verification, scope, release, and archive readiness checks.
-
-Do not treat chat context or Superpowers scratch files as the source of truth
-when a control-plane file is required.
+Canonical behavior and plans live in OpenSpec. Canonical execution and proof
+live in the ledger, state, and verification records. External notes do not
+satisfy a gate until approved content is promoted into those artifacts.
 
 ## Capability Routing
-
-Route work through stable capabilities rather than whichever provider happens
-to be globally installed: decision resolution, implementation planning,
-test-first execution, root-cause diagnosis, change review, completion proof,
-execution orchestration, architecture guidance, goal definition, and roadmap
-lifecycle.
 
 ### Matt Methodology Contract
 
@@ -72,252 +84,117 @@ all canonical writes. Do not invoke Matt skills that create their own end-to-end
 workflow, implementation queue, spec system, ticket system, or project setup.
 Project-local copies may apply only the checked-in deterministic adaptations
 that replace excluded upstream workflow handoffs with DevFlow/OpenSpec routes;
-vendored upstream bytes remain immutable provenance evidence. Missing or
-drifted required Matt resources fail closed; unrelated Matt skills never affect
-readiness.
+vendored upstream bytes remain immutable provenance evidence.
+Missing or drifted required Matt resources fail closed; unrelated Matt skills
+never affect readiness.
 
 Stable capability mappings live in
 `dev/plugins/dev-flow/scripts/workflow_methodology.py`, and workflow-mode
 routing lives in `docs/routing.matrix.json`. Do not add project-selectable
 methodology variants.
 
-Until provider-state migration is explicitly approved and succeeds, the
-current mappings in Workflow Ownership and the project-local skill links remain
-the durable migration input. Do not interpret a missing `.dev-flow.json`, an
-inferred provider, or an ambiguous provider source as authorization to activate,
-deactivate, or rewrite provider links. Provider selection persistence, lock
-writes, dependency changes, and provider migration require an explicit apply
-gate.
-
-## Superpowers Artifact Mapping
-
-Superpowers provides process discipline for brainstorming, planning, TDD, and verification gates. OpenSpec, GSD, and DevFlow planning files are the canonical artifacts for this workflow.
-
-- If `superpowers:brainstorming` produces design notes for behavior, API, data, integration, compatibility, or error-handling work, map the approved content into `openspec/changes/<change-id>/proposal.md`, `design.md`, and `specs/`.
-- If `superpowers:writing-plans` produces task guidance for an OpenSpec change, map it into `openspec/changes/<change-id>/tasks.md`, including Capability Slices, Execution Ledger, Acceptance Criteria, and Validation Commands.
-- If `superpowers:writing-plans` supports GSD phase or milestone work, map it into `.planning/phases/.../PLAN.md` or a DevFlow-approved ledger.
-- Treat `docs/superpowers/specs/...` and `docs/superpowers/plans/...` as drafts, review notes, or inputs unless their content has been copied into the canonical artifacts above.
-- If Superpowers notes conflict with OpenSpec, GSD, or DevFlow files, update or discard the notes; do not let them become a second source of truth.
-
-## GSD/OpenSpec Skills
-
-GSD and OpenSpec are activated project-locally through `.agents/skills/`; do not enable them globally for this workflow. Legacy `.codex/skills/` entries should be treated as migration inputs, not as the normal target layout.
-
-- Use `openspec-explore` when requirements, compatibility, or behavior boundaries are unclear.
-- Use `openspec-propose` before implementing user-visible behavior, public API, data model, permission, persistence, integration, migration, error handling, or compatibility changes.
-- Use `openspec-apply-change` when executing approved OpenSpec tasks.
-- Use `openspec-archive-change` only after verification evidence is recorded and the archive gate is clear.
-- Use `gsd-discuss-phase` and `gsd-plan-phase` for multi-stage work, phase planning, broad refactors, or milestone planning.
-- Use `gsd-execute-phase` only when executing an approved phase plan, and `gsd-verify-work` before marking a phase shipped.
-
-## Brainstorm and Planning Flow
-
-- Use `superpowers:brainstorming` before committing to a solution when goals, constraints, tradeoffs, or implementation shape are still open.
-- Use `capability-research` when a solution depends on current, external, platform, plugin, API, hook, CLI, installed-cache, or local-vs-platform capability evidence; the detailed evidence workflow lives in that skill.
-- Use `openspec-explore` during brainstorming when the uncertainty is about user-visible behavior, compatibility, requirements, or acceptance criteria.
-- Use `gsd-discuss-phase` during brainstorming when the uncertainty is about milestones, sequencing, scope boundaries, or phase structure.
-- Use `superpowers:writing-plans` before writing a non-trivial implementation plan, phase plan, migration plan, or refactor plan.
-- Use `ai-native-tech-plan` when generating technical plans, implementation plans, architecture plans, Codex execution plans, workflow plans, or anti-partial-delivery plans.
-- Use `openspec-propose` after brainstorming when behavior-level artifacts need to become proposal, design, specs, and tasks.
-- Use `gsd-plan-phase` after brainstorming when the work should become an approved phase plan.
-- Do not move from brainstorming/planning into implementation until the chosen plan, scope, verification approach, and open risks are recorded.
-
 ## Intake and Planning
 
-- Use `feature-intake` for a new feature, bug, refactor, migration, tooling
-  change, or workflow repair.
-- Use `capability-research` when a solution depends on current or external
-  platform, plugin/runtime, API, hook, CLI, cache, or local-versus-platform
-  evidence.
-- For research, design, architecture, product shape, or a technical plan,
-  record a Skill Routing Ledger in the canonical plan or task ledger. Include
-  request kind, workflow mode, required capabilities, OpenSpec/GSD route, and
-  explicit `required` / `used` / `skipped` status for capability research,
-  decision resolution or grilling, implementation planning, and architecture
-  guidance.
-- Open questions make decision resolution required. Keep the artifact in draft
-  until evidence or one-question-at-a-time decision work resolves them.
-- Use `ai-native-tech-plan` for a non-trivial technical or migration plan and
-  `change-plan` to complete OpenSpec proposal, design, specs, and tasks.
-- Use `openspec-update-change` for planning-only revisions to an existing
-  change and `openspec-apply-change` only for approved implementation.
+- Use `feature-intake` for feature, bug, refactor, migration, tooling, or
+  workflow-repair intake.
+- Use `capability-research` when the solution depends on current external,
+  platform, plugin, API, hook, CLI, installed-cache, or local-versus-platform
+  evidence; the detailed evidence workflow lives in that skill.
+- Use `grilling` when unresolved decisions remain after local evidence
+  gathering. Ask one question at a time, include a recommended answer, and
+  record resolved decisions in the canonical artifact.
+- Use `ai-native-tech-plan` for the technical execution contract.
+- Use `change-plan` and `openspec-propose` for proposal, design, specs, and
+  tasks. Use `openspec-update-change` for planning-only revisions.
+- Use `openspec-apply-change` only after the change is approved.
+
+For research, design, architecture, product shape, or a non-trivial plan,
+record a Skill Routing Ledger with required capabilities and these fields:
+
+- `artifact-status: draft/final`
+- `capability-research: required/used/skipped`
+- `decision-resolution: required/used/skipped`
+- `decision-grilling: required/used/skipped`
+- `implementation-planning: required/used/skipped`
+- `architecture-guidance: required/used/skipped`
+- `domain-language-modeling: required/used/skipped`
+- `openspec-routing: required/used/skipped`
+
+Record a concrete reason for each skip. Open Questions keep the artifact draft
+and make decision resolution required.
 
 Do not start implementation until scope, solution, validation, risks, and the
-next ledger item are recorded.
+next ledger item are durable.
 
 ## Goal Workflow
 
-- Apply the Goal Suitability Gate during intake or planning, before
-  context-health drift appears. Use `define-goal` when the user asks to create,
-  set, refine, or use a goal, asks for goal-backed work, or when the
-  development task is long-running, multi-slice, migration or release oriented,
-  broad-refactor oriented, cross-context, subagent/delegation backed, or
-  otherwise likely to lose its definition of done.
-- `define-goal` owns active goal checks, goal-tool calls, objective wording,
-  verification evidence, scope boundaries, non-goals, and stop conditions.
-- Apply the Goal Quality Gate before goal creation: the candidate objective
-  must name outcome, verification evidence, scope boundaries, non-goals, success
-  threshold, and stop conditions.
-- After `define-goal` shapes the objective, set it in a Codex app, IDE, or CLI
-  composer with `/goal <objective>`. Use `/goal`, `/goal pause`,
-  `/goal resume`, and `/goal clear` to inspect or control the active goal.
-- If `/goal` is unavailable, enable `features.goals` in Codex config or run
-  `codex features enable goals`. Do not rely on a top-level CLI `goal`
-  subcommand.
-- Do not require a Codex goal for ordinary narrow implementation work solely
-  because it has multiple steps. Treat context-health goal drift as a repair
-  signal after drift is discovered, not the primary trigger.
-- DevFlow hooks and scripts may generate Goal Mode Prompts and route to
-  `define-goal`, but they do not call goal tools automatically.
+Use `define-goal` when the user asks for goal-backed work or when the task is
+long-running, migration/release oriented, broad, cross-context, delegation
+backed, or likely to lose its definition of done. The Goal Contract names
+outcome, verification evidence, scope, non-goals, success threshold, and stop
+conditions. DevFlow scripts may recommend goal mode but never call goal tools
+automatically.
 
 ## AI Coding Planning Rules
 
-This repository follows an AI-native execution model.
+Unless the user explicitly requests a prototype or partial target, plan and
+implement the complete Target State. Do not use MVP, Future Work, calendar
+estimates, staffing, or delivery phases to defer required behavior.
 
-Do not produce human-style delivery plans such as:
+A technical plan contains:
 
-- MVP or prototype as the default completion boundary.
-- Numbered delivery phases as completion boundaries for required behavior.
-- Future Work sections for required functionality.
-- Calendar estimates, sprint estimates, or staffing assumptions.
-- Partial implementation plans that stop after a simplified first slice.
+1. Target State and Scope / Non-Goals.
+2. Architecture Decisions.
+3. Completion Contract.
+4. Dependency-ordered, production-complete Capability Slices.
+5. Execution Ledger with owner, write set, evidence, and human gate.
+6. Acceptance Criteria and exact Validation Commands.
+7. Risks, rollback, review, and Final Verification.
 
-Unless explicitly requested, assume the user wants the complete Target State.
+## Incidental Finding Lifecycle
 
-When asked to design or implement a technical solution, use this structure:
+Classify every problem discovered outside the active task's required behavior
+before expanding work:
 
-1. Target State
-   - Describe the complete final behavior after the task is done.
-   - Include user-visible behavior, internal structure, boundaries, and non-goals.
+- `CONTINUE_WITH_MINIMAL_GUARD`: the finding blocks safe completion, and one
+  bounded RED/GREEN guard fits the approved contract and write set.
+- `DEFER_AND_CONTINUE`: the finding does not block the Completion Contract and
+  the current mitigation keeps the critical path safe.
+- `BLOCKED_AWAITING_HUMAN`: continuing would expand material scope or authority,
+  risk severe harm, or choose an unresolved product or ownership decision.
 
-2. Completion Contract
-   - List concrete acceptance criteria.
-   - Include tests, commands, screenshots, docs, or runtime checks where applicable.
+Apply fail-closed precedence: `BLOCKED_AWAITING_HUMAN` wins over a possible
+guard or deferral. The required Completion Contract behavior and failing
+acceptance criteria may not be deferred. Record every deferred or blocked
+finding in the tracked `TASK_LEDGER.md` Incidental Finding Register; chat and
+`.planning/devflow/` alone are not durable cross-machine records. The register
+does not authorize follow-up work.
 
-3. Capability Slices
-   - Break work into dependency-ordered, independently verifiable slices.
-   - Each slice must be production-complete for its own scope.
-   - Each slice must include implementation, validation, and cleanup.
-
-4. Execution Ledger
-   - Maintain a checklist in the plan or a repo file.
-   - Mark each item done only after validation.
-   - Resume from the ledger after interruption or context compaction.
-
-5. Final Verification
-   - Run the smallest relevant test suite, lint/typecheck, and project-specific checks.
-   - Report exact commands and results.
-
-GSD phases are governance and sequencing containers, not technical completion boundaries.
-
-## Repair Solution Discipline
-
-When asked to repair a bug, workflow break, or broken behavior, do not start
-from the minimal fix as the default recommendation; after investigation,
-present the systemic and thorough solution first: root cause, affected
-contracts, durable prevention, tests, docs, migrations or compatibility
-concerns, and verification.
-
-Then compare whether actual execution should be the systemic repair, a minimal
-fix, a staged repair, or a deferred follow-up. Explain why the selected path is
-appropriate for the current repo state, risk, approval boundary, and validation
-cost. This does not override brownfield compatibility, OpenSpec, safety, or
-user-approval gates.
-
-## Project Mode
-
-Project mode: brownfield
-
-### Greenfield
-
-- Establish Target State and Completion Contract first.
-- Create or update `.planning/ROADMAP.md`.
-- Create initial OpenSpec specs or an `initial-target-state` change.
-- Establish test, lint, and build baselines early.
-
-### Brownfield
-
-- Inspect existing architecture, conventions, tests, and specs first.
-- Prefer minimal compatible changes.
-- Reuse existing components, services, APIs, tokens, routing, data fetching, and error handling.
-- Add characterization or regression tests before risky changes.
-
-## When OpenSpec Is Required
-
-Create or update `openspec/changes/<change-id>/` before implementation if work changes user-visible behavior, public APIs, data models, permissions, persistence, integrations, migrations, error handling, or compatibility behavior.
+For a severe or ambiguous finding, stop mutation after safe read-only diagnosis,
+record evidence and options, and ask the human one concrete decision. Promote
+that decision into OpenSpec or the active ledger before resuming. A truthful
+completion may disclose non-blocking deferred findings and ask the human to
+accept, reject, or defer the recommended follow-up; it may not automatically
+start that follow-up. An unresolved `BLOCKED_AWAITING_HUMAN` finding blocks
+continuation, completion, verification claims, and archive readiness.
 
 ## Workflow Mode Routing
 
-DevFlow routes work before execution:
+- `Full OpenSpec` is mandatory for behavior, API, data model, persistence,
+  integration, migration, permission, error handling, and compatibility work.
+- `Lightweight Ledger` is limited to configured docs-only, test-only, internal
+  maintenance, or low-risk fixes; it still requires Target State, Scope /
+  Non-Goals, Validation Commands, Execution Log, and Completion Claim.
+- `Prototype Mode` requires an explicit prototype, spike, proof-of-concept, or
+  demo request and records non-production status plus cleanup or promotion
+  criteria.
 
-- `Full OpenSpec` is mandatory for user-visible behavior, public API, data model,
-  persistence, migration, integration, permission, error-handling, or
-  compatibility changes. `.dev-flow.json` configuration cannot bypass this gate.
-- `Lightweight Ledger` may be used only when `.dev-flow.json` enables it and the
-  work is docs-only, test-only, internal maintenance, or a low-risk bugfix. The
-  ledger must include Target State, Scope / Non-Goals, Validation Commands,
-  Execution Log, and Completion Claim.
-- `Prototype Mode` requires an explicit user request for a spike, prototype,
-  proof of concept, or demo. Record non-production status and cleanup or
-  promotion criteria before relying on the output.
+Project mode: brownfield
 
-DevFlow hooks support `off`, `warn`, and `block` modes through `.dev-flow.json`.
-When hooks warn or block, diagnostics should preserve the Codex hook schema and
-include current stage, failed gates, next action, and recommended skill or
-command.
-
-## Superpowers Discipline
-
-Superpowers is activated project-locally through `.agents/skills/`; do not enable it globally for this workflow. Legacy `.codex/skills/` entries should be scanned and migrated through DevFlow rather than edited manually.
-
-- Before structured ideation or solution exploration, use `superpowers:brainstorming`.
-- Before writing or committing to a non-trivial plan, use `superpowers:writing-plans`.
-- Before implementing a feature, bugfix, or risky behavior change, use `superpowers:test-driven-development`.
-- Before claiming work is complete, fixed, passing, ready to commit, or ready for PR, use `superpowers:verification-before-completion`.
-- If either Superpowers skill is unavailable, run the project orchestrator dependency check and activation before continuing.
-
-## Plugin Eval Gate
-
-- When creating or updating Codex plugins or skills, resolve the release target first: `sync_release_assets.py --eval-target <path> --json`. If a release counterpart exists, run Plugin Eval against the release path, for example `plugin-eval analyze plugins/<name> --format markdown` or `plugin-eval analyze <skill-name> --format markdown`.
-- Use direct dev-path Plugin Eval only as a diagnostic source-quality check; it is not the primary release readiness signal when a release package exists.
-- If `plugin-eval` is not on PATH, use the installed Plugin Eval plugin's `scripts/plugin-eval.js` with `node`.
-- When Plugin Eval reports failures, warnings, or fix-first recommendations, default to fixing or optimizing them before completion.
-- Deferral is an exception: only defer findings that are out of scope, destructive or risky, require dependency or architecture decisions, or need explicit user approval.
-- Deferred findings must record the reason, residual risk and follow-up path.
-- Verification evidence must record the score, findings, and optimization decisions, plus the evaluated target.
-
-## Local Reference Update Reminder
-
-After major Codex plugin or skill changes, remind the user to update local Codex
-references before relying on the changed behavior locally. Start dry-run:
-`python3 dev/scripts/codex_auto_update_plugins_skills.py --json`. Report release
-asset sync, installed plugin cache refresh needs, and project-local skill links
-migration. Apply mode requires explicit update intent or confirmation; record any
-skipped local reference update with reason and residual risk.
-
-## DevFlow Refresh Workflow
-
-Use `dev-flow-refresh` when DevFlow has upgraded, when the local/global DevFlow
-plugin installation or installed cache needs refresh, or when project-local
-DevFlow workflow configuration needs refresh.
-
-- Refresh global DevFlow first, then project-local workflow configuration.
-- Start with the targeted local plugin refresh
-  `codex plugin add dev-flow@cy-codex-skills --json` unless the user explicitly
-  asks for the full updater workflow.
-- Verify source/cache freshness with `doctor_workflow.py --check-cache-drift`
-  or `codex_auto_update_plugins_skills.py --json` before claiming local runtime
-  freshness.
-- Run project diagnostics before applying project changes:
-  `plugin_project_migration.py`, `validate_workflow_state.py`,
-  `doctor_workflow.py --check-cache-drift`, `scaffold_workflow.py --dry-run`,
-  and `git status`.
-- Treat `AGENTS.md.generated` as a merge-required candidate. Compare durable
-  workflow rules with active `AGENTS.md`; merge only durable routing or policy
-  changes and preserve project-specific guidance.
-- Ordinary skill-link refresh may use `activate_project_dependencies.py
-  --refresh-project-skills`; legacy `.codex/skills` cleanup and conflict
-  resolution require explicit approval.
+For brownfield work, inspect architecture, conventions, tests, and specs first;
+prefer minimal compatible changes and add characterization tests before risky
+edits. For greenfield work, establish Target State, Completion Contract,
+OpenSpec, and test/lint/build baselines before implementation.
 
 ## Execution and Bounded Subagents
 
@@ -340,38 +217,135 @@ Goal, Scope, Constraints, Verification, Evidence, and Human Gate.
 Do not expand scope, add a dependency, or change a public contract without
 updating the canonical plan and approval boundary.
 
-## Execution Rules
+## Generated Artifact Lifecycle
 
-- Execute one task at a time unless explicitly instructed otherwise.
-- Prefer TDD for business logic, bug fixes, and risky behavior.
-- Do not expand task scope without updating the plan.
-- Do not introduce dependencies without documenting why.
-- Do not modify unrelated files.
+Automatic reclamation is registration-only. Seal a Generated Artifact Contract
+before creation by the bound task/run command; prefer an absent or empty
+isolated root. A filename, extension, ignore rule, apparent cache/build
+directory, or contract written after creation never proves ownership.
 
-## Verification Rules
+Observation and planning are read-only. Only a fresh `AUTO_CLEAN` plan after
+the owner exits may reach explicit exact-path cleanup. `WAIT_OWNER` retries,
+`RETAIN` preserves evidence, and unsafe or drifted state enters `HUMAN_GATE`.
+Cleanup uses no wildcard or recursive deletion and retains the immutable
+contract, manifest, plan, terminal receipt, and recoverable quarantine mapping
+under `.planning/devflow/`. Physical quarantine purge is a separate Human
+Gate.
+Hooks, doctors, validators, review, and stop policies report lifecycle state
+but never apply cleanup.
 
-Before marking work complete, run relevant tests, run lint/typecheck/build where applicable, update OpenSpec tasks, update `.planning/STATE.md`, record verification evidence, and report remaining risks.
+## Continuous Execution
+
+After implementation is approved, use `auto-until-terminal`. `execute-task`
+completes one dependency-ready item and returns evidence; `project-orchestrator`
+then derives `CONTINUE_NEXT_ITEM`, `CHECKPOINT_AND_CONTINUE`,
+`VERIFY_ACTIVE_CHANGE`, `AWAIT_HUMAN`, `READY_FOR_EXTERNAL_EFFECT`, or
+`COMPLETE`. For the first three outcomes, continue immediately through the next
+approved action. Item, slice, review, verification, checkpoint, and active-
+change boundaries do not end the user request.
+
+Prefer the active Full OpenSpec task list as the execution source and use
+`TASK_LEDGER.md` only when it is the configured active ledger. Do not merge the
+two or create another queue. A phase label is not a Human Gate.
+
+Stop only for unresolved product or ownership decisions, material scope/write-
+set/public-contract expansion, dependencies or migrations, destructive or
+external effects, severe or unknown risk, explicit per-stage confirmation, or
+another missing authority. Before asking, record the concrete gate and next
+question durably; use both `current_stage: awaiting_human` and
+`current_change.status: awaiting_human` so read-only Stop policy can distinguish
+a real gate from premature completion. Promote the answer into OpenSpec or the
+active ledger, restore executable state, and resume automatically.
+
+Checkpoint/compact is advisory and recoverable. Active-change verification is
+not overall completion when approved work remains. Release, archive, commit,
+push, PR, install/update, migration apply, and destructive work remain separate
+authorization boundaries and are never implied by automatic continuation.
+
+## Git Transport vs GitHub Control Plane
+
+A gh authentication failure is not Git transport failure. For an explicitly
+authorized push, use `git_transport_preflight.py` based on `git ls-remote`.
+Native push uses `git.push`; PR/release/settings use
+`github.control_plane_write`. For deterministic tag-bound releases, prefer
+validated repository GitHub Actions over local gh authentication, require
+publication readback before local promotion, and preserve the tag if
+publication fails. Allow one diagnosis and at most one applicable remediation
+attempt for a direct GitHub control-plane fallback, then stop that path without
+blocking native Git. `git.push_pr` is compatibility-only.
+
+## Verification and Archive
+
+Before claiming completion, run fresh focused and broad checks, update the
+Execution Ledger and `.planning/devflow/STATE.md`, record evidence, inspect the
+diff, and report residual risks. Archive requires synchronized specs, complete
+tasks, passing verification, explicit intent, and the archive authorization
+gate.
+
+## Plugin Eval Gate
+
+When creating or updating Codex plugins or skills, resolve the release
+counterpart and run `plugin-eval analyze <target> --format markdown` against
+that release target. Development-path analysis is diagnostic only when a
+release package exists. Default to fixing or optimizing failures and actionable
+warnings. Verification evidence must record the score, findings, and
+optimization decisions. Deferral is an exception and records reason, residual
+risk and follow-up path.
+
+## Local Reference Update Reminder
+
+After major plugin or skill changes, update local Codex references and start
+with the read-only check:
+
+```bash
+python3 dev/scripts/codex_auto_update_plugins_skills.py --json
+```
+
+Report source/release drift, installed plugin cache freshness, and project-local
+skill links drift. Applying cache refresh or project migration requires explicit
+authorization.
+
+## DevFlow Refresh Workflow
+
+Use `dev-flow-refresh` after a DevFlow upgrade or when an established project
+needs its DevFlow workflow refreshed. Refresh the named plugin first with
+`codex plugin add dev-flow@cy-codex-skills --json`, then run project diagnostics
+before any project write. Treat `AGENTS.md.generated` as a merge-only candidate
+and merge only durable workflow rules. Legacy skill cleanup requires separate
+approval.
+
+## Legacy Configuration
+
+Current runtime readers reject retired selection keys and direct the operator
+to the isolated, read-only inspector:
+
+```bash
+python3 scripts/inspect_legacy_workflow_config.py --repo . --json
+```
+
+The inspector may classify old files and recommend a target configuration. It
+has no apply, cleanup, install, activation, rollback, or network path. Preserve
+ambiguous, user-authored, and historical data until a separately authorized
+migration lists exact files and rollback evidence.
+
+## Repair Solution Discipline
+
+For a repair, after investigation, present the systemic and thorough solution
+first: root cause, affected contracts, prevention, tests, docs, compatibility,
+and verification. Then compare systemic repair, a minimal fix, staged repair,
+or deferral against the current scope and risk.
 
 ## Context Checkpoint and Compaction
 
-At major workflow boundaries, create a durable checkpoint before continuing.
-
-Major boundaries include project setup completed, codebase mapping completed, design saved, OpenSpec change planned, phase plan saved, verification passed, change archived, and phase shipped.
-
-Before compaction, persist `.planning/STATE.md`, relevant `.planning/phases/` files, relevant `openspec/changes/` files, changed files summary, validation commands and results, unresolved risks, and next action.
-
-Compaction is not a source of truth. Repository files remain authoritative. When a checkpoint is a
-continuation gate for the current thread, recommend `/compact` in Codex CLI before moving to the next major
-stage. When the task is complete or at a handoff/review boundary, update state immediately and treat compact
-as optional. If an external harness runs API compaction for a pending gate, record the compact result under
-`.planning/compact-results/`. If compaction is unavailable, start a new session from the checkpoint file.
+At setup, design, OpenSpec planning, verification, and archive boundaries,
+persist state, changed files, command results, risks, and next action.
+Repository artifacts remain authoritative after compaction.
 
 ## Forbidden Without Explicit Approval
 
-- Deleting large amounts of code.
-- Changing public APIs.
-- Changing persistence schema.
-- Adding production dependencies.
-- Rewriting architecture.
-- Bypassing failing tests.
-- Archiving OpenSpec changes without verification.
+- destructive cleanup or broad architecture rewrite;
+- public API or persistence-schema changes;
+- production dependencies;
+- bypassing failed tests;
+- project migration apply, release sync apply, archive, commit, push, or PR
+  creation.

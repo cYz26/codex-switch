@@ -1,0 +1,14 @@
+{
+  "changeId": "independent-app-cli-profiles",
+  "gateKey": "sha256:5cb2dc7b977b55b5541c7dccc6cdf6e36b1255998c829d82eecf9e64e6bfb7df",
+  "goalId": "019f8f8f-e64c-7093-af73-2c0247cf2891",
+  "grantedAuthority": [
+    "decision:internal_plugin_cache_version_retention"
+  ],
+  "kind": "devflow-authority-grant",
+  "priorAuthorityContractSha256": "sha256:3a70a83edf781ecdbef569f08794169694f73edab76f09d9da76bd0baf522858",
+  "priorEvidenceSha256": "sha256:aebe017a54d3a8a642eee58b1682e86e4cbdf5e6a366d6421f825f09b9e7ed61",
+  "priorReceiptSha256": "sha256:26317ba142c2da243dd2f8c1254bd2929d6f1eb20cd675494ac01f3b528578ae",
+  "schemaVersion": "1.0",
+  "status": "approved"
+}

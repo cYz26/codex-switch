@@ -58,6 +58,8 @@ REQUIRED_PYTHON_MODULES = (
     "codex_switch_runtime_binding.py",
     "codex_switch_app_proxy.py",
     "codex_switch_home_sync.py",
+    "codex_switch_selection.py",
+    "codex_switch_shared_configuration.py",
 )
 SUPPORTED_HISTORICAL_REQUIRED_PATHS = (
     "README.md",
@@ -76,6 +78,32 @@ SUPPORTED_HISTORICAL_REQUIRED_PATHS = (
     "scripts/codex_switch_official_release.py",
     "scripts/package-release.sh",
     MANIFEST_NAME,
+)
+IMMEDIATELY_PREVIOUS_REQUIRED_PATHS = (
+    "README.md",
+    "SKILL.md",
+    "VERSION",
+    "run.sh",
+    "agents",
+    "docs",
+    "evals",
+    "scripts",
+    "scripts/codex-switch",
+    "scripts/codex_profile_switch.py",
+    "scripts/codex_switch_release_bundle.py",
+    "scripts/codex_switch_promotion.py",
+    "scripts/codex_switch_update_policy.py",
+    "scripts/codex_switch_official_release.py",
+    "scripts/codex_switch_parity.py",
+    "scripts/codex_switch_runtime_binding.py",
+    "scripts/codex_switch_app_proxy.py",
+    "scripts/codex_switch_home_sync.py",
+    "scripts/package-release.sh",
+    MANIFEST_NAME,
+)
+SUPPORTED_HISTORICAL_REQUIRED_PATH_SETS = (
+    SUPPORTED_HISTORICAL_REQUIRED_PATHS,
+    IMMEDIATELY_PREVIOUS_REQUIRED_PATHS,
 )
 REQUIRED_PATHS = (
     "README.md",
@@ -768,13 +796,18 @@ def _validate_package(
     }:
         raise BundleError("manifest_invalid", "Release manifest allowlist mismatch")
     raw_required_paths = manifest.get("required_paths")
+    historical_required_paths = next(
+        (
+            candidate
+            for candidate in SUPPORTED_HISTORICAL_REQUIRED_PATH_SETS
+            if raw_required_paths == list(candidate)
+        ),
+        None,
+    )
     if raw_required_paths == list(REQUIRED_PATHS):
         required_paths = REQUIRED_PATHS
-    elif (
-        allow_historical_required_paths
-        and raw_required_paths == list(SUPPORTED_HISTORICAL_REQUIRED_PATHS)
-    ):
-        required_paths = SUPPORTED_HISTORICAL_REQUIRED_PATHS
+    elif allow_historical_required_paths and historical_required_paths is not None:
+        required_paths = historical_required_paths
     else:
         raise BundleError("manifest_invalid", "Release manifest required paths mismatch")
 
