@@ -249,6 +249,23 @@
   Do not rewrite live config, switch/install, act on the App, activate
   dependencies, or perform Git/release/archive/cleanup effects.
 
+## 15. Failed Release-Upload Starter Recovery
+
+- [x] 15.1 Add focused RED coverage for the observed `v0.1.14` shape: the
+  normal uploaded-asset view is empty, the explicit release-assets inventory
+  contains same-name zero-byte `starter` residue, and the current reconciler
+  attempts `install.sh` upload and receives `asset under the same name already
+  exists`. Add conflict guards for non-zero and unsupported records.
+- [x] 15.2 Make the GitHub adapter inventory paginated asset records with exact
+  ID/name/state/size, delete only a canonical zero-byte `starter` after a fresh
+  tag-identity check, read back before upload, and retain download/hash
+  verification plus the prohibition on `--clobber`.
+- [x] 15.3 Run focused and complete update/release tests, adjacent profile
+  release tests, Python/static/strict OpenSpec/workflow/diff checks, then update
+  ledger, namespaced state, and verification evidence. Do not mutate a live
+  GitHub Release, rerun a workflow, apply the pending DevFlow migration, or
+  perform dependency, commit, push, archive, or cleanup effects.
+
 ## Execution Policy
 
 The user's implementation request authorizes the source, test, documentation,
@@ -288,3 +305,9 @@ change, Git, release, archive, credential, or destructive work. The user's
 later explicit confirmation assigns Plugin installed-cache lifecycle to the
 native backend and removes the earlier retention guarantee without authorizing
 any additional live command.
+
+The user's 2026-08-11 report of the failed `v0.1.14` Action authorizes task 15
+source, test, OpenSpec, ledger, namespaced-state, and verification-record
+changes only. It does not authorize a live GitHub Release deletion/upload,
+workflow rerun, DevFlow migration apply, dependency change, commit, push,
+archive, or cleanup.

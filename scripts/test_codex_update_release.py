@@ -17,8 +17,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Callable, Dict, Iterable
+from unittest import mock
 
 try:
     import release_auto
@@ -1466,6 +1467,43 @@ class FakeReleaseGitHub:
         self.draft = False
 
 
+class HiddenStarterReleaseGitHub(FakeReleaseGitHub):
+    def __init__(self, *, state: str = "starter", size: int = 0) -> None:
+        super().__init__(exists=True, assets={}, draft=False)
+        self.hidden_assets = {
+            "install.sh": SimpleNamespace(
+                asset_id=901,
+                name="install.sh",
+                state=state,
+                size=size,
+            )
+        }
+
+    def inspect_release(self, tag: str):
+        snapshot = super().inspect_release(tag)
+        object.__setattr__(
+            snapshot,
+            "starter_assets",
+            tuple(self.hidden_assets.values()),
+        )
+        return snapshot
+
+    def delete_asset(self, tag: str, asset: object) -> None:
+        name = str(getattr(asset, "name"))
+        self.calls.append(("delete", name))
+        hidden = self.hidden_assets.get(name)
+        if hidden is None or hidden.asset_id != getattr(asset, "asset_id"):
+            raise AssertionError(f"unexpected hidden asset deletion: {name}")
+        del self.hidden_assets[name]
+
+    def upload_asset(self, tag: str, path: Path) -> None:
+        if path.name in self.hidden_assets:
+            raise release_auto.ReleaseError(
+                f"asset under the same name already exists: [{path.name}]"
+            )
+        super().upload_asset(tag, path)
+
+
 class CodexReleasePlannerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1734,6 +1772,100 @@ class CodexReleasePlannerTests(unittest.TestCase):
         self.assertNotIn(("create", "v1.0.1"), github.calls)
         self.assertNotIn(("publish", "v1.0.1"), github.calls)
 
+    def test_reconcile_recovers_hidden_zero_byte_starter_asset(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = HiddenStarterReleaseGitHub()
+
+        receipt = release_auto.reconcile_release_assets(
+            tag="v1.0.1",
+            release_commit=self.base_commit,
+            tag_commit=self.base_commit,
+            assets=assets,
+            github=github,
+        )
+
+        self.assertEqual("reconciled", receipt["outcome"])
+        self.assertEqual(
+            ["install.sh"],
+            receipt["recovered_starter_assets"],
+        )
+        self.assertEqual(
+            sorted(release_auto.REQUIRED_RELEASE_ASSETS),
+            sorted(github.assets),
+        )
+        delete_index = github.calls.index(("delete", "install.sh"))
+        upload_index = github.calls.index(("upload", "install.sh"))
+        self.assertLess(delete_index, upload_index)
+        self.assertIn(
+            ("inspect", "v1.0.1"),
+            github.calls[delete_index + 1 : upload_index],
+        )
+
+    def test_reconcile_rejects_nonempty_starter_asset(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = HiddenStarterReleaseGitHub(size=17)
+
+        with self.assertRaises(release_auto.ReleaseConflict) as caught:
+            release_auto.reconcile_release_assets(
+                tag="v1.0.1",
+                release_commit=self.base_commit,
+                tag_commit=self.base_commit,
+                assets=assets,
+                github=github,
+            )
+
+        self.assertIn("non-empty starter", str(caught.exception))
+        self.assertFalse(
+            any(call[0] in {"delete", "upload"} for call in github.calls)
+        )
+
+    def test_reconcile_rejects_unsupported_hidden_asset_state(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = HiddenStarterReleaseGitHub(state="processing")
+
+        with self.assertRaises(release_auto.ReleaseConflict) as caught:
+            release_auto.reconcile_release_assets(
+                tag="v1.0.1",
+                release_commit=self.base_commit,
+                tag_commit=self.base_commit,
+                assets=assets,
+                github=github,
+            )
+
+        self.assertIn("unsupported release asset state", str(caught.exception))
+        self.assertFalse(
+            any(call[0] in {"delete", "upload"} for call in github.calls)
+        )
+
+    def test_reconcile_rechecks_tag_identity_before_starter_delete(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        events: list[str] = []
+
+        class RecordingGitHub(HiddenStarterReleaseGitHub):
+            def delete_asset(inner_self, tag: str, asset: object) -> None:
+                events.append("delete")
+                super().delete_asset(tag, asset)
+
+            def upload_asset(inner_self, tag: str, path: Path) -> None:
+                events.append(f"upload:{path.name}")
+                super().upload_asset(tag, path)
+
+        def check_tag_identity() -> None:
+            events.append("check")
+
+        release_auto.reconcile_release_assets(
+            tag="v1.0.1",
+            release_commit=self.base_commit,
+            tag_commit=self.base_commit,
+            assets=assets,
+            github=RecordingGitHub(),
+            tag_identity_check=check_tag_identity,
+        )
+
+        delete_index = events.index("delete")
+        self.assertGreater(delete_index, 0)
+        self.assertEqual("check", events[delete_index - 1])
+
     def test_reconcile_complete_same_tag_is_read_only(self) -> None:
         assets, _manifest = self._asset_fixture()
         github = FakeReleaseGitHub(
@@ -1918,6 +2050,181 @@ class CodexReleasePlannerTests(unittest.TestCase):
             [call for call in github.calls if call[0] == "upload"],
         )
         self.assertNotIn(("publish", "v1.0.1"), github.calls)
+
+    def test_github_release_inspection_lists_starter_assets(self) -> None:
+        release_payload = {
+            "id": 77,
+            "draft": False,
+            "assets": [],
+        }
+        first_page = [
+            {
+                "id": index,
+                "name": f"extra-{index}.bin",
+                "state": "uploaded",
+                "size": index,
+            }
+            for index in range(1, 100)
+        ]
+        first_page.append(
+            {
+                "id": 901,
+                "name": "install.sh",
+                "state": "starter",
+                "size": 0,
+            }
+        )
+        second_page = [
+            {
+                "id": 902,
+                "name": "run.sh",
+                "state": "uploaded",
+                "size": 123,
+            }
+        ]
+        responses = [
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(release_payload),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(first_page),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(second_page),
+                stderr="",
+            ),
+        ]
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            side_effect=responses,
+        ) as run:
+            snapshot = release_auto.GitHubCliAdapter(
+                "owner/repo"
+            ).inspect_release("v0.1.14")
+
+        self.assertTrue(snapshot.exists)
+        self.assertFalse(snapshot.draft)
+        self.assertEqual(100, len(snapshot.assets))
+        self.assertIn("run.sh", snapshot.assets)
+        self.assertNotIn("install.sh", snapshot.assets)
+        self.assertEqual(1, len(snapshot.starter_assets))
+        starter = snapshot.starter_assets[0]
+        self.assertEqual(
+            (901, "install.sh", "starter", 0),
+            (starter.asset_id, starter.name, starter.state, starter.size),
+        )
+        self.assertEqual(
+            [
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases/tags/v0.1.14",
+                ],
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases/77/assets?per_page=100&page=1",
+                ],
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases/77/assets?per_page=100&page=2",
+                ],
+            ],
+            [call.args[0] for call in run.call_args_list],
+        )
+
+    def test_github_release_inspection_rejects_duplicate_asset_names(self) -> None:
+        release_payload = {
+            "id": 77,
+            "draft": False,
+            "assets": [],
+        }
+        asset_page = [
+            {
+                "id": 901,
+                "name": "install.sh",
+                "state": "uploaded",
+                "size": 123,
+            },
+            {
+                "id": 902,
+                "name": "install.sh",
+                "state": "starter",
+                "size": 0,
+            },
+        ]
+        responses = [
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(release_payload),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(asset_page),
+                stderr="",
+            ),
+        ]
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            side_effect=responses,
+        ):
+            with self.assertRaises(release_auto.ReleaseConflict) as caught:
+                release_auto.GitHubCliAdapter("owner/repo").inspect_release(
+                    "v0.1.14"
+                )
+
+        self.assertIn("duplicate asset names", str(caught.exception))
+
+    def test_github_release_delete_uses_exact_asset_id(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        asset = SimpleNamespace(
+            asset_id=901,
+            name="install.sh",
+            state="starter",
+            size=0,
+        )
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            return_value=completed,
+        ) as run:
+            release_auto.GitHubCliAdapter("owner/repo").delete_asset(
+                "v0.1.14",
+                asset,
+            )
+
+        self.assertEqual(
+            [
+                "gh",
+                "api",
+                "--method",
+                "DELETE",
+                "repos/owner/repo/releases/assets/901",
+            ],
+            run.call_args.args[0],
+        )
 
 
 class CodexReleaseWorkflowTests(unittest.TestCase):

@@ -304,6 +304,57 @@
 - openspec-routing: required / used; task 13 is dependency-ready after strict
   validation
 
+### 2026-08-11 Failed Release-Upload Starter Recovery Addendum
+
+- objective: make automatic release reconciliation recover the exact GitHub
+  failed-upload state where `v0.1.14` exposes no custom downloadable assets but
+  rejects `install.sh` because a same-name asset remains reserved.
+- scope_in: existing `independent-app-cli-profiles` OpenSpec task 15;
+  `scripts/release_auto.py`; focused update/release tests; OpenSpec, ledger,
+  namespaced-state, and verification evidence.
+- scope_out: live GitHub Release deletion/upload, workflow rerun, DevFlow
+  migration apply, dependency, commit, push, archive, cleanup, or unrelated
+  release-policy expansion.
+- acceptance_criteria: a deterministic public-seam harness reproduces `asset
+  under the same name already exists: [install.sh]`; the adapter inventories
+  exact asset ID/name/state/size; only a canonical zero-byte `starter` can be
+  deleted after tag validation; readback precedes upload; uploaded, non-zero,
+  duplicate, and unsupported states remain fail closed; focused/full/static/
+  strict/workflow/diff gates pass.
+- stop_conditions: repair requires `--clobber`, deleting an uploaded or
+  ambiguous asset, changing tag identity, a dependency, live external effects,
+  or any excluded authority.
+- canonical_execution_source:
+  `openspec/changes/independent-app-cli-profiles/tasks.md` task 15.
+- approval: the user's failed-Action report authorizes the bounded
+  source/test/control-plane repair only.
+
+#### Repair Skill Routing
+
+- request_kind: bug, release compatibility, idempotence, and error handling
+- workflow_mode: Full OpenSpec
+- capability-research: required / used; current GitHub release page, failed
+  Action, release-assets API behavior, local adapter, and exact tag were
+  inspected
+- decision-resolution: required / used; exact zero-byte starter recovery is
+  selected over clobber or broad deletion
+- decision-grilling: skipped; the failure evidence leaves no product decision
+  open
+- implementation-planning: required / used through task 15
+- architecture-guidance: skipped; the existing release adapter/reconciler owns
+  the boundary
+- domain-language-modeling: skipped; release, uploaded asset, and starter asset
+  are sufficient
+- test-first-execution: required / used; RED and GREEN were recorded through
+  the public release adapter/reconciler seams
+- root-cause-diagnosis: required / used; hidden failed-upload residue explains
+  the visible-empty/upload-conflict contradiction
+- change-review: required / used; exact-ID deletion, state/size guards,
+  readback, checksum verification, and no-clobber behavior were reviewed
+- completion-proof: required / used; focused, full, profile-adjacent, static,
+  strict OpenSpec, workflow, and diff gates passed
+- openspec-routing: required / used
+
 ### 2026-08-05 Shared Plugin/Skill Configuration Reopen Addendum
 
 - objective: extend the supported internal-CLI/official-App split with one
@@ -428,6 +479,7 @@ contained, typed, recoverable, bounded, and sanitized.
 | SPLIT-BOOTSTRAP-001 | Apply `independent-app-cli-profiles` task 12 by serialized TDD | main | `scripts/codex_switch_plugins.py`, shared preflight/runtime seam, focused shared/runtime tests, README, SKILL, active OpenSpec task 12, ledger/state/verification evidence | live-shape stale-installed/current-source RED/GREEN, precise finding, exact post-add attestation, flushed progress, zero-write fast path, focused/broad/static/spec/package/diff evidence | source/test/docs/control-plane only; no live cache/install/codex/split/App/dependency/Git/release/archive/cleanup effect | done in source at 4/4; final shared 81/81, runtime 90/90, profile 226/226, packaged 23/23, strict/static/workflow/package/Plugin-Eval/diff gates complete; live activation remains gated |
 | SPLIT-BACKEND-MANAGED-001 | Apply `independent-app-cli-profiles` task 13 by serialized TDD | main | catalog adapter, shared materializer, focused tests, README, SKILL, active OpenSpec task 13, ledger/state/verification evidence | real-shape source/target divergence, installed precedence, mandatory reconcile, one fresh post-call batch catalog, precise findings, full/static/spec/package/review proof, managed functional exit zero with App unchanged | one managed functional command approved; no split/install/App mutation/internal binary update/direct codex-switch cache copy-link-delete/dependency/Git/release/archive/cleanup | done at 4/4: functional CLI exits zero, 18 receipts are current with App unchanged, native backend cache lifecycle is explicitly accepted, codex-switch direct cache mutation remains forbidden, source and package shared matrices pass 94/94 |
 | SPLIT-CONFIG-IDEMPOTENCE-001 | Apply `independent-app-cli-profiles` task 14 by serialized TDD | main | managed runtime annotation cleanup, focused config/profile tests, active OpenSpec task 14, ledger/state/verification evidence | repeated-render RED/GREEN, user-format preservation, adjacent suites, strict/static/diff proof | no live config/switch/install/App/plugin/cache/dependency/Git/release/archive/cleanup effect | done at 3/3; config 31/31, focused profile 4/4, complete profile 226/226, strict OpenSpec 22/22, workflow/static/diff gates pass |
+| RELEASE-STARTER-RECOVERY-001 | Apply `independent-app-cli-profiles` task 15 by serialized TDD | main | release adapter/reconciler, focused update-release tests, active OpenSpec task 15, ledger/state/verification evidence | hidden-starter RED, exact zero-byte delete/readback/upload GREEN, conflict guards, focused/full/static/spec/workflow/diff proof | no live Release mutation/workflow rerun/migration/dependency/Git/archive/cleanup effect | done at 3/3; focused 7/7, update/release 148/148, profile 226/226, strict OpenSpec 22/22, workflow/static/diff gates pass |
 
 ## Dependency and Execution Order
 
@@ -2851,6 +2903,18 @@ write task.
   preserves TOML semantics while reducing the maximum blank run from 245 to 1.
   No live config write, switch, install, App, Plugin/cache, dependency,
   migration, credential, Git, release, archive, or cleanup effect occurred.
+- 2026-08-11: `RELEASE-STARTER-RECOVERY-001` completed task 15 at 3/3. RED
+  reproduced the exact `install.sh` same-name conflict while the uploaded view
+  was empty. GREEN inventories paginated asset ID/name/state/size, deletes only
+  an exact canonical zero-byte `starter` after tag validation, reads back
+  before upload, and retains checksum proof without `--clobber`. Focused tests
+  pass 7/7, complete update/release 148/148, and complete profile 226/226.
+  Python AST 2/2, Bash syntax 5/5, active strict OpenSpec, all strict OpenSpec
+  22/22, and DevFlow 0.4.1 validation (`ok=true`, zero issues) pass. The single
+  existing Project-Directed Implementation Readiness guidance warning remains
+  covered by INC-018; final `git diff --check` also passes. No live GitHub
+  Release mutation, workflow rerun, DevFlow migration, dependency, credential,
+  Git, archive, cleanup, or destructive effect occurred.
 
 ## Validation Commands
 

@@ -524,6 +524,23 @@ whitespace compaction was rejected because it would rewrite unrelated user
 formatting; changing TOML semantics or profile/shared ownership is outside this
 repair.
 
+### Decision 22: Release reconciliation owns exact zero-byte starter recovery
+
+GitHub can retain a failed release upload as a same-name asset in `starter`
+state while the normal release view exposes no downloadable custom asset. The
+release adapter therefore inventories assets from the release-assets endpoint,
+retaining each asset's ID, name, state, and size rather than deriving authority
+from the embedded uploaded-asset list alone.
+
+Reconciliation treats a canonical name as recoverable only when exactly one
+record has `state=starter` and `size=0`. Immediately before deleting that exact
+asset ID it rechecks the remote tag identity. It then reads the inventory back,
+uploads only if the canonical name is still absent, and performs the existing
+download/hash verification. An uploaded asset is never deleted; non-zero
+starter records, duplicate names, unsupported states, or readback drift fail
+closed. `--clobber` remains prohibited because it cannot distinguish an empty
+failed upload from a valid conflicting artifact.
+
 ## Completion Contract
 
 - The named split command has a failing-then-passing wrapper and transaction
@@ -539,6 +556,10 @@ repair.
   the correct surface.
 - Existing synchronized switch, internal parity, transaction, verifier, and
   release-bundle suites remain green.
+- A release whose uploaded asset view is empty but whose explicit inventory
+  contains a canonical zero-byte `starter` asset is repaired by exact-ID
+  deletion, readback, upload, and hash verification without clobbering any
+  uploaded or ambiguous asset.
 - A latest package can promote over the exact immediately prior 20-path
   manifest generation while preserving it as rollback; unknown required-path
   lists remain rejected before reference mutation.
@@ -634,6 +655,9 @@ archive, cleanup, and any destructive action remain separate Human Gates.
     provenance, exact source proof independent from target version, batched
     native reconcile with fresh target proof, precise findings, and one managed
     internal CLI acceptance while the official App remains running.
+13. Failed release-upload recovery: explicit asset-state inventory, exact
+    zero-byte starter deletion, readback, canonical upload, checksum proof, and
+    no live external effect during source verification.
 
 ## Execution Ledger
 
@@ -651,7 +675,8 @@ archive, cleanup, and any destructive action remain separate Human Gates.
 | Concise split preset | main, serialized | wrapper, wrapper tests, README, SKILL, package/control-plane evidence | RED/GREEN routing, update preservation/freeze, help, packaged and installed checks | live split/App stop/internal upgrade | pending; approved 2026-08-10 |
 | Live-bootstrap repair | main, serialized | shared materializer/preflight, focused tests, README/SKILL, OpenSpec/control plane | stale-installed/current-source RED/GREEN, exact post-add attestation, progress capture, focused/broad/static/spec evidence | live cache mutation, install, split retry | approved; task 12.1 is next |
 | Backend-managed acceptance repair | main, serialized | catalog adapter, shared materializer, focused tests, README/SKILL, OpenSpec/control plane | live-shape source/target divergence RED/GREEN, installed precedence, native cache-lifecycle replacement, one post-add batch catalog, precise findings, full/static/spec/package review, functional managed-shim acceptance | split/install/App stop or mutation/internal binary update/direct codex-switch cache mutation/Git/release/archive | complete 2026-08-11; tasks 13.1-13.4 verified and native cache-lifecycle decision reconciled |
-| Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | in progress; task 14.1 is next |
+| Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | complete 2026-08-11; tasks 14.1-14.3 verified |
+| Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter RED, exact zero-byte delete/readback/upload GREEN, conflict guards, focused/full/static/spec/diff proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete 2026-08-11; tasks 15.1-15.3 verified |
 
 ## Continuation Policy
 
@@ -709,6 +734,14 @@ python3 scripts/test_codex_profile_switch.py \
   CodexProfileSwitchTests.test_local_wrapper_split_keep_version_skips_self_update_and_retains_workflow
 python3 scripts/test_codex_profile_switch.py
 python3 scripts/test_codex_update_release.py
+python3 -m unittest \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_recovers_hidden_zero_byte_starter_asset \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rejects_nonempty_starter_asset \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rejects_unsupported_hidden_asset_state \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rechecks_tag_identity_before_starter_delete \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_github_release_inspection_lists_starter_assets \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_github_release_inspection_rejects_duplicate_asset_names \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_github_release_delete_uses_exact_asset_id
 python3 scripts/test_codex_shared_configuration.py
 python3 scripts/test_codex_shared_materialization.py
 PYTHONPATH=scripts python3 -m unittest scripts.test_codex_runtime_binding
@@ -776,6 +809,10 @@ present and a packaged split dry-run imports no checkout code.
   desired source before mutation, always reconcile a changed generation through
   the target backend, and require one fresh post-call catalog plus independent
   target artifact proof before receipt commit.
+- [A failed upload reserves a canonical release name invisibly] -> inventory
+  release assets with state and ID, delete only an exact zero-byte `starter`
+  record after tag validation, read back before upload, and retain no-clobber
+  checksum conflict behavior for every uploaded or ambiguous record.
 
 Rollback for source work is the inverse scoped patch. Runtime rollback is
 tested only in isolated roots; no live rollback is needed because no live
@@ -806,3 +843,5 @@ App stop/restart/mutation, internal binary update, parity repair, release, cache
 cleanup or direct codex-switch copy/link/delete, migration, and dependency
 changes remain unperformed. The already-observed native replacement of prior
 installed Plugin versions is recorded as backend-owned lifecycle behavior.
+Task 15 additionally performs no live GitHub release mutation or workflow
+rerun; those remain external-effect gates after source verification.

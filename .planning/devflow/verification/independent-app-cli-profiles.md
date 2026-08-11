@@ -1031,3 +1031,103 @@ runtime is Python 3.12.13. The exploratory 3.9 run is not counted as validation.
 - No live config rewrite, switch, install, App action, Plugin/cache operation,
   dependency/project migration, credential, Git, release, archive, cleanup, or
   destructive effect occurred.
+
+## Task 15 Failed Release-Upload Starter Recovery
+
+### Root Cause and RED
+
+Auto Release run 16 at commit `2383cc2` checked out tag `v0.1.14` at
+`19a243342ef9f78776b3fad0b2292198845147d3`. The public release inventory shows
+only GitHub's generated source archives, while `gh release upload` rejects the
+first canonical asset as already present:
+
+```text
+release_auto: Command failed (1): gh release upload v0.1.14 .../install.sh
+asset under the same name already exists: [install.sh]
+```
+
+GitHub documents that a failed upload can retain an empty asset in `starter`
+state. The current adapter reads only the release payload's embedded uploaded
+asset names, discards asset ID/state/size, and therefore classifies the reserved
+name as missing before retrying the conflicting upload.
+
+The deterministic focused RED uses an adapter whose uploaded view is empty but
+whose hidden inventory owns `install.sh` as asset ID `901`:
+
+```text
+python3 -m unittest -v \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_recovers_hidden_zero_byte_starter_asset \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rejects_nonempty_starter_asset \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rejects_unsupported_hidden_asset_state \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_github_release_inspection_lists_starter_assets
+
+FAILED: 1 failure, 3 errors
+primary error: asset under the same name already exists: [install.sh]
+adapter failure: expected 100 explicitly listed uploaded assets, observed 0
+```
+
+No live GitHub Release mutation, workflow rerun, DevFlow migration apply,
+dependency, Git, archive, cleanup, or other external effect occurred.
+
+### GREEN
+
+`GitHubCliAdapter.inspect_release()` now resolves the release ID and pages the
+explicit release-assets endpoint at 100 records per page. Uploaded names remain
+the ordinary visible set; every non-uploaded record retains exact
+`asset_id/name/state/size` evidence.
+
+`reconcile_release_assets()` accepts only a canonical `state=starter`,
+`size=0` record for recovery. It rechecks tag identity, deletes that exact
+asset ID, reads the release back, verifies any concurrently visible canonical
+asset, uploads only remaining names, and retains the existing post-upload and
+post-publish download/hash checks. It never uses `--clobber`.
+
+Focused GREEN:
+
+```text
+Ran 7 tests in 1.027s
+OK
+```
+
+The matrix covers hidden zero-byte recovery, non-zero refusal, unsupported
+state refusal, tag revalidation, two-page inventory parsing, duplicate-name
+refusal, and exact-ID delete command construction.
+
+### Final Validation and Review
+
+Fresh qualifying results on Python 3.12.13:
+
+```text
+focused starter/conflict matrix:  7/7 in 1.027s
+complete update/release suite: 148/148 in 309.641s
+complete profile suite:        226/226 in 338.729s
+Python AST compile:                2/2
+Bash syntax:                       5/5
+active strict OpenSpec:          valid
+all strict OpenSpec:             22/22
+DevFlow 0.4.1 workflow:          ok=true, issues=[]
+git diff --check:                passed
+```
+
+The workflow validator retains one existing Project-Directed Implementation
+Readiness guidance warning covered by INC-018. An exploratory system Python
+3.9.6 run before the final duplicate-name test passed 145/146; its only failure
+was the established Python 3.11+ `tomllib` packaging boundary, so it is not
+qualifying evidence.
+
+Two profile invocations were also discarded as validation-environment errors:
+one PTY-backed run waited at an otherwise captured interactive prompt, and one
+run globally forced shell-bootstrap suppression and therefore failed the two
+tests that intentionally exercise temporary shell-profile writes. The accepted
+non-PTY run used the test suite's own per-case isolation and passed 226/226;
+the real `~/.zshrc` hash, inode, and timestamps remained unchanged.
+
+Final scope review confirms that recovery is limited to required canonical
+names with `state=starter` and `size=0`, uses exact asset IDs, revalidates tag
+identity before each deletion and upload, reads the inventory back before
+upload, and preserves all existing download/SHA checks. Uploaded, non-zero,
+duplicate-name, and unsupported-state records fail closed, and no path uses
+`--clobber`.
+
+No live GitHub Release mutation, workflow rerun, DevFlow migration apply,
+dependency, credential, Git, archive, cleanup, or destructive effect occurred.

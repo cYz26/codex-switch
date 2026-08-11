@@ -1,0 +1,36 @@
+{
+  "authorityArtifactPath": "openspec/changes/independent-app-cli-profiles/evidence/release-starter-recovery-submit-authority-grant.json",
+  "authorityArtifactSha256": "sha256:658148f4e0addecef78cf98d24317a27bedc70c097cc06eeb84f64bf4bbcaeef",
+  "changeId": "independent-app-cli-profiles",
+  "current": true,
+  "decision": "CONTINUE",
+  "evidenceCurrent": true,
+  "gateKey": "sha256:c8c9a77aa540b5270bc805932df27fff2c76037bd087dbaf35ef5024eb5ad5f0",
+  "goalId": "019f8f8f-e64c-7093-af73-2c0247cf2891",
+  "kind": "devflow-authority-promotion-proof",
+  "materialDelta": false,
+  "missingAuthority": [],
+  "priorAuthorityContractSha256": "sha256:bc96fc94509cc55474e698b32db07ddb23a6779388cc3dc99c18215beb3c185d",
+  "priorEvidenceSha256": "sha256:768efc801a283eccada47dfeef52fab10358f828721180204856908d9f2451bd",
+  "priorMissingAuthority": [
+    "risk:external",
+    "action:submit_release_repair",
+    "effect:git.push",
+    "target:origin/main",
+    "standing_milestone.contract"
+  ],
+  "priorReceiptSha256": "sha256:d1ba70dfb96ecf6ba1d80259234533c618184430a42820ae8ac5417a972f8525",
+  "promotedAuthority": [
+    "risk:external",
+    "action:submit_release_repair",
+    "effect:git.push",
+    "target:origin/main",
+    "standing_milestone.contract"
+  ],
+  "reasonCodes": [
+    "user_authorized_release_repair_submit_and_push"
+  ],
+  "resumeStage": "executing",
+  "schemaVersion": "1.0",
+  "trusted": true
+}

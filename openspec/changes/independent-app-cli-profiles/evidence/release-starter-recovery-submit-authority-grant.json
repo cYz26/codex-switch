@@ -1,0 +1,20 @@
+{
+  "approvedAt": "2026-08-11T22:06:46+08:00",
+  "changeId": "independent-app-cli-profiles",
+  "decisionSource": "user: 授权推送",
+  "gateKey": "sha256:c8c9a77aa540b5270bc805932df27fff2c76037bd087dbaf35ef5024eb5ad5f0",
+  "goalId": "019f8f8f-e64c-7093-af73-2c0247cf2891",
+  "grantedAuthority": [
+    "risk:external",
+    "action:submit_release_repair",
+    "effect:git.push",
+    "target:origin/main",
+    "standing_milestone.contract"
+  ],
+  "kind": "devflow-authority-grant",
+  "priorAuthorityContractSha256": "sha256:bc96fc94509cc55474e698b32db07ddb23a6779388cc3dc99c18215beb3c185d",
+  "priorEvidenceSha256": "sha256:768efc801a283eccada47dfeef52fab10358f828721180204856908d9f2451bd",
+  "priorReceiptSha256": "sha256:d1ba70dfb96ecf6ba1d80259234533c618184430a42820ae8ac5417a972f8525",
+  "schemaVersion": "1.0",
+  "status": "approved"
+}

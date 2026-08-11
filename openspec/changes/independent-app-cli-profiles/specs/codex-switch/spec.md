@@ -199,6 +199,17 @@ selection contract.
 - **AND** an unknown, reordered, partial, or extended required-path set still
   fails closed before changing `current` or `rollback`.
 
+#### Scenario: Failed release upload residue is recovered exactly
+
+- **WHEN** a required release asset is absent from the uploaded asset set but
+  the explicit GitHub release-asset inventory contains one same-name,
+  zero-byte asset in `starter` state
+- **THEN** reconciliation rechecks the remote tag identity, deletes only that
+  exact asset ID, and reads the release inventory back before upload
+- **AND** it uploads and hashes the canonical asset without `--clobber`
+- **AND** uploaded, non-zero, duplicate-name, or unknown-state assets are not
+  deleted or overwritten and instead fail closed when they conflict.
+
 ### Requirement: Canonical shared Plugin and Skill desired state
 
 For the supported internal-CLI/official-App split, the system SHALL own one

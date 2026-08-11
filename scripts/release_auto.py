@@ -87,10 +87,19 @@ class ReleaseAsset:
 
 
 @dataclass(frozen=True)
+class ReleaseAssetRecord:
+    asset_id: int
+    name: str
+    state: str
+    size: int
+
+
+@dataclass(frozen=True)
 class ReleaseSnapshot:
     exists: bool
     assets: Tuple[str, ...]
     draft: bool = False
+    starter_assets: Tuple[ReleaseAssetRecord, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -223,6 +232,61 @@ class GitHubCliAdapter:
     def _gh(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return _run(["gh", *args], check=check)
 
+    def _list_release_assets(self, release_id: int) -> Tuple[ReleaseAssetRecord, ...]:
+        records: List[ReleaseAssetRecord] = []
+        page = 1
+        while True:
+            result = self._gh(
+                "api",
+                (
+                    f"repos/{self.repository}/releases/{release_id}/assets"
+                    f"?per_page=100&page={page}"
+                ),
+            )
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise ReleaseError(
+                    "GitHub release assets returned invalid JSON: "
+                    f"{error}"
+                ) from error
+            if not isinstance(payload, list):
+                raise ReleaseError(
+                    "GitHub release assets returned an unsupported response"
+                )
+            for raw_asset in payload:
+                if not isinstance(raw_asset, dict):
+                    raise ReleaseError("GitHub release has an invalid asset record")
+                asset_id = raw_asset.get("id")
+                name = raw_asset.get("name")
+                state = raw_asset.get("state")
+                size = raw_asset.get("size")
+                if (
+                    type(asset_id) is not int
+                    or asset_id <= 0
+                    or not isinstance(name, str)
+                    or not name
+                    or not isinstance(state, str)
+                    or not state
+                    or type(size) is not int
+                    or size < 0
+                ):
+                    raise ReleaseError("GitHub release has an invalid asset record")
+                records.append(
+                    ReleaseAssetRecord(
+                        asset_id=asset_id,
+                        name=name,
+                        state=state,
+                        size=size,
+                    )
+                )
+            if len(payload) < 100:
+                break
+            page += 1
+            if page > 1000:
+                raise ReleaseError("GitHub release asset pagination is unbounded")
+        return tuple(records)
+
     def inspect_release(self, tag: str) -> ReleaseSnapshot:
         encoded_tag = urllib.parse.quote(tag, safe="")
         result = self._gh(
@@ -259,25 +323,34 @@ class GitHubCliAdapter:
             ) from error
         if (
             not isinstance(payload, dict)
+            or type(payload.get("id")) is not int
+            or payload["id"] <= 0
             or not isinstance(payload.get("assets"), list)
             or type(payload.get("draft")) is not bool
         ):
             raise ReleaseError(f"GitHub release {tag} has an unsupported response")
-        names: List[str] = []
-        for raw_asset in payload["assets"]:
-            if (
-                not isinstance(raw_asset, dict)
-                or not isinstance(raw_asset.get("name"), str)
-                or not raw_asset["name"]
-            ):
-                raise ReleaseError(f"GitHub release {tag} has an invalid asset")
-            names.append(raw_asset["name"])
+        records = self._list_release_assets(payload["id"])
+        names = [record.name for record in records]
         if len(names) != len(set(names)):
             raise ReleaseConflict(f"GitHub release {tag} has duplicate asset names")
+        uploaded = sorted(
+            record.name for record in records if record.state == "uploaded"
+        )
+        non_uploaded = tuple(
+            sorted(
+                (
+                    record
+                    for record in records
+                    if record.state != "uploaded"
+                ),
+                key=lambda record: record.name,
+            )
+        )
         return ReleaseSnapshot(
             exists=True,
-            assets=tuple(sorted(names)),
+            assets=tuple(uploaded),
             draft=payload["draft"],
+            starter_assets=non_uploaded,
         )
 
     def create_release(self, tag: str) -> None:
@@ -322,6 +395,20 @@ class GitHubCliAdapter:
             str(path),
             "--repo",
             self.repository,
+        )
+
+    def delete_asset(self, tag: str, asset: object) -> None:
+        asset_id = getattr(asset, "asset_id", None)
+        name = getattr(asset, "name", None)
+        if type(asset_id) is not int or asset_id <= 0 or not isinstance(name, str):
+            raise ReleaseError(
+                f"GitHub release {tag} has an invalid asset deletion target"
+            )
+        self._gh(
+            "api",
+            "--method",
+            "DELETE",
+            f"repos/{self.repository}/releases/assets/{asset_id}",
         )
 
     def publish_release(self, tag: str) -> None:
@@ -903,6 +990,94 @@ def resolve_remote_semantic_tag(repo: Path, remote: str, tag: str) -> str:
     return commit
 
 
+def _snapshot_hidden_assets(
+    tag: str,
+    snapshot: ReleaseSnapshot,
+) -> Dict[str, ReleaseAssetRecord]:
+    raw_records = getattr(snapshot, "starter_assets", ())
+    if not isinstance(raw_records, tuple):
+        raise ReleaseError(f"GitHub release {tag} has invalid hidden assets")
+    visible = set(snapshot.assets)
+    records: Dict[str, ReleaseAssetRecord] = {}
+    for raw_record in raw_records:
+        asset_id = getattr(raw_record, "asset_id", None)
+        name = getattr(raw_record, "name", None)
+        state = getattr(raw_record, "state", None)
+        size = getattr(raw_record, "size", None)
+        if (
+            type(asset_id) is not int
+            or asset_id <= 0
+            or not isinstance(name, str)
+            or not name
+            or not isinstance(state, str)
+            or not state
+            or type(size) is not int
+            or size < 0
+        ):
+            raise ReleaseError(f"GitHub release {tag} has an invalid hidden asset")
+        if name in visible or name in records:
+            raise ReleaseConflict(f"GitHub release {tag} has duplicate asset names")
+        records[name] = ReleaseAssetRecord(
+            asset_id=asset_id,
+            name=name,
+            state=state,
+            size=size,
+        )
+    return records
+
+
+def _recoverable_starter_assets(
+    tag: str,
+    snapshot: ReleaseSnapshot,
+) -> Dict[str, ReleaseAssetRecord]:
+    hidden = _snapshot_hidden_assets(tag, snapshot)
+    recoverable: Dict[str, ReleaseAssetRecord] = {}
+    for name in REQUIRED_RELEASE_ASSETS:
+        record = hidden.get(name)
+        if record is None:
+            continue
+        if record.state != "starter":
+            raise ReleaseConflict(
+                "Existing release asset has unsupported release asset state: "
+                f"{tag}/{name} ({record.state})"
+            )
+        if record.size != 0:
+            raise ReleaseConflict(
+                "Refusing to delete non-empty starter release asset: "
+                f"{tag}/{name}"
+            )
+        recoverable[name] = record
+    return recoverable
+
+
+def _verify_existing_release_assets(
+    *,
+    tag: str,
+    snapshot: ReleaseSnapshot,
+    asset_map: Mapping[str, ReleaseAsset],
+    github: object,
+    prefix: str,
+) -> set[str]:
+    existing = set(snapshot.assets) if snapshot.exists else set()
+    with tempfile.TemporaryDirectory(prefix=prefix) as raw:
+        download_root = Path(raw)
+        for name in REQUIRED_RELEASE_ASSETS:
+            if name not in existing:
+                continue
+            destination = download_root / name
+            github.download_asset(tag, name, destination)
+            downloaded = build_asset_evidence(name, destination)
+            expected = asset_map[name]
+            if (
+                downloaded.size != expected.size
+                or downloaded.sha256 != expected.sha256
+            ):
+                raise ReleaseConflict(
+                    f"Existing release asset checksum mismatch: {tag}/{name}"
+                )
+    return existing
+
+
 def reconcile_release_assets(
     *,
     tag: str,
@@ -931,31 +1106,63 @@ def reconcile_release_assets(
     snapshot = github.inspect_release(tag)
     if not isinstance(snapshot, ReleaseSnapshot):
         raise ReleaseError("GitHub adapter returned an invalid release snapshot")
-    existing = set(snapshot.assets) if snapshot.exists else set()
-    required = set(REQUIRED_RELEASE_ASSETS)
-
-    with tempfile.TemporaryDirectory(prefix="codex-switch-release-existing-") as raw:
-        download_root = Path(raw)
-        for name in REQUIRED_RELEASE_ASSETS:
-            if name not in existing:
-                continue
-            destination = download_root / name
-            github.download_asset(tag, name, destination)
-            downloaded = build_asset_evidence(name, destination)
-            expected = asset_map[name]
-            if (
-                downloaded.size != expected.size
-                or downloaded.sha256 != expected.sha256
-            ):
-                raise ReleaseConflict(
-                    f"Existing release asset checksum mismatch: {tag}/{name}"
-                )
+    recoverable_starters = (
+        _recoverable_starter_assets(tag, snapshot)
+        if snapshot.exists
+        else {}
+    )
+    existing = _verify_existing_release_assets(
+        tag=tag,
+        snapshot=snapshot,
+        asset_map=asset_map,
+        github=github,
+        prefix="codex-switch-release-existing-",
+    )
 
     if not snapshot.exists:
         if tag_identity_check is not None:
             tag_identity_check()
         github.create_release(tag)
         snapshot = ReleaseSnapshot(exists=True, assets=(), draft=True)
+        existing = set()
+
+    recovered_starters: List[str] = []
+    if recoverable_starters:
+        delete_asset = getattr(github, "delete_asset", None)
+        if not callable(delete_asset):
+            raise ReleaseError(
+                "GitHub adapter cannot recover starter release assets"
+            )
+        for name in REQUIRED_RELEASE_ASSETS:
+            record = recoverable_starters.get(name)
+            if record is None:
+                continue
+            if tag_identity_check is not None:
+                tag_identity_check()
+            delete_asset(tag, record)
+            recovered_starters.append(name)
+        refreshed = github.inspect_release(tag)
+        if (
+            not isinstance(refreshed, ReleaseSnapshot)
+            or not refreshed.exists
+        ):
+            raise ReleaseError(
+                f"GitHub release {tag} is missing after starter recovery"
+            )
+        remaining_starters = _recoverable_starter_assets(tag, refreshed)
+        if remaining_starters:
+            raise ReleaseConflict(
+                f"GitHub release {tag} retained starter assets after deletion: "
+                f"{', '.join(sorted(remaining_starters))}"
+            )
+        snapshot = refreshed
+        existing = _verify_existing_release_assets(
+            tag=tag,
+            snapshot=snapshot,
+            asset_map=asset_map,
+            github=github,
+            prefix="codex-switch-release-recovered-",
+        )
 
     missing = [name for name in REQUIRED_RELEASE_ASSETS if name not in existing]
     uploaded: List[str] = []
@@ -971,6 +1178,12 @@ def reconcile_release_assets(
         or not uploaded_snapshot.exists
     ):
         raise ReleaseError(f"GitHub release {tag} is missing after publication")
+    uploaded_starters = _recoverable_starter_assets(tag, uploaded_snapshot)
+    if uploaded_starters:
+        raise ReleaseConflict(
+            f"GitHub release {tag} retained starter assets after publication: "
+            f"{', '.join(sorted(uploaded_starters))}"
+        )
     uploaded_names = set(uploaded_snapshot.assets)
     still_missing = [
         name for name in REQUIRED_RELEASE_ASSETS if name not in uploaded_names
@@ -1014,6 +1227,12 @@ def reconcile_release_assets(
         or final_snapshot.draft
     ):
         raise ReleaseError(f"GitHub release {tag} is not published")
+    final_starters = _recoverable_starter_assets(tag, final_snapshot)
+    if final_starters:
+        raise ReleaseConflict(
+            f"GitHub release {tag} retained published starter assets: "
+            f"{', '.join(sorted(final_starters))}"
+        )
     final_names = set(final_snapshot.assets)
     still_missing = [
         name for name in REQUIRED_RELEASE_ASSETS if name not in final_names
@@ -1048,11 +1267,12 @@ def reconcile_release_assets(
             "published"
             if published_now
             else "reconciled"
-            if uploaded
+            if uploaded or recovered_starters
             else "complete"
         ),
         "tag": tag,
         "commit": release_commit,
+        "recovered_starter_assets": sorted(recovered_starters),
         "uploaded_assets": sorted(uploaded),
         "verified_assets": verified,
         "asset_sha256": {

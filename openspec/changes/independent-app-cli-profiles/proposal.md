@@ -59,6 +59,12 @@ accidental and cannot be managed or reported as healthy.
   runtime is reused as the profile seed. Consecutive last-runtime renders with
   unchanged profile and shared inputs must not accumulate blank lines or
   managed annotation trivia.
+- Make release reconciliation recover GitHub's exact failed-upload residue:
+  when a required name is absent from the uploaded asset view but reserved by
+  one zero-byte `starter` asset, delete only that asset ID after tag-identity
+  validation, read back the release, then upload and hash the canonical bytes.
+  Uploaded, non-zero, duplicate, or unknown-state assets remain fail closed and
+  are never clobbered.
 - Review every other known configuration surface and classify its target
   ownership. This change implements only Plugin/Skill desired state and the
   bounded safety guards it requires; credentials, sessions, broad TOML state,
@@ -87,7 +93,8 @@ None.
   Doctor, verify, wrapper result presentation, shared-capability reconciliation,
   independent plugin materialization, installed/source version interpretation,
   post-reconcile target catalog attestation, functional-preflight progress
-  reporting, and idempotent managed runtime-config annotation.
+  reporting, idempotent managed runtime-config annotation, and state-aware
+  release-asset reconciliation.
 - Shared state: additive store-owned desired generation and per-profile
   materialization receipts plus one store-owned prepared-commit recovery
   journal. Runtime `config.toml` files remain rendered views, not a shared

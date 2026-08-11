@@ -1,0 +1,30 @@
+{
+  "authorityContractSha256": "sha256:bc96fc94509cc55474e698b32db07ddb23a6779388cc3dc99c18215beb3c185d",
+  "decision": "AWAIT_HUMAN",
+  "evidenceSha256": "sha256:768efc801a283eccada47dfeef52fab10358f828721180204856908d9f2451bd",
+  "gateKey": "sha256:c8c9a77aa540b5270bc805932df27fff2c76037bd087dbaf35ef5024eb5ad5f0",
+  "invalidations": [
+    "standing_contract:missing"
+  ],
+  "kind": "devflow-authority-gate-receipt",
+  "materialDelta": true,
+  "missingAuthority": [
+    "risk:external",
+    "action:submit_release_repair",
+    "effect:git.push",
+    "target:origin/main",
+    "standing_milestone.contract"
+  ],
+  "nextQuestion": "是否授权将当前 9 个已验证文件提交并推送到 origin/main，并允许该 push 触发 Auto Release 对 v0.1.14 执行精确 starter 删除和资产重传？",
+  "reasonCodes": [
+    "risk_outside_authority_envelope",
+    "standing_contract_missing",
+    "action_outside_authority_envelope",
+    "effect_outside_authority_envelope",
+    "target_outside_authority_envelope"
+  ],
+  "receiptPath": ".planning/devflow/authority-gates/c8c9a77aa540b5270bc805932df27fff2c76037bd087dbaf35ef5024eb5ad5f0.json",
+  "requestSha256": "sha256:cdd8173ba696bf9df66f8508450c05bbdd1a7efa3b8a37f742d7dc43b218ef73",
+  "schemaVersion": "1.0",
+  "status": "recorded"
+}

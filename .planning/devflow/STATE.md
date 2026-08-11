@@ -18,10 +18,10 @@ standing_milestone:
   review_digest: none
 
 authority_gate:
-  key: sha256:5cb2dc7b977b55b5541c7dccc6cdf6e36b1255998c829d82eecf9e64e6bfb7df
+  key: sha256:c8c9a77aa540b5270bc805932df27fff2c76037bd087dbaf35ef5024eb5ad5f0
   status: resolved
-  resolution_digest: sha256:aed500eba1810c3b47edc6aff920ccf339da13798e3ea18ae3d05c9cccebe1ad
-  evidence_digest: sha256:b3eb2a02e6b196da5aab04956d02f01a417eb4c681278c71fafde512d978be52
+  resolution_digest: sha256:65560062f73b206ab5f6b9faf57a7a674cdb54ab7608e3be1810bb192c0991b2
+  evidence_digest: sha256:c1f1938f643d1a21f73edcdceab738f3ebd9865d384c563262de97e3ca7b5d58
   next_question: none
   missing_authority: []
 
@@ -41,7 +41,7 @@ implementation_readiness:
 
 context_management:
   compact_policy: checkpoint_boundary
-  last_checkpoint_id: 2026-08-11-runtime-config-idempotence-complete
+  last_checkpoint_id: 2026-08-11-release-starter-recovery-complete
   last_checkpoint_file: .planning/devflow/verification/independent-app-cli-profiles.md
   compact_recommended: false
   compact_status: not_needed
@@ -88,13 +88,11 @@ context_health:
 
 ## Current Status
 
-Task 14 is complete. Managed runtime rendering is byte-idempotent after the
-last-runtime seed is active, unrelated user spacing remains preserved, and the
-focused, complete profile, static, strict OpenSpec, workflow, and diff gates
-pass. Live-deployment tasks 10.3 and 10.4 remain separately gated.
+Task 15 source, tests, and control-plane evidence are verified. The user
+authorized direct submission to `origin/main` and the push-triggered Auto
+Release reconciliation for `v0.1.14`.
 
 ## Next Action
 
-Do not run a live config rewrite, installation, switch, App action, dependency
-activation, or cache effect under task 14. Route tasks 10.3 and 10.4 through
-their separate live-deployment decision.
+Commit and push the verified task 15 repair, then verify the Auto Release run
+and the canonical `v0.1.14` asset inventory.
