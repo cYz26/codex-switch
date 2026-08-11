@@ -657,6 +657,59 @@ class CodexUpdateReleaseTests(unittest.TestCase):
         )
         self.assertTrue(manifest.is_file())
 
+    def test_release_assets_accept_manifest_bearing_v0_1_14_only_in_legacy_mode(
+        self,
+    ) -> None:
+        historical_repo = self.root / "historical-v0.1.14"
+        subprocess.run(
+            ["git", "clone", "-q", "--no-local", str(REPO_ROOT), str(historical_repo)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "-q", "--detach", "v0.1.14"],
+            cwd=historical_repo,
+            check=True,
+        )
+        historical_output = self.root / "historical-v0.1.14-output"
+        env = {
+            **os.environ,
+            "CODEX_SWITCH_DIST_DIR": str(historical_output),
+            "CODEX_SWITCH_PYTHON": sys.executable,
+        }
+        subprocess.run(
+            [str(historical_repo / "scripts" / "package-release.sh")],
+            cwd=historical_repo,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        commit = release_auto.resolve_commit(historical_repo, "HEAD")
+
+        with self.assertRaises(release_auto.ReleaseError) as caught:
+            release_auto.collect_release_assets(
+                historical_repo,
+                historical_output,
+                "v0.1.14",
+                commit,
+            )
+
+        self.assertIn("required paths mismatch", str(caught.exception))
+
+        assets = release_auto.collect_release_assets(
+            historical_repo,
+            historical_output,
+            "v0.1.14",
+            commit,
+            allow_legacy=True,
+        )
+
+        self.assertEqual(
+            list(release_auto.REQUIRED_RELEASE_ASSETS),
+            [asset.name for asset in assets],
+        )
+
     def test_release_assets_reject_legacy_package_content_drift(self) -> None:
         module, receipt, commit = self._prepare_commit_bound_legacy_release()
         (receipt.package_dir / "README.md").write_text("drifted package\n")

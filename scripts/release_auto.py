@@ -695,7 +695,12 @@ def collect_release_assets(
     )
     try:
         if os.path.lexists(str(manifest_path)):
-            manifest = validate_release_outputs(package_dir, runner, archive)
+            manifest = validate_release_outputs(
+                package_dir,
+                runner,
+                archive,
+                allow_historical_required_paths=allow_legacy,
+            )
         else:
             if not allow_legacy:
                 raise ReleaseError(
@@ -1281,8 +1286,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-legacy",
         action="store_true",
         help=(
-            "Allow only trusted version-scoped historical layouts when the "
-            "release bundle manifest is absent."
+            "Allow trusted version-scoped layouts without manifests and exact "
+            "supported historical required-path manifests."
         ),
     )
     assets.add_argument("--json", action="store_true")
