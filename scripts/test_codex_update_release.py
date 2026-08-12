@@ -1504,6 +1504,61 @@ class HiddenStarterReleaseGitHub(FakeReleaseGitHub):
         super().upload_asset(tag, path)
 
 
+class DisappearingStarterReleaseGitHub(HiddenStarterReleaseGitHub):
+    def __init__(
+        self,
+        *,
+        recreate_result: str = "draft",
+        starter_names: tuple[str, ...] = ("install.sh",),
+    ) -> None:
+        super().__init__()
+        if recreate_result not in {
+            "draft",
+            "failure",
+            "missing",
+            "published",
+            "nonempty",
+        }:
+            raise ValueError(f"unsupported recreate result: {recreate_result}")
+        if (
+            not starter_names
+            or len(starter_names) != len(set(starter_names))
+            or any(
+                name not in release_auto.REQUIRED_RELEASE_ASSETS
+                for name in starter_names
+            )
+        ):
+            raise ValueError("starter names must be unique canonical assets")
+        self.recreate_result = recreate_result
+        self.hidden_assets = {
+            name: SimpleNamespace(
+                asset_id=901 + index,
+                name=name,
+                state="starter",
+                size=0,
+            )
+            for index, name in enumerate(starter_names)
+        }
+
+    def delete_asset(self, tag: str, asset: object) -> None:
+        super().delete_asset(tag, asset)
+        self.hidden_assets.clear()
+        self.exists = False
+        self.draft = False
+
+    def create_release(self, tag: str) -> None:
+        if self.recreate_result == "failure":
+            self.calls.append(("create", tag))
+            raise release_auto.ReleaseError("injected recreation failure")
+        super().create_release(tag)
+        if self.recreate_result == "missing":
+            self.exists = False
+        elif self.recreate_result == "published":
+            self.draft = False
+        elif self.recreate_result == "nonempty":
+            self.assets["unexpected.bin"] = b"unexpected"
+
+
 class CodexReleasePlannerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1741,6 +1796,26 @@ class CodexReleasePlannerTests(unittest.TestCase):
         )
         self.assertFalse(github.draft)
 
+    def test_reconcile_reads_back_new_draft_before_upload(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = FakeReleaseGitHub(exists=False, assets={})
+
+        release_auto.reconcile_release_assets(
+            tag="v1.0.1",
+            release_commit=self.base_commit,
+            tag_commit=self.base_commit,
+            assets=assets,
+            github=github,
+        )
+
+        create_index = github.calls.index(("create", "v1.0.1"))
+        upload_index = github.calls.index(("upload", "install.sh"))
+        self.assertEqual(
+            ("inspect", "v1.0.1"),
+            github.calls[create_index + 1],
+        )
+        self.assertLess(create_index, upload_index)
+
     def test_reconcile_uploads_only_the_missing_asset(self) -> None:
         assets, _manifest = self._asset_fixture()
         asset_bytes = {
@@ -1799,6 +1874,166 @@ class CodexReleasePlannerTests(unittest.TestCase):
         self.assertIn(
             ("inspect", "v1.0.1"),
             github.calls[delete_index + 1 : upload_index],
+        )
+
+    def test_reconcile_recreates_draft_when_starter_delete_removes_release(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = DisappearingStarterReleaseGitHub()
+
+        receipt = release_auto.reconcile_release_assets(
+            tag="v1.0.1",
+            release_commit=self.base_commit,
+            tag_commit=self.base_commit,
+            assets=assets,
+            github=github,
+        )
+
+        self.assertEqual("published", receipt["outcome"])
+        self.assertTrue(
+            receipt["recreated_release_after_starter_recovery"]
+        )
+        self.assertEqual(
+            ["install.sh"],
+            receipt["recovered_starter_assets"],
+        )
+        self.assertEqual(
+            sorted(release_auto.REQUIRED_RELEASE_ASSETS),
+            sorted(github.assets),
+        )
+        self.assertFalse(github.draft)
+        delete_index = github.calls.index(("delete", "install.sh"))
+        create_index = github.calls.index(("create", "v1.0.1"))
+        upload_index = github.calls.index(("upload", "install.sh"))
+        self.assertLess(delete_index, create_index)
+        self.assertIn(
+            ("inspect", "v1.0.1"),
+            github.calls[delete_index + 1 : create_index],
+        )
+        self.assertEqual(
+            ("inspect", "v1.0.1"),
+            github.calls[create_index + 1],
+        )
+        self.assertLess(create_index, upload_index)
+        self.assertIn(("publish", "v1.0.1"), github.calls)
+
+    def test_reconcile_stops_using_stale_starter_ids_when_release_disappears(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = DisappearingStarterReleaseGitHub(
+            starter_names=("install.sh", "run.sh")
+        )
+
+        receipt = release_auto.reconcile_release_assets(
+            tag="v1.0.1",
+            release_commit=self.base_commit,
+            tag_commit=self.base_commit,
+            assets=assets,
+            github=github,
+        )
+
+        self.assertEqual(
+            [("delete", "install.sh")],
+            [call for call in github.calls if call[0] == "delete"],
+        )
+        self.assertEqual(
+            ["install.sh", "run.sh"],
+            receipt["recovered_starter_assets"],
+        )
+        self.assertTrue(
+            receipt["recreated_release_after_starter_recovery"]
+        )
+        self.assertEqual(
+            sorted(release_auto.REQUIRED_RELEASE_ASSETS),
+            sorted(github.assets),
+        )
+
+    def test_reconcile_stops_when_starter_release_recreation_fails(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = DisappearingStarterReleaseGitHub(
+            recreate_result="failure"
+        )
+
+        with self.assertRaises(release_auto.ReleaseError) as caught:
+            release_auto.reconcile_release_assets(
+                tag="v1.0.1",
+                release_commit=self.base_commit,
+                tag_commit=self.base_commit,
+                assets=assets,
+                github=github,
+            )
+
+        self.assertIn("injected recreation failure", str(caught.exception))
+        self.assertIn(("create", "v1.0.1"), github.calls)
+        self.assertFalse(
+            any(call[0] in {"upload", "publish"} for call in github.calls)
+        )
+
+    def test_reconcile_requires_empty_draft_after_starter_recreation(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        cases = (
+            ("missing", release_auto.ReleaseError, "missing after draft creation"),
+            ("published", release_auto.ReleaseConflict, "not a draft"),
+            ("nonempty", release_auto.ReleaseConflict, "not empty"),
+        )
+
+        for recreate_result, error_type, message in cases:
+            with self.subTest(recreate_result=recreate_result):
+                github = DisappearingStarterReleaseGitHub(
+                    recreate_result=recreate_result
+                )
+
+                with self.assertRaises(error_type) as caught:
+                    release_auto.reconcile_release_assets(
+                        tag="v1.0.1",
+                        release_commit=self.base_commit,
+                        tag_commit=self.base_commit,
+                        assets=assets,
+                        github=github,
+                    )
+
+                self.assertIn(message, str(caught.exception))
+                self.assertFalse(
+                    any(
+                        call[0] in {"upload", "publish"}
+                        for call in github.calls
+                    )
+                )
+
+    def test_reconcile_rechecks_tag_before_recreating_starter_release(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = DisappearingStarterReleaseGitHub()
+        checks = 0
+
+        def check_tag_identity() -> None:
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                raise release_auto.ReleaseConflict("remote tag moved")
+
+        with self.assertRaises(release_auto.ReleaseConflict) as caught:
+            release_auto.reconcile_release_assets(
+                tag="v1.0.1",
+                release_commit=self.base_commit,
+                tag_commit=self.base_commit,
+                assets=assets,
+                github=github,
+                tag_identity_check=check_tag_identity,
+            )
+
+        self.assertIn("remote tag moved", str(caught.exception))
+        self.assertEqual(2, checks)
+        self.assertNotIn(("create", "v1.0.1"), github.calls)
+        self.assertFalse(
+            any(call[0] in {"upload", "publish"} for call in github.calls)
         )
 
     def test_reconcile_rejects_nonempty_starter_asset(self) -> None:

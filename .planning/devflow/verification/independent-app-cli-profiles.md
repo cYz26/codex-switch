@@ -1131,3 +1131,150 @@ duplicate-name, and unsupported-state records fail closed, and no path uses
 
 No live GitHub Release mutation, workflow rerun, DevFlow migration apply,
 dependency, credential, Git, archive, cleanup, or destructive effect occurred.
+
+## Task 15 Post-Submit Acceptance Failure
+
+Commit `85dc960` was pushed to `origin/main` under the consumed submit
+authority. Auto Release run `31500533015`, job `93809040291`, completed steps
+1-10 and failed step 11, `Reconcile existing release assets`, with exit code 2.
+The tag remains `v0.1.14 ->
+19a243342ef9f78776b3fad0b2292198845147d3`.
+
+The complete authenticated step log is unavailable, so this record does not
+claim a verbatim post-delete error. The available post-run inventory no longer
+exposes a tag-addressable Release, and the submitted reconciler's next branch
+after exact starter deletion raises when that readback is missing. Task 15 is
+therefore reopened with a deterministic public-seam RED that makes
+`delete_asset()` remove the Release record.
+
+The required repair is bounded: revalidate tag identity, create one verified-
+tag draft, immediately require an existing empty draft readback, then continue
+through the unchanged canonical upload, pre-publish checksum proof, publish,
+final readback, and final checksum proof. Failed creation, missing/non-draft/
+non-empty readback, and tag movement must fail before later mutation.
+
+No second commit, push, workflow rerun, live Release mutation, DevFlow
+migration, historical task 10.3/10.4 effect, dependency, archive, or cleanup is
+authorized.
+
+### RED: Release Disappears After Starter Deletion
+
+The first public-seam regression made `delete_asset()` remove the Release
+record. Before the repair:
+
+```text
+python3.12 -m unittest -v \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_recreates_draft_when_starter_delete_removes_release
+
+ERROR
+release_auto.ReleaseError:
+GitHub release v1.0.1 is missing after starter recovery
+```
+
+The two-axis review then found that a batch of two captured starters could
+reuse the second stale asset ID if deleting the first removed the Release. The
+second RED reproduced that exact path:
+
+```text
+python3.12 -m unittest -v \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_stops_using_stale_starter_ids_when_release_disappears
+
+FAIL
+AssertionError: unexpected hidden asset deletion: run.sh
+```
+
+### GREEN: Per-Delete Readback and Empty-Draft Recreation
+
+`_create_empty_draft_release()` now revalidates tag identity, creates through
+the verified-tag draft adapter, and immediately requires an existing, empty,
+draft `ReleaseSnapshot`. The same helper replaces the prior synthetic snapshot
+when reconciliation starts without a Release.
+
+Starter recovery now reads back after each exact deletion. If the Release is
+missing, it records every starter name from the vanished Release, stops using
+all remaining old asset IDs, recreates and reads back one empty draft, and
+continues through the existing upload, pre-publish checksum, publish, final
+readback, and final checksum flow. If the Release remains, a retained deleted
+name or changed replacement starter record fails closed. `--clobber` remains
+absent.
+
+Focused final matrix:
+
+```text
+Ran 19 tests in 2.817s
+OK
+```
+
+It covers initial create/readback, one and multiple disappearing starters,
+recreation failure, missing/non-draft/non-empty recreated readback, starter
+record drift protection, tag checks before delete/recreate/upload/publish,
+existing checksum conflict, duplicate names, and exact-ID adapter deletion.
+
+### Fresh Final Validation
+
+Qualifying Python 3.12 results after the review repair:
+
+```text
+complete update/release suite: 154/154 in 319.357s
+complete profile suite:        226/226 in 348.999s
+Python AST:                         2/2
+Bash syntax:                        5/5
+strict OpenSpec:                  22/22
+DevFlow 0.4.1 workflow:          ok=true, issues=[]
+git diff --check:                passed
+```
+
+The review's exploratory system Python 3.9 run reported one
+`package-release.sh` subprocess failure without inner stderr. It is not
+qualifying because this suite's established runtime is Python 3.12; the exact
+historical `v0.1.14` legacy-package test passes in the fresh 154/154 run.
+
+The remote readback immediately before final evidence still shows
+`origin/main` at `85dc960`, tag `v0.1.14` at
+`19a243342ef9f78776b3fad0b2292198845147d3`, Run `31500533015` completed with
+`failure`, and job `93809040291` failed only at step 11 after steps 1-10
+succeeded. The public unauthenticated release-by-tag endpoint returns 404;
+this does not claim access to the missing authenticated command stderr.
+
+Standards review findings about stale state/evidence are resolved by this
+checkpoint. Its test-fixture primitive-string concern is resolved with an
+explicit allowed-value guard. Spec review's stale multi-starter ID finding is
+resolved by per-delete readback and the dedicated RED/GREEN regression.
+
+No live GitHub Release mutation, workflow rerun, second commit or push,
+DevFlow migration apply, historical task 10.3/10.4 effect, dependency,
+credential, archive, cleanup, or destructive effect occurred.
+
+## Task 15 Second-Submit Release Scope Gate
+
+On 2026-08-12 the user authorized the verified task 15.4-15.6 repair commit
+and push, the push-triggered Auto Release run, and the exact `v0.1.14` starter
+recovery/recreation/upload verification target. The corresponding DevFlow
+authority gate was cleared into `external_effects`.
+
+The required pre-push inspection found a second publication target. Both the
+latest semantic tag and `VERSION` remain `v0.1.14` / `0.1.14`, and
+`scripts/release_auto.py` is release-relevant. The checked-in workflow runs
+both branches when reconciliation and source changes are present:
+
+```text
+release_action=reconcile_then_prepare
+reconcile target=v0.1.14
+next_tag=v0.1.15
+additional effects=release commit, atomic main/tag push, Release publication
+```
+
+The existing grant names `origin/main`, Auto Release, GitHub Release mutation,
+and `github-release/v0.1.14`; it does not name `refs/tags/v0.1.15` or
+`github-release/v0.1.15`. Publishing that next version would therefore expand
+the exact external target. The repair remains verified, but commit/push is
+stopped before consuming its authority pending one explicit `v0.1.15`
+publication decision.
+
+Fresh pre-gate checks remain green: focused recovery 19/19, Python AST 2/2,
+Bash syntax 5/5, strict OpenSpec 22/22, DevFlow `ok=true`, JSON parsing, and
+`git diff --check`. The reported DevFlow project-migration drift remains
+INC-018 and was not applied.
+
+No commit, push, workflow run/rerun, tag creation, Release mutation, DevFlow
+migration, archive, cleanup, or destructive effect occurred.

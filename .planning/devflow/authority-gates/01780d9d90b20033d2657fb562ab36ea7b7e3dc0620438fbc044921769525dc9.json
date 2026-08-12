@@ -1,0 +1,34 @@
+{
+  "authorityContractSha256": "sha256:00150ab985c1b9a75320a3d6c10db480ee8130337bba52c39c10c34f55b77b0b",
+  "decision": "AWAIT_HUMAN",
+  "evidenceSha256": "sha256:be7119c421ba5a2ce6b4f92a2c33235f6faf47431599660ee9415454c73c76c0",
+  "gateKey": "sha256:01780d9d90b20033d2657fb562ab36ea7b7e3dc0620438fbc044921769525dc9",
+  "invalidations": [
+    "standing_contract:missing"
+  ],
+  "kind": "devflow-authority-gate-receipt",
+  "materialDelta": true,
+  "missingAuthority": [
+    "risk:external",
+    "action:submit_release_recreation_repair",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:github.release.mutate",
+    "target:origin/main",
+    "target:github-release/v0.1.14",
+    "standing_milestone.contract"
+  ],
+  "nextQuestion": "是否授权将当前已验证的 task 15.4-15.6 修复提交并推送到 origin/main，并允许该 push 触发 Auto Release 再次对 v0.1.14 执行精确 starter 恢复、必要时重建空草稿 Release、上传并校验资产？",
+  "reasonCodes": [
+    "risk_outside_authority_envelope",
+    "standing_contract_missing",
+    "action_outside_authority_envelope",
+    "effect_outside_authority_envelope",
+    "target_outside_authority_envelope"
+  ],
+  "receiptPath": ".planning/devflow/authority-gates/01780d9d90b20033d2657fb562ab36ea7b7e3dc0620438fbc044921769525dc9.json",
+  "requestSha256": "sha256:dc0e0d0411cb944dbba5f3bb41541b82fc2c68a558d3a160c5984a8d5e027a71",
+  "schemaVersion": "1.0",
+  "status": "recorded"
+}

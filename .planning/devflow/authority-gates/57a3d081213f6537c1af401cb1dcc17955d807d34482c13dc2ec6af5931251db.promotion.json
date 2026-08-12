@@ -1,0 +1,34 @@
+{
+  "authorityArtifactPath": "openspec/changes/independent-app-cli-profiles/evidence/release-v0.1.15-publication-authority-grant.json",
+  "authorityArtifactSha256": "sha256:b822315f2b192b94db5513f775eda0cda01706e9c0660e78a0c58649abb38f08",
+  "changeId": "independent-app-cli-profiles",
+  "current": true,
+  "decision": "CONTINUE",
+  "evidenceCurrent": true,
+  "gateKey": "sha256:57a3d081213f6537c1af401cb1dcc17955d807d34482c13dc2ec6af5931251db",
+  "goalId": "019f8f8f-e64c-7093-af73-2c0247cf2891",
+  "kind": "devflow-authority-promotion-proof",
+  "materialDelta": false,
+  "missingAuthority": [],
+  "priorAuthorityContractSha256": "sha256:b1d3ea8dd24aa2a42497ac791fd12dfb526414f73cc6d3707b4ddf3aaffcdbf3",
+  "priorEvidenceSha256": "sha256:02c16edf6f3dda973f72b1b4a7b1416b471e9ce6ce199dd0da13a8610bb74822",
+  "priorMissingAuthority": [
+    "action:prepare_and_publish_v0.1.15",
+    "effect:git.atomic_release_ref_push",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "priorReceiptSha256": "sha256:30f70cd30dc59d0f17c48da2bb69e9171aa9e58b7c50fbba84e737e47fbb499f",
+  "promotedAuthority": [
+    "action:prepare_and_publish_v0.1.15",
+    "effect:git.atomic_release_ref_push",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "reasonCodes": [
+    "user_authorized_v0.1.15_auto_release_publication"
+  ],
+  "resumeStage": "external_effects",
+  "schemaVersion": "1.0",
+  "trusted": true
+}

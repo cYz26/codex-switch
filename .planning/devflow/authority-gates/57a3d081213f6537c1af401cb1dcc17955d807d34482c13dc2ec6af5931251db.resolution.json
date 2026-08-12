@@ -1,0 +1,21 @@
+{
+  "authorityContractSha256": "sha256:b1d3ea8dd24aa2a42497ac791fd12dfb526414f73cc6d3707b4ddf3aaffcdbf3",
+  "decision": "AWAIT_HUMAN",
+  "evidenceSha256": "sha256:02c16edf6f3dda973f72b1b4a7b1416b471e9ce6ce199dd0da13a8610bb74822",
+  "gateKey": "sha256:57a3d081213f6537c1af401cb1dcc17955d807d34482c13dc2ec6af5931251db",
+  "invalidations": [],
+  "materialDelta": true,
+  "missingAuthority": [
+    "action:prepare_and_publish_v0.1.15",
+    "effect:git.atomic_release_ref_push",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "reasonCodes": [
+    "action_outside_authority_envelope",
+    "effect_outside_authority_envelope",
+    "target_outside_authority_envelope"
+  ],
+  "requestSha256": "sha256:df58234d06cfa441f91da55a91f1c77a057570231a72f2133a261c2d9e696bde",
+  "schemaVersion": "1.0"
+}

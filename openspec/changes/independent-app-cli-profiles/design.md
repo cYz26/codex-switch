@@ -541,6 +541,31 @@ starter records, duplicate names, unsupported states, or readback drift fail
 closed. `--clobber` remains prohibited because it cannot distinguish an empty
 failed upload from a valid conflicting artifact.
 
+Auto Release run `31500533015` exposed a second state transition after the
+first repair was submitted: the reconcile step failed after the exact starter
+deletion path, and the release was no longer addressable through the available
+tag-based readback. The complete authenticated command log is unavailable, so
+the disappearance branch is the leading evidence-backed hypothesis rather than
+a claimed verbatim remote error.
+
+Reconciliation therefore treats a missing post-delete readback as recoverable
+only after a fresh tag-identity check. It creates one draft release through the
+existing verified-tag adapter, immediately reads it back, and requires an
+existing, empty, draft snapshot before any upload. Creation failure, missing
+readback, a published or non-empty readback, and tag movement all fail closed
+before later mutations. Successful recovery then follows the unchanged
+canonical upload, download/hash, publish, final readback, and final checksum
+proof. The same readback rule applies when reconciliation begins with no
+Release record.
+
+Each exact starter deletion is followed by its own readback. If more than one
+canonical starter was observed and the first deletion removes the Release,
+reconciliation stops using every remaining asset ID from the vanished Release,
+records those names as recovered, and enters the same empty-draft recreation
+path. If the Release remains, any changed replacement starter record fails
+closed before deletion; an unchanged remaining starter may proceed through the
+next tag-check/delete/readback iteration.
+
 ## Completion Contract
 
 - The named split command has a failing-then-passing wrapper and transaction
@@ -559,7 +584,9 @@ failed upload from a valid conflicting artifact.
 - A release whose uploaded asset view is empty but whose explicit inventory
   contains a canonical zero-byte `starter` asset is repaired by exact-ID
   deletion, readback, upload, and hash verification without clobbering any
-  uploaded or ambiguous asset.
+  uploaded or ambiguous asset. If the post-delete Release readback is missing,
+  the tag is revalidated and one empty draft is created and read back before
+  the same upload, publish, and checksum proof.
 - A latest package can promote over the exact immediately prior 20-path
   manifest generation while preserving it as rollback; unknown required-path
   lists remain rejected before reference mutation.
@@ -656,8 +683,9 @@ archive, cleanup, and any destructive action remain separate Human Gates.
     native reconcile with fresh target proof, precise findings, and one managed
     internal CLI acceptance while the official App remains running.
 13. Failed release-upload recovery: explicit asset-state inventory, exact
-    zero-byte starter deletion, readback, canonical upload, checksum proof, and
-    no live external effect during source verification.
+    zero-byte starter deletion, missing-Release draft recreation with immediate
+    readback, canonical upload, checksum proof, and no live external effect
+    during source verification.
 
 ## Execution Ledger
 
@@ -676,7 +704,7 @@ archive, cleanup, and any destructive action remain separate Human Gates.
 | Live-bootstrap repair | main, serialized | shared materializer/preflight, focused tests, README/SKILL, OpenSpec/control plane | stale-installed/current-source RED/GREEN, exact post-add attestation, progress capture, focused/broad/static/spec evidence | live cache mutation, install, split retry | approved; task 12.1 is next |
 | Backend-managed acceptance repair | main, serialized | catalog adapter, shared materializer, focused tests, README/SKILL, OpenSpec/control plane | live-shape source/target divergence RED/GREEN, installed precedence, native cache-lifecycle replacement, one post-add batch catalog, precise findings, full/static/spec/package review, functional managed-shim acceptance | split/install/App stop or mutation/internal binary update/direct codex-switch cache mutation/Git/release/archive | complete 2026-08-11; tasks 13.1-13.4 verified and native cache-lifecycle decision reconciled |
 | Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | complete 2026-08-11; tasks 14.1-14.3 verified |
-| Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter RED, exact zero-byte delete/readback/upload GREEN, conflict guards, focused/full/static/spec/diff proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete 2026-08-11; tasks 15.1-15.3 verified |
+| Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter, disappearing Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete in source 2026-08-11; tasks 15.1-15.6 verified, second submit awaits Human Gate |
 
 ## Continuation Policy
 
@@ -811,8 +839,10 @@ present and a packaged split dry-run imports no checkout code.
   target artifact proof before receipt commit.
 - [A failed upload reserves a canonical release name invisibly] -> inventory
   release assets with state and ID, delete only an exact zero-byte `starter`
-  record after tag validation, read back before upload, and retain no-clobber
-  checksum conflict behavior for every uploaded or ambiguous record.
+  record after tag validation, read back after every deletion, stop using stale
+  IDs if the Release disappears, recreate and read back one empty draft, and
+  retain no-clobber checksum conflict behavior for every uploaded or ambiguous
+  record.
 
 Rollback for source work is the inverse scoped patch. Runtime rollback is
 tested only in isolated roots; no live rollback is needed because no live

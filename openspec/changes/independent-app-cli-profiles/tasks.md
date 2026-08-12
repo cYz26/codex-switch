@@ -265,6 +265,30 @@
   ledger, namespaced state, and verification evidence. Do not mutate a live
   GitHub Release, rerun a workflow, apply the pending DevFlow migration, or
   perform dependency, commit, push, archive, or cleanup effects.
+- [x] 15.4 Record Auto Release run `31500533015` as a failed acceptance result
+  and add focused RED coverage where deleting the only canonical zero-byte
+  `starter` makes the tag-based Release readback return missing. Add guards for
+  failed recreation, missing or non-draft readback, and tag movement before
+  recreation.
+- [x] 15.5 Revalidate tag identity, recreate one verified-tag draft Release,
+  immediately require an empty draft readback, then continue through canonical
+  upload, publish, and checksum verification. Apply the same create/readback
+  contract when reconciliation begins with no Release. Read back after every
+  exact starter deletion and stop using stale IDs if the Release disappears.
+  Do not use `--clobber` or weaken existing uploaded/non-zero/duplicate/
+  unknown-state guards.
+- [x] 15.6 Run the focused recovery matrix, complete update/release and adjacent
+  profile suites, Python/static/strict OpenSpec/workflow/diff checks, then
+  update ledger, namespaced state, and verification evidence. Record a new
+  Human Gate before any second commit, push, workflow rerun, or live Release
+  mutation; the prior submit authority is consumed.
+- [x] 15.7 Before consuming the second submit authority, inspect the complete
+  push-triggered Auto Release plan. Record that release-relevant changes since
+  `v0.1.14` select `reconcile_then_prepare`: after repairing `v0.1.14`, the
+  workflow would create a release commit, atomically update `main` and tag
+  `v0.1.15`, and publish the new Release. Stop at a new Human Gate because the
+  current grant names only the `v0.1.14` repair and does not authorize the
+  additional `v0.1.15` tag or publication target.
 
 ## Execution Policy
 
@@ -311,3 +335,12 @@ source, test, OpenSpec, ledger, namespaced-state, and verification-record
 changes only. It does not authorize a live GitHub Release deletion/upload,
 workflow rerun, DevFlow migration apply, dependency change, commit, push,
 archive, or cleanup.
+
+The first submit authority was consumed by commit `85dc960` and Auto Release
+run `31500533015`. The failed acceptance result keeps task 15 open for the
+bounded source/test/control-plane repair in 15.4-15.6, but a second commit,
+push, workflow rerun, or live Release mutation requires a new Human Gate.
+
+The second submit authority permits the repair commit/push and `v0.1.14`
+reconciliation. It does not by itself authorize the subsequently discovered
+`v0.1.15` release commit, tag, or publication selected by the same workflow.

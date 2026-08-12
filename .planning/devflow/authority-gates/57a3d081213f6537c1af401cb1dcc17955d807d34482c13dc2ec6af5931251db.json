@@ -1,0 +1,25 @@
+{
+  "authorityContractSha256": "sha256:b1d3ea8dd24aa2a42497ac791fd12dfb526414f73cc6d3707b4ddf3aaffcdbf3",
+  "decision": "AWAIT_HUMAN",
+  "evidenceSha256": "sha256:02c16edf6f3dda973f72b1b4a7b1416b471e9ce6ce199dd0da13a8610bb74822",
+  "gateKey": "sha256:57a3d081213f6537c1af401cb1dcc17955d807d34482c13dc2ec6af5931251db",
+  "invalidations": [],
+  "kind": "devflow-authority-gate-receipt",
+  "materialDelta": true,
+  "missingAuthority": [
+    "action:prepare_and_publish_v0.1.15",
+    "effect:git.atomic_release_ref_push",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "nextQuestion": "本次 Auto Release 的实际计划是在修复 v0.1.14 后继续创建 release commit、原子更新 main 和 tag v0.1.15，并发布 v0.1.15；是否一并授权这些 v0.1.15 外部效果？",
+  "reasonCodes": [
+    "action_outside_authority_envelope",
+    "effect_outside_authority_envelope",
+    "target_outside_authority_envelope"
+  ],
+  "receiptPath": ".planning/devflow/authority-gates/57a3d081213f6537c1af401cb1dcc17955d807d34482c13dc2ec6af5931251db.json",
+  "requestSha256": "sha256:df58234d06cfa441f91da55a91f1c77a057570231a72f2133a261c2d9e696bde",
+  "schemaVersion": "1.0",
+  "status": "recorded"
+}

@@ -62,9 +62,12 @@ accidental and cannot be managed or reported as healthy.
 - Make release reconciliation recover GitHub's exact failed-upload residue:
   when a required name is absent from the uploaded asset view but reserved by
   one zero-byte `starter` asset, delete only that asset ID after tag-identity
-  validation, read back the release, then upload and hash the canonical bytes.
-  Uploaded, non-zero, duplicate, or unknown-state assets remain fail closed and
-  are never clobbered.
+  validation, read back after each deletion, then upload and hash the canonical
+  bytes without reusing stale asset IDs.
+  If deleting the residue makes the release unaddressable, revalidate the tag,
+  recreate one empty draft release, read that draft back, and continue through
+  the same no-clobber upload, publish, and checksum proof. Uploaded, non-zero,
+  duplicate, unknown-state, or non-empty recreated states remain fail closed.
 - Review every other known configuration surface and classify its target
   ownership. This change implements only Plugin/Skill desired state and the
   bounded safety guards it requires; credentials, sessions, broad TOML state,

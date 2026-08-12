@@ -1078,6 +1078,40 @@ def _verify_existing_release_assets(
     return existing
 
 
+def _create_empty_draft_release(
+    *,
+    tag: str,
+    github: object,
+    tag_identity_check: Optional[Callable[[], None]],
+) -> ReleaseSnapshot:
+    create_release = getattr(github, "create_release", None)
+    if not callable(create_release):
+        raise ReleaseError("GitHub adapter cannot create a draft release")
+    if tag_identity_check is not None:
+        tag_identity_check()
+    create_release(tag)
+    created = github.inspect_release(tag)
+    if not isinstance(created, ReleaseSnapshot):
+        raise ReleaseError(
+            f"GitHub adapter returned an invalid release snapshot after "
+            f"creating {tag}"
+        )
+    if not created.exists:
+        raise ReleaseError(f"GitHub release {tag} is missing after draft creation")
+    if not created.draft:
+        raise ReleaseConflict(
+            f"GitHub release {tag} is not a draft after creation"
+        )
+    hidden = _snapshot_hidden_assets(tag, created)
+    names = sorted(set(created.assets) | set(hidden))
+    if names:
+        raise ReleaseConflict(
+            f"GitHub release {tag} is not empty after draft creation: "
+            f"{', '.join(names)}"
+        )
+    return created
+
+
 def reconcile_release_assets(
     *,
     tag: str,
@@ -1120,36 +1154,64 @@ def reconcile_release_assets(
     )
 
     if not snapshot.exists:
-        if tag_identity_check is not None:
-            tag_identity_check()
-        github.create_release(tag)
-        snapshot = ReleaseSnapshot(exists=True, assets=(), draft=True)
+        snapshot = _create_empty_draft_release(
+            tag=tag,
+            github=github,
+            tag_identity_check=tag_identity_check,
+        )
         existing = set()
 
     recovered_starters: List[str] = []
+    recreated_after_starter_recovery = False
     if recoverable_starters:
         delete_asset = getattr(github, "delete_asset", None)
         if not callable(delete_asset):
             raise ReleaseError(
                 "GitHub adapter cannot recover starter release assets"
             )
+        refreshed = snapshot
+        remaining_starters = recoverable_starters
         for name in REQUIRED_RELEASE_ASSETS:
-            record = recoverable_starters.get(name)
+            record = remaining_starters.get(name)
             if record is None:
                 continue
             if tag_identity_check is not None:
                 tag_identity_check()
             delete_asset(tag, record)
             recovered_starters.append(name)
-        refreshed = github.inspect_release(tag)
-        if (
-            not isinstance(refreshed, ReleaseSnapshot)
-            or not refreshed.exists
-        ):
-            raise ReleaseError(
-                f"GitHub release {tag} is missing after starter recovery"
-            )
-        remaining_starters = _recoverable_starter_assets(tag, refreshed)
+            refreshed = github.inspect_release(tag)
+            if not isinstance(refreshed, ReleaseSnapshot):
+                raise ReleaseError(
+                    "GitHub adapter returned an invalid release snapshot after "
+                    f"starter recovery for {tag}"
+                )
+            if not refreshed.exists:
+                for recovered_name in REQUIRED_RELEASE_ASSETS:
+                    if (
+                        recovered_name in recoverable_starters
+                        and recovered_name not in recovered_starters
+                    ):
+                        recovered_starters.append(recovered_name)
+                refreshed = _create_empty_draft_release(
+                    tag=tag,
+                    github=github,
+                    tag_identity_check=tag_identity_check,
+                )
+                recreated_after_starter_recovery = True
+                remaining_starters = {}
+                break
+            remaining_starters = _recoverable_starter_assets(tag, refreshed)
+            if name in remaining_starters:
+                raise ReleaseConflict(
+                    f"GitHub release {tag} retained starter asset after deletion: "
+                    f"{name}"
+                )
+            for remaining_name, remaining_record in remaining_starters.items():
+                if recoverable_starters.get(remaining_name) != remaining_record:
+                    raise ReleaseConflict(
+                        "GitHub release starter asset changed during recovery: "
+                        f"{tag}/{remaining_name}"
+                    )
         if remaining_starters:
             raise ReleaseConflict(
                 f"GitHub release {tag} retained starter assets after deletion: "
@@ -1273,6 +1335,9 @@ def reconcile_release_assets(
         "tag": tag,
         "commit": release_commit,
         "recovered_starter_assets": sorted(recovered_starters),
+        "recreated_release_after_starter_recovery": (
+            recreated_after_starter_recovery
+        ),
         "uploaded_assets": sorted(uploaded),
         "verified_assets": verified,
         "asset_sha256": {

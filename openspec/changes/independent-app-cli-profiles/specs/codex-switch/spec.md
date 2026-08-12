@@ -206,9 +206,17 @@ selection contract.
   zero-byte asset in `starter` state
 - **THEN** reconciliation rechecks the remote tag identity, deletes only that
   exact asset ID, and reads the release inventory back before upload
+- **AND** if that readback reports the Release missing, reconciliation
+  rechecks tag identity, creates one draft Release for the verified tag, and
+  requires an existing, empty, draft readback before upload
+- **AND** when multiple canonical starter records exist, each deletion is
+  followed by readback and no remaining asset ID from a vanished Release is
+  reused
 - **AND** it uploads and hashes the canonical asset without `--clobber`
 - **AND** uploaded, non-zero, duplicate-name, or unknown-state assets are not
-  deleted or overwritten and instead fail closed when they conflict.
+  deleted or overwritten and instead fail closed when they conflict
+- **AND** failed creation, missing or non-draft recreated state, non-empty
+  recreated state, or tag movement fails closed before later mutation.
 
 ### Requirement: Canonical shared Plugin and Skill desired state
 

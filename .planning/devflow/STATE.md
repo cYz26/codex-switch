@@ -1,11 +1,11 @@
 ---
 workflow_version: 0.4.0
 project_mode: brownfield
-current_stage: executing
+current_stage: external_effects
 
 current_change:
   id: independent-app-cli-profiles
-  status: executing
+  status: external_effects
 
 standing_milestone:
   status: inactive
@@ -18,10 +18,10 @@ standing_milestone:
   review_digest: none
 
 authority_gate:
-  key: sha256:c8c9a77aa540b5270bc805932df27fff2c76037bd087dbaf35ef5024eb5ad5f0
+  key: sha256:57a3d081213f6537c1af401cb1dcc17955d807d34482c13dc2ec6af5931251db
   status: resolved
-  resolution_digest: sha256:65560062f73b206ab5f6b9faf57a7a674cdb54ab7608e3be1810bb192c0991b2
-  evidence_digest: sha256:c1f1938f643d1a21f73edcdceab738f3ebd9865d384c563262de97e3ca7b5d58
+  resolution_digest: sha256:bb5c59200d100136ee5090781111f2087548a832d412aba9513afaaa2fbf939d
+  evidence_digest: sha256:52765b988330c79c14413a266f7bab4eaf083e5ee06b3a8f14298ae1833ee7f9
   next_question: none
   missing_authority: []
 
@@ -30,8 +30,8 @@ gates:
   spec_approved: true
   plan_written: true
   tests_baseline_known: true
-  implementation_done: false
-  verification_passed: false
+  implementation_done: true
+  verification_passed: true
   state_updated: true
   archive_allowed: false
   release_allowed: false
@@ -41,7 +41,7 @@ implementation_readiness:
 
 context_management:
   compact_policy: checkpoint_boundary
-  last_checkpoint_id: 2026-08-11-release-starter-recovery-complete
+  last_checkpoint_id: 2026-08-11-release-starter-recreation-verified
   last_checkpoint_file: .planning/devflow/verification/independent-app-cli-profiles.md
   compact_recommended: false
   compact_status: not_needed
@@ -88,11 +88,8 @@ context_health:
 
 ## Current Status
 
-Task 15 source, tests, and control-plane evidence are verified. The user
-authorized direct submission to `origin/main` and the push-triggered Auto
-Release reconciliation for `v0.1.14`.
+The authority gate is resolved and execution may resume.
 
 ## Next Action
 
-Commit and push the verified task 15 repair, then verify the Auto Release run
-and the canonical `v0.1.14` asset inventory.
+Continue the approved execution slice.
