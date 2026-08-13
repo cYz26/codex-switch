@@ -18,10 +18,10 @@ standing_milestone:
   review_digest: none
 
 authority_gate:
-  key: sha256:614cc0253ca0735cf2af34acc60564687b7b081de9fa2e417045ea447a851d38
+  key: sha256:a40cea2a985a0eb898ee82bc975cf4049822325e3e2cf6eb57f0846ca095e8c9
   status: resolved
-  resolution_digest: sha256:7b9fe68038e69c22b8f8d74e447bfe666377bc2087e89461d7829cf7df5d011d
-  evidence_digest: sha256:365009cf9858a43be8471fc4f3cd543357e1298c1c14da5ea95331ef5a3a2ccd
+  resolution_digest: sha256:6b34738467e335cab5f6641a1323cc41b3fe96e8709e3b0ffe82fda45ff319f4
+  evidence_digest: sha256:89be09a2391c8b7d17e27ec780c4a1866553e4420243982bad3afb5f09aa15d1
   next_question: none
   missing_authority: []
 
@@ -41,13 +41,13 @@ implementation_readiness:
 
 context_management:
   compact_policy: checkpoint_boundary
-  last_checkpoint_id: 2026-08-13-release-recreation-submit-ready
+  last_checkpoint_id: 2026-08-13-draft-release-discovery-submit-authorized
   last_checkpoint_file: .planning/devflow/verification/independent-app-cli-profiles.md
   compact_recommended: false
   compact_status: not_needed
   last_compact_result_file: none
   compact_source: openspec
-  compact_updated_at: 2026-08-13T12:07:11+08:00
+  compact_updated_at: 2026-08-13T16:16:02+08:00
   compact_skip_reason: bounded_change_context_is_healthy
   compact_error: none
   compact_after:
@@ -88,21 +88,18 @@ context_health:
 
 ## Current Status
 
-Tasks 16.1-16.3, 17.1-17.6, and 18.1-18.4 are complete in source. Typed bounded
-Release recreation, Official-authoritative shared readiness, and post-switch
-shared synchronization pass fresh focused, complete, package, static, strict
-OpenSpec, workflow, diff, Plugin Eval, and independent Spec/Standards review
-gates. Review-discovered 4xx precedence, equals-form wrapper routing, transport
-classification, and diagnostic control-character injection gaps are closed.
-The final retained package is byte-exact for the changed runtime paths.
+Tasks 16.6-16.8 are complete and authority gate `a40cea2a...` is resolved.
+The exact task 16.9 commit, fast-forward push, push-triggered `v0.1.14`
+recovery, and atomic `v0.1.15` publication are authorized. Fresh pre-submit
+Update/Release passes 171/171 and Profile/Wrapper passes 227/227.
 
 ## Next Action
 
-Use the resolved `614cc025...` authority and the user's 2026-08-13 submit
-request to stage only the verified source/test/docs/OpenSpec/control-plane and
-authority evidence, excluding `.planning/devflow/context-health/events.jsonl`.
-Create one commit on `main`, require a native Git fast-forward preflight against
-`origin/main`, push, then monitor the authorized Auto Release through restored
-`v0.1.14` assets and atomic `v0.1.15` publication. Archive, project migration,
-install/live split, dependency/credential changes, cleanup, force push, and
-unrelated runtime effects remain excluded.
+Stage only the verified draft-discovery repair, tests, OpenSpec, ledger, state,
+verification, and authority evidence. Exclude
+`.planning/devflow/context-health/events.jsonl`. Require the native Git
+fast-forward preflight, commit and push once to `origin/main`, then monitor Auto
+Release through remote ref, Release metadata, canonical asset, and checksum
+readback. Archive, project migration, install/live split,
+dependency/credential changes, cleanup, force push, manual broad Release edits,
+and unrelated runtime effects remain excluded.

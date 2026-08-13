@@ -1,0 +1,34 @@
+{
+  "authorityDigest": "d596b8897ac78a458d98acb43c72e17ead8328883e2551537ad747a49f7be8a6",
+  "decision": "AWAIT_HUMAN",
+  "evidenceDigest": "62b5fefaa8f7571477639586c02ecc57f43f545ad42c013163217eb6f418acc0",
+  "gateKey": "a40cea2a985a0eb898ee82bc975cf4049822325e3e2cf6eb57f0846ca095e8c9",
+  "invalidations": [
+    "authority_gate:614cc0253ca0735cf2af34acc60564687b7b081de9fa2e417045ea447a851d38:consumed",
+    "workflow_run:31666160863:failed",
+    "release:v0.1.14:unpublished",
+    "release:v0.1.15:absent"
+  ],
+  "materialDelta": true,
+  "missingAuthority": [
+    "action:submit_verified_draft_discovery_repair_and_republish",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:github.release.mutate",
+    "effect:git.atomic_release_ref_push",
+    "target:origin/main",
+    "target:github-release/v0.1.14",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "reasonCodes": [
+    "prior_submit_authority_consumed",
+    "external_effect_requires_fresh_authority",
+    "failed_acceptance_requires_new_workflow_run",
+    "release_targets_remain_unpublished"
+  ],
+  "requestDigest": "d94e887303b6649995aab530d4339c02be308268d91e5bacb3a941c6f85ba6ae",
+  "schemaVersion": 1,
+  "standingContractDigest": null
+}

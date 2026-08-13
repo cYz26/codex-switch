@@ -234,6 +234,18 @@ selection contract.
   published, non-empty, duplicate, changed-tag, or exhausted states fail closed
   without upload, publish, clobber, or unbounded polling.
 
+#### Scenario: Draft discovery survives tag-endpoint 404
+
+- **WHEN** authenticated tag-specific Release inspection returns HTTP 404 after
+  draft creation while the paginated Releases collection contains one draft
+  whose `tag_name` exactly matches the verified tag
+- **THEN** reconciliation selects that unique draft snapshot and applies the
+  existing empty-draft and asset-state guards before upload
+- **AND** no exact match remains a missing Release
+- **AND** duplicate exact matches, malformed collection records, invalid JSON,
+  pagination exhaustion, or any non-404 tag-specific failure fails closed
+  without create, delete, upload, publish, or clobber.
+
 ### Requirement: Official-authoritative shared Plugin and Skill desired state
 
 For the supported internal-CLI/official-App split, the system SHALL treat the

@@ -375,6 +375,41 @@
   Commit, push, workflow rerun, live Release mutation, migration, dependency,
   archive, and cleanup remain gated; the prior submit authority is consumed.
 
+### 2026-08-13 Draft Release Discovery Follow-up
+
+- observed_result: commit `6a5fa85` reached `origin/main`; Auto Release run
+  `31666160863` failed after draft creation and five readback attempts with
+  `GitHub release v0.1.14 is missing after draft creation`.
+- remote_state: `origin/main` remains `6a5fa85`; tag `v0.1.14` remains
+  `19a243342ef9f78776b3fad0b2292198845147d3`; `v0.1.15` is absent; the
+  published Releases index still marks `v0.1.13` latest; and `install.sh`,
+  `run.sh`, and `codex-switch.tar.gz` for `v0.1.14` return 404.
+- root_cause: `GitHubCliAdapter.inspect_release()` treated a 404 from
+  `/releases/tags/{tag}` as definitive absence. That endpoint does not reliably
+  expose the newly created draft, while GitHub's authenticated Releases
+  collection includes drafts for callers with push access.
+- required_behavior: use the tag endpoint as the normal fast path; on explicit
+  404 only, paginate the Releases collection and select one exact `tag_name`
+  match. Preserve missing on no match and fail duplicate, malformed, non-404,
+  invalid-JSON, or unbounded states before any later mutation.
+- authority: gate `614cc025...` was consumed by commit `6a5fa85`, its push, and
+  run `31666160863`. The user's failed-run report authorized the bounded
+  source/test/OpenSpec/control-plane follow-up, and the subsequent `授权`
+  decision resolved gate `a40cea2a...` for one verified commit/push plus the
+  exact `v0.1.14` recovery and atomic `v0.1.15` publication effects.
+- verification: draft-discovery adapter matrix passes 6/6; complete Python
+  3.12 Update/Release passes 171/171 in 316.787 seconds; Profile/Wrapper passes
+  227/227 in 296.864 seconds; Python AST 61/61, Bash 5/5, repository JSON 29/29,
+  active/all strict OpenSpec 22/22, DevFlow validation, and diff checks pass.
+  After authorization, fresh no-TTY pre-submit reruns pass Update/Release
+  171/171 in 313.754 seconds and Profile/Wrapper 227/227 in 284.600 seconds.
+- human_gate: `a40cea2a...` is resolved through
+  `draft-release-discovery-submit-authority-grant.json` for one verified
+  commit/push and the push-triggered `v0.1.14` recovery plus atomic `v0.1.15`
+  publication. It does not authorize force push, manual broad Release edits,
+  migration, install, cleanup, archive, dependency/credential changes, or
+  unrelated runtime effects.
+
 ### 2026-08-05 Shared Plugin/Skill Configuration Reopen Addendum
 
 - objective: extend the supported internal-CLI/official-App split with one
@@ -501,7 +536,7 @@ contained, typed, recoverable, bounded, and sanitized.
 | SPLIT-PROACTIVE-SYNC-001 | Apply `independent-app-cli-profiles` task 18 by serialized TDD | main | wrapper, public shared-lifecycle/profile tests, README, SKILL, active OpenSpec task 18, ledger/state/verification evidence | successful apply ordering for both split forms, sync-failure stop/remediation, dry-run zero-write, focused/full/static/spec/workflow/package/review proof | source/test/docs/control-plane only; no live split/config/cache/backend/App/install/migration/dependency/Git/release/archive/cleanup effect | done in source at 4/4; lifecycle 24/24, shared aggregate 149/149, profile 227/227, update/release 165/165, isolated package focus 30/30, static/spec/workflow/diff and two-axis review pass; install/live activation remain gated |
 | SPLIT-CONFIG-IDEMPOTENCE-001 | Apply `independent-app-cli-profiles` task 14 by serialized TDD | main | managed runtime annotation cleanup, focused config/profile tests, active OpenSpec task 14, ledger/state/verification evidence | repeated-render RED/GREEN, user-format preservation, adjacent suites, strict/static/diff proof | no live config/switch/install/App/plugin/cache/dependency/Git/release/archive/cleanup effect | done at 3/3; config 31/31, focused profile 4/4, complete profile 226/226, strict OpenSpec 22/22, workflow/static/diff gates pass |
 | RELEASE-STARTER-RECOVERY-001 | Apply `independent-app-cli-profiles` task 15 by serialized TDD | main | release adapter/reconciler, focused update-release tests, active OpenSpec task 15, ledger/state/verification evidence | hidden-starter, disappearing-Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | no live Release mutation/workflow rerun/migration/dependency/Git/archive/cleanup effect | done at 6/6; focused 19/19, update/release 154/154, profile 226/226, AST/Bash/OpenSpec 22/22/workflow/diff pass; second submit gated |
-| RELEASE-RECREATION-PROPAGATION-001 | Apply `independent-app-cli-profiles` task 16 by serialized TDD and authorized external effects | main | release adapter/reconciler, wrapper/shared diagnostic guards found by final review, focused tests, active OpenSpec task 16, authority evidence, ledger/state/verification | typed bounded create/readback retries, terminal 4xx precedence, forced-close/deadline coverage, single-line diagnostics, complete source/package/static/spec/workflow/review proof, remote ref/Release/asset readback | gate `614cc025...` plus the 2026-08-13 submit request authorize one verified commit/push and the exact `v0.1.14` recovery plus `v0.1.15` publication; no migration/archive/install/cleanup/force push | source verification complete at 16.3; Update/Release 165/165, Profile 227/227, shared aggregate 149/149, final package focus 30/30, Plugin Eval 54/F under INC-012, and both rereview axes pass; tasks 16.4-16.5 remain external |
+| RELEASE-RECREATION-PROPAGATION-001 | Apply `independent-app-cli-profiles` task 16 by serialized TDD and authorized external effects | main | release adapter/reconciler, wrapper/shared diagnostic guards found by final review, focused tests, active OpenSpec task 16, authority evidence, ledger/state/verification | typed bounded create/readback retries, draft-list fallback, terminal 4xx precedence, forced-close/deadline coverage, single-line diagnostics, complete source/package/static/spec/workflow/review proof, remote ref/Release/asset readback | gate `614cc025...` was consumed by commit `6a5fa85`, push, and failed run `31666160863`; gate `a40cea2a...` now authorizes the task 16.9 commit/push and exact Auto Release targets; no migration/archive/install/cleanup/force push | first submission failed acceptance; task 16.7 source proof passes focused 6/6, update/release 171/171, profile 227/227, static/spec/workflow/diff gates; task 16.9 is ready for external effects |
 
 ## Dependency and Execution Order
 
@@ -565,7 +600,8 @@ write task.
 | INC-024 | the latest read-only local-reference audit reports an unconfigured upstream for the OpenAI plugins mirror and a preserved local `hatch-pet` divergence; Workshop now verifies `matches-source` | DEFER_AND_CONTINUE | neither remaining item affects the codex-switch source/package Completion Contract; applying updater, marketplace changes, or overwriting a local Skill is outside the confirmed authority | review ownership of the mirror and local Skill in a separate maintenance task before any apply or cleanup |
 | INC-025 | the one task-13 live command succeeded while native internal `plugin add` replaced seven upgraded cache versions and removed their old version directories | DONE_CONTRACT_RECONCILED | the user explicitly assigned installed-version lifecycle to the native backend; OpenSpec now permits backend retention/replacement/removal while codex-switch still performs no direct cache copy/link/delete or garbage collection | no restoration, retry, or cleanup is required; future retention guarantees require a separately approved preservation architecture and cache-mutation authority |
 | INC-026 | the authorized repair push would select Auto Release `reconcile_then_prepare`, repairing `v0.1.14` and then creating a release commit/tag plus published Release for `v0.1.15` | BLOCKED_AWAITING_HUMAN | the current grant explicitly covers the repair commit/push, Auto Release execution, and `v0.1.14` mutation, but does not name the additional `v0.1.15` Git tag or Release target | authorize or reject the `v0.1.15` release commit, atomic main/tag update, and publication before consuming the pending push authority |
-| INC-027 | Auto Release run `31558709842` removed the failed `v0.1.14` starter state but failed while recreating/reconciling the Release; the REST release-by-tag endpoint is now 404 and the release list stops at `v0.1.13` | READY_FOR_EXTERNAL_EFFECT | the user resolved authority gate `614cc025...` for the Full OpenSpec typed bounded recreation repair, verification, one commit/push, `v0.1.14` recovery, and atomic `v0.1.15` publication; fresh task 16.3 proof is complete | execute tasks 16.4-16.5 only; preserve all conflict guards and do not apply INC-018 migration or unrelated effects |
+| INC-027 | Auto Release run `31558709842` removed the failed `v0.1.14` starter state but failed while recreating/reconciling the Release; the REST release-by-tag endpoint was 404 and the release list stopped at `v0.1.13` | DONE_FIRST_REPAIR_FAILED_ACCEPTANCE | authority gate `614cc025...` produced verified commit `6a5fa85` and run `31666160863`, proving the bounded create retry was not sufficient because draft discovery still depended only on the tag endpoint | superseded by INC-028; preserve the first repair and do not rerun or manually edit the Release |
+| INC-028 | Auto Release run `31666160863` created the `v0.1.14` draft but five tag-endpoint readbacks reported it missing | READY_FOR_EXTERNAL_EFFECT | the adapter now falls back on explicit 404 to the authenticated paginated Releases collection and selects one exact `tag_name` match; public adapter regressions also reject malformed, invalid-JSON, unbounded, duplicate, and non-404 states; full source proof is green and gate `a40cea2a...` is resolved | execute task 16.9 once; verify both Releases and canonical assets before claiming completion |
 | INC-009 | installed `0.1.13` official switch attempted to back up internal `ipc/ipc.sock` and failed before commit | DONE_SOURCE | `ipc` and `mcp-oauth-locks` are known profile-local runtime state already inside TPS shared-support ownership; exact-name exclusion preserves unknown-special fail-closed behavior | source repair is verified; installation and live official switch require separate approval |
 | INC-010 | internal and official can drift outside the approved internal binary/model/API/provider/auth differences; current Subagent drift selects v1 because internal Azure model metadata lacks `multi_agent_version=v2` | ACTIVE_FULL_OPENSPEC_PLAN_REVIEW | the previous Goal and TPS live recovery are complete; the parity proposal, design, delta spec, and implementation ledger are complete and strictly valid, but production execution has not started | review the active change, then begin task 1.1 RED through `openspec-apply-change`; capability-gate the v2 overlay and forbid silent fallback |
 | INC-011 | installed strict `0.1.13` validates the same-version historical `v0.1.13` asset before comparing versions and emits `source_invalid` | DONE_SOURCE_AND_ROLLOUT | trusted version metadata now short-circuits same/older releases before download or staging; newer malformed candidates remain fail closed | final source installed; normal `status` prints `already up to date 0.1.13` with no `source_invalid` or sync warning |
@@ -3008,6 +3044,30 @@ write task.
   `f73c7c2c...2cd`; release-counterpart Plugin Eval remains the known 54/F
   INC-012 debt. No Git, Release, migration, install, cleanup, archive,
   dependency, credential, or runtime effect occurred. Tasks 16.4-16.5 are next.
+- 2026-08-13: tasks 16.6-16.8 completed the draft-discovery source follow-up.
+  Auto Release run `31666160863` proved that a just-created draft can remain
+  absent from the tag endpoint across all five readbacks. The adapter now uses
+  that endpoint as the fast path and, on explicit 404 only, scans at most 1000
+  authenticated Releases pages for one exact `tag_name`; no match remains
+  missing, while duplicate, malformed, invalid-JSON, unbounded, and non-404
+  states fail closed. Focused coverage passes 6/6 in 0.638 seconds, complete
+  Update/Release 171/171 in 316.787 seconds, and Profile/Wrapper 227/227 in
+  296.864 seconds. One exploratory Profile invocation with a PTY entered the
+  expected interactive confirmation and was interrupted; the qualifying
+  no-TTY rerun is the recorded result. Python AST 61/61, Bash 5/5, repository
+  JSON 29/29, active strict OpenSpec, all strict OpenSpec 22/22, DevFlow 0.4.1
+  validation (`ok=true`, zero issues, existing INC-018 warning only), and
+  `git diff --check` pass. Read-only remote proof keeps `main=6a5fa85`,
+  `v0.1.14=19a2433`, `v0.1.15` absent, public latest `v0.1.13`, and all three
+  `v0.1.14` assets at 404. The user's `授权` decision resolves Human Gate
+  `a40cea2a...` through the checked-in authority grant and promotion proof.
+  Fresh pre-submit no-TTY reruns pass Update/Release 171/171 in 313.754 seconds
+  and Profile/Wrapper 227/227 in 284.600 seconds. Final quick gates pass Python
+  AST 61/61, Bash 5/5, all repository JSON 82/82, active/all strict OpenSpec
+  22/22, DevFlow `ok=true` with only the existing INC-018 guidance warning, and
+  `git diff --check`. No commit, push, workflow rerun, Release mutation,
+  migration, install, cleanup, archive, dependency, credential, or unrelated
+  runtime effect has occurred yet.
 
 ## Validation Commands
 

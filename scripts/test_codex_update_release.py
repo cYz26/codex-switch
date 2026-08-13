@@ -2542,6 +2542,276 @@ class CodexReleasePlannerTests(unittest.TestCase):
         )
         self.assertNotIn(("publish", "v1.0.1"), github.calls)
 
+    def test_github_release_inspection_finds_draft_via_release_listing(
+        self,
+    ) -> None:
+        first_page = [
+            {
+                "tag_name": f"v0.0.{index}",
+            }
+            for index in range(100)
+        ]
+        responses = [
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "message": "Not Found",
+                        "status": "404",
+                    }
+                ),
+                stderr="gh: Not Found (HTTP 404)",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(first_page),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "id": 77,
+                            "tag_name": "v0.1.14",
+                            "draft": True,
+                            "assets": [],
+                        }
+                    ]
+                ),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="[]",
+                stderr="",
+            ),
+        ]
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            side_effect=responses,
+        ) as run:
+            snapshot = release_auto.GitHubCliAdapter(
+                "owner/repo"
+            ).inspect_release("v0.1.14")
+
+        self.assertTrue(snapshot.exists)
+        self.assertTrue(snapshot.draft)
+        self.assertEqual((), snapshot.assets)
+        self.assertEqual(
+            [
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases/tags/v0.1.14",
+                ],
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases?per_page=100&page=1",
+                ],
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases?per_page=100&page=2",
+                ],
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases/77/assets?per_page=100&page=1",
+                ],
+            ],
+            [call.args[0] for call in run.call_args_list],
+        )
+
+    def test_github_release_inspection_preserves_missing_without_exact_match(
+        self,
+    ) -> None:
+        responses = [
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "message": "Not Found",
+                        "status": "404",
+                    }
+                ),
+                stderr="gh: Not Found (HTTP 404)",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps([{"tag_name": "v0.1.140"}]),
+                stderr="",
+            ),
+        ]
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            side_effect=responses,
+        ) as run:
+            snapshot = release_auto.GitHubCliAdapter(
+                "owner/repo"
+            ).inspect_release("v0.1.14")
+
+        self.assertFalse(snapshot.exists)
+        self.assertEqual(2, run.call_count)
+
+    def test_github_release_inspection_rejects_duplicate_list_matches(
+        self,
+    ) -> None:
+        responses = [
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "message": "Not Found",
+                        "status": "404",
+                    }
+                ),
+                stderr="gh: Not Found (HTTP 404)",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {"tag_name": "v0.1.14"},
+                        {"tag_name": "v0.1.14"},
+                    ]
+                ),
+                stderr="",
+            ),
+        ]
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            side_effect=responses,
+        ):
+            with self.assertRaises(release_auto.ReleaseConflict) as caught:
+                release_auto.GitHubCliAdapter("owner/repo").inspect_release(
+                    "v0.1.14"
+                )
+
+        self.assertIn("duplicate releases", str(caught.exception))
+
+    def test_github_release_inspection_does_not_list_on_non_404_failure(
+        self,
+    ) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "message": "Resource not accessible by integration",
+                    "status": "403",
+                }
+            ),
+            stderr="gh: Resource not accessible by integration (HTTP 403)",
+        )
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            return_value=completed,
+        ) as run:
+            with self.assertRaises(release_auto.ReleaseError):
+                release_auto.GitHubCliAdapter("owner/repo").inspect_release(
+                    "v0.1.14"
+                )
+
+        self.assertEqual(1, run.call_count)
+
+    def test_github_release_inspection_rejects_invalid_listing_payloads(
+        self,
+    ) -> None:
+        invalid_payloads = (
+            "{",
+            json.dumps({"tag_name": "v0.1.14"}),
+            json.dumps([{"id": 77}]),
+        )
+
+        for listing_payload in invalid_payloads:
+            with self.subTest(listing_payload=listing_payload):
+                responses = [
+                    subprocess.CompletedProcess(
+                        args=[],
+                        returncode=1,
+                        stdout=json.dumps(
+                            {
+                                "message": "Not Found",
+                                "status": "404",
+                            }
+                        ),
+                        stderr="gh: Not Found (HTTP 404)",
+                    ),
+                    subprocess.CompletedProcess(
+                        args=[],
+                        returncode=0,
+                        stdout=listing_payload,
+                        stderr="",
+                    ),
+                ]
+
+                with mock.patch.object(
+                    release_auto,
+                    "_run",
+                    side_effect=responses,
+                ):
+                    with self.assertRaises(release_auto.ReleaseError):
+                        release_auto.GitHubCliAdapter(
+                            "owner/repo"
+                        ).inspect_release("v0.1.14")
+
+    def test_github_release_inspection_rejects_unbounded_listing(
+        self,
+    ) -> None:
+        missing = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "message": "Not Found",
+                    "status": "404",
+                }
+            ),
+            stderr="gh: Not Found (HTTP 404)",
+        )
+        full_page = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {"tag_name": f"v0.0.{index}"}
+                    for index in range(100)
+                ]
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(
+            release_auto,
+            "_run",
+            side_effect=[missing, *([full_page] * 1000)],
+        ) as run:
+            with self.assertRaises(release_auto.ReleaseError) as caught:
+                release_auto.GitHubCliAdapter("owner/repo").inspect_release(
+                    "v0.1.14"
+                )
+
+        self.assertIn("pagination is unbounded", str(caught.exception))
+        self.assertEqual(1001, run.call_count)
+
     def test_github_release_inspection_lists_starter_assets(self) -> None:
         release_payload = {
             "id": 77,

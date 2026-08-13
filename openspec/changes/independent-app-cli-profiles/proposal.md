@@ -87,6 +87,10 @@ accidental and cannot be managed or reported as healthy.
   post-success visibility. Every create retry revalidates the tag and missing
   Release, a successful create receives readback-only retries, and permission,
   rate-limit, unknown validation, or conflicting state still fails immediately.
+  Because GitHub's tag-specific endpoint can return 404 for a newly created
+  draft, authenticated inspection falls back only on that 404 to the paginated
+  Releases collection and selects one exact `tag_name` match. No match remains
+  missing; duplicate or malformed matches fail closed.
 - Review every other known configuration surface and classify its target
   ownership. This change implements only Plugin/Skill desired state and the
   bounded safety guards it requires; credentials, sessions, broad TOML state,
@@ -137,7 +141,13 @@ None.
   confirmed acceptance task may run one functional managed internal CLI command
   and its required profile-local native Plugin materialization, including
   backend-owned replacement of prior installed versions, while the official App
-  remains running. The 2026-08-12 task-16 grant separately authorizes the
-  bounded release-recreation source repair, its commit/push to `origin/main`,
-  the push-triggered `v0.1.14` recovery, and the planned atomic `v0.1.15`
-  tag/Release publication.
+  remains running. The 2026-08-12 task-16 grant authorized and was consumed by
+  commit `6a5fa85`, its push to `origin/main`, and Auto Release run
+  `31666160863`. The user's 2026-08-13 failed-run report authorizes the bounded
+  draft-discovery source/test/OpenSpec/control-plane follow-up. The user's
+  subsequent `授权` decision resolves gate `a40cea2a...` and authorizes one
+  verified commit and fast-forward push to `origin/main`, the push-triggered
+  `v0.1.14` recovery, and atomic `v0.1.15` tag/Release publication. It does not
+  authorize force push, manual broad Release edits, migration, install,
+  cleanup, archive, dependency/credential changes, or unrelated runtime
+  effects.

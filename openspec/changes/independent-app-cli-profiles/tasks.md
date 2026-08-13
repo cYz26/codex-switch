@@ -310,15 +310,38 @@
   active/all OpenSpec, DevFlow workflow validation, package identity where
   affected, and `git diff --check`. Record the existing INC-018 migration drift
   without applying it and complete an independent release-path review.
-- [ ] 16.4 Update the ledger, namespaced state, and verification record with
+- [x] 16.4 Update the ledger, namespaced state, and verification record with
   RED/GREEN, exact changed files, validation, residual risks, the resolved
   `614cc025...` authority, and the remote prestate. Commit and fast-forward push
-  only the verified repair/control-plane write set to `origin/main`.
-- [ ] 16.5 Monitor the push-triggered Auto Release through terminal state.
-  Require `origin/main` plus the atomic `v0.1.15` tag to resolve to the release
-  commit, require published `v0.1.14` and `v0.1.15` Releases with exactly the
-  canonical three assets, and independently verify each asset size/checksum
-  against deterministic manifests before claiming publication complete.
+  only the verified repair/control-plane write set to `origin/main`. Completed
+  by commit `6a5fa85`; the 34 MB Hook event log remained excluded.
+- [x] 16.5 Monitor the first push-triggered Auto Release through terminal state.
+  Record run `31666160863` as failed after draft creation and five tag-based
+  readback attempts, with `origin/main=6a5fa85`, `v0.1.14=19a2433`,
+  `v0.1.15` absent, published latest Release still `v0.1.13`, and all three
+  canonical `v0.1.14` asset URLs returning 404. Do not claim publication.
+- [x] 16.6 Add a public GitHub-adapter RED using the real API response shape:
+  tag-specific inspection returns 404 while the authenticated paginated
+  Releases collection contains the exact draft. On GREEN, select one exact
+  `tag_name` match, preserve missing when no match exists, and reject duplicate,
+  malformed, non-404, invalid-JSON, or unbounded states before mutation.
+- [x] 16.7 Run the focused adapter/reconciliation matrix, complete Python 3.12
+  update/release and adjacent profile suites, Python/Bash/JSON checks, active/all
+  strict OpenSpec, DevFlow workflow validation, and `git diff --check`. Update
+  proposal/design/spec/tasks, ledger, namespaced state, and verification with
+  exact results and residual risks.
+- [x] 16.8 Record a new Human Gate before another commit, push, workflow run,
+  `v0.1.14` Release mutation, or `v0.1.15` tag/Release publication. The prior
+  `614cc025...` authority was consumed by `6a5fa85` and run `31666160863`.
+  The user's 2026-08-13 `授权` decision is recorded in
+  `draft-release-discovery-submit-authority-grant.json`; gate `a40cea2a...` is
+  resolved for the exact task 16.9 submit/release effects.
+- [ ] 16.9 After fresh authorization, commit and fast-forward push only the
+  verified draft-discovery repair/control-plane write set. Require
+  `origin/main` plus the atomic `v0.1.15` tag to resolve to the release commit,
+  published `v0.1.14` and `v0.1.15` Releases with exactly the canonical three
+  assets, and independent size/checksum verification against deterministic
+  manifests before claiming publication complete.
 
 ## 17. Official-Authoritative Shared Plugin Readiness
 
@@ -459,3 +482,13 @@ mutation required to restore `v0.1.14`, and the already-planned atomic
 `v0.1.15` tag and Release publication. It does not authorize archive, project
 migration, dependency/credential changes, manual broad Release edits, force
 push, cleanup, or unrelated runtime effects.
+
+That authority was consumed by commit `6a5fa85`, its fast-forward push to
+`origin/main`, and Auto Release run `31666160863`. The user's 2026-08-13 failed
+run report authorizes task 16.6-16.7 source, test, OpenSpec, ledger,
+namespaced-state, and verification-record changes. The subsequent `授权`
+decision resolves gate `a40cea2a...` for one verified commit and fast-forward
+push to `origin/main`, the push-triggered `v0.1.14` recovery, and atomic
+`v0.1.15` tag/Release publication. It does not authorize manual broad Release
+edits, migration, dependency/credential change, archive, cleanup, force push,
+or unrelated runtime effects.

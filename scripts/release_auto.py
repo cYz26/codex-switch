@@ -377,6 +377,49 @@ class GitHubCliAdapter:
                 raise ReleaseError("GitHub release asset pagination is unbounded")
         return tuple(records)
 
+    def _find_release_by_tag(self, tag: str) -> Optional[Mapping[str, Any]]:
+        matches: List[Mapping[str, Any]] = []
+        page = 1
+        while True:
+            result = self._gh(
+                "api",
+                (
+                    f"repos/{self.repository}/releases"
+                    f"?per_page=100&page={page}"
+                ),
+            )
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise ReleaseError(
+                    "GitHub releases returned invalid JSON: "
+                    f"{error}"
+                ) from error
+            if not isinstance(payload, list):
+                raise ReleaseError(
+                    "GitHub releases returned an unsupported response"
+                )
+            for raw_release in payload:
+                if (
+                    not isinstance(raw_release, dict)
+                    or not isinstance(raw_release.get("tag_name"), str)
+                ):
+                    raise ReleaseError(
+                        "GitHub releases returned an invalid release record"
+                    )
+                if raw_release["tag_name"] == tag:
+                    matches.append(raw_release)
+            if len(payload) < 100:
+                break
+            page += 1
+            if page > 1000:
+                raise ReleaseError("GitHub release pagination is unbounded")
+        if len(matches) > 1:
+            raise ReleaseConflict(
+                f"GitHub returned duplicate releases for tag {tag}"
+            )
+        return matches[0] if matches else None
+
     def inspect_release(self, tag: str) -> ReleaseSnapshot:
         encoded_tag = urllib.parse.quote(tag, safe="")
         result = self._gh(
@@ -384,8 +427,9 @@ class GitHubCliAdapter:
             f"repos/{self.repository}/releases/tags/{encoded_tag}",
             check=False,
         )
+        payload: object
         if result.returncode != 0:
-            payload: object = None
+            payload = None
             for candidate in (result.stdout, result.stderr):
                 try:
                     payload = json.loads(candidate)
@@ -399,21 +443,32 @@ class GitHubCliAdapter:
             ) or (
                 "Not Found" in result.stderr and "HTTP 404" in result.stderr
             ):
-                return ReleaseSnapshot(exists=False, assets=(), draft=False)
-            raise ReleaseError(
-                f"Could not inspect GitHub release {tag}: "
-                f"{result.stderr.strip() or result.stdout.strip()}"
-            )
+                payload = self._find_release_by_tag(tag)
+                if payload is None:
+                    return ReleaseSnapshot(
+                        exists=False,
+                        assets=(),
+                        draft=False,
+                    )
+            else:
+                raise ReleaseError(
+                    f"Could not inspect GitHub release {tag}: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
+        else:
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise ReleaseError(
+                    f"GitHub release {tag} returned invalid JSON: {error}"
+                ) from error
 
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
+        if not isinstance(payload, dict):
             raise ReleaseError(
-                f"GitHub release {tag} returned invalid JSON: {error}"
-            ) from error
+                f"GitHub release {tag} returned an unsupported response"
+            )
         if (
-            not isinstance(payload, dict)
-            or type(payload.get("id")) is not int
+            type(payload.get("id")) is not int
             or payload["id"] <= 0
             or not isinstance(payload.get("assets"), list)
             or type(payload.get("draft")) is not bool

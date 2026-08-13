@@ -1613,3 +1613,79 @@ The remote prestate remains `origin/main` at
 push, workflow rerun, GitHub Release mutation, migration, install, live split,
 cleanup, archive, dependency, credential, or destructive effect occurred
 during task 16.3. Task 16.4 is the next authorized external action.
+
+## Tasks 16.6-16.8 Draft Release Discovery Repair
+
+Auto Release run `31666160863` created the `v0.1.14` draft and then failed all
+five tag-endpoint readbacks with
+`GitHub release v0.1.14 is missing after draft creation`. The adapter had
+treated `GET /releases/tags/{tag}` returning 404 as definitive absence even
+though an authenticated push-capable caller can discover drafts through the
+Releases collection.
+
+`GitHubCliAdapter.inspect_release()` now preserves the tag endpoint as the fast
+path. Explicit 404 alone activates paginated collection inspection with
+`per_page=100`. One exact `tag_name` match is accepted and then passes through
+the existing release-ID, draft, asset, duplicate-name, upload, publish, and
+checksum guards. Zero matches preserve the missing snapshot. Duplicate exact
+matches, malformed records, invalid JSON, unsupported response shapes,
+non-404 failures, and more than 1000 full pages fail before mutation.
+
+Fresh final-source verification on 2026-08-13:
+
+- draft-discovery adapter matrix: 6/6 in 0.638 seconds;
+- complete Python 3.12 Update/Release: 171/171 in 316.787 seconds;
+- complete Python 3.12 Profile/Wrapper: 227/227 in 296.864 seconds;
+- Python AST parsing: 61/61 scripts;
+- Bash syntax: 5/5 entrypoints;
+- repository JSON parsing: 29/29 files, including the active gate receipt and
+  resolution;
+- active OpenSpec strict validation: valid;
+- repository-wide OpenSpec strict validation: 22/22;
+- DevFlow 0.4.1 validation: `ok=true`, zero issues, existing INC-018
+  Project-Directed Implementation Readiness guidance warning only;
+- `git diff --check`: pass.
+
+One exploratory Profile/Wrapper invocation was run with a PTY, entered the
+expected interactive confirmation in an isolated fake switch, and was
+interrupted. Its complete test-owned process tree exited. The no-TTY 227/227
+rerun above is the qualifying result and matches CI execution semantics.
+
+Read-only remote evidence remains:
+
+- `refs/heads/main` =
+  `6a5fa8571186a0f1248c408cb7ce17a1d60d1f40`;
+- `refs/tags/v0.1.14` =
+  `19a243342ef9f78776b3fad0b2292198845147d3`;
+- `refs/tags/v0.1.15` is absent;
+- the public latest Release redirects to `v0.1.13`;
+- `install.sh`, `run.sh`, and `codex-switch.tar.gz` for `v0.1.14` each return
+  HTTP 404.
+
+Authority gate
+`a40cea2a985a0eb898ee82bc975cf4049822325e3e2cf6eb57f0846ca095e8c9`
+was resolved after the user's 2026-08-13 `授权` decision. The exact grant is
+`openspec/changes/independent-app-cli-profiles/evidence/draft-release-discovery-submit-authority-grant.json`;
+the promotion proof is
+`.planning/devflow/authority-gates/a40cea2a985a0eb898ee82bc975cf4049822325e3e2cf6eb57f0846ca095e8c9.promotion.json`.
+DevFlow clearance returned authority contract
+`c306154df1bfd3a67ab19d9eef551a910f46142448674ca223528103f1817df8`,
+evidence
+`89be09a2391c8b7d17e27ec780c4a1866553e4420243982bad3afb5f09aa15d1`,
+and request
+`6b34738467e335cab5f6641a1323cc41b3fe96e8709e3b0ffe82fda45ff319f4`.
+
+Fresh no-TTY pre-submit reruns after clearance pass Update/Release 171/171 in
+313.754 seconds and Profile/Wrapper 227/227 in 284.600 seconds. The grant
+authorizes one verified commit and fast-forward push to `origin/main`, the
+push-triggered Auto Release recovery of `v0.1.14`, and atomic creation and
+publication of `v0.1.15`. It grants no force push, manual broad Release edit,
+migration, install, cleanup, archive, dependency/credential change, or
+unrelated runtime effect. No commit, push, workflow rerun, Release mutation,
+migration, install, cleanup, archive, dependency, credential, or unrelated
+runtime effect occurred before this pre-submit checkpoint.
+
+After the authority and state updates, final quick gates pass Python AST 61/61,
+Bash syntax 5/5, all repository JSON 82/82, active strict OpenSpec, repository
+strict OpenSpec 22/22, DevFlow 0.4.1 with `ok=true` and only the existing
+INC-018 guidance warning, and `git diff --check`.

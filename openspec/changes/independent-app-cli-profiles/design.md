@@ -106,6 +106,15 @@ switch.
   left behind, and GitHub REST guidance documents timeout `Server Error`
   responses. This supports a typed bounded confirmation loop, not unrestricted
   reruns or fixed sleeps.
+- `draft_discovery_evidence`: the authorized follow-up commit `6a5fa85` reached
+  `origin/main`, but Auto Release run `31666160863` failed after draft creation
+  and five readback attempts with
+  `GitHub release v0.1.14 is missing after draft creation`. The immutable
+  `v0.1.14` tag remains at `19a2433`, `v0.1.15` is absent, the public Releases
+  index still marks `v0.1.13` latest, and all three canonical `v0.1.14` asset
+  URLs return 404. GitHub documents that authenticated push-capable callers
+  receive draft releases from the Releases collection, so a tag-endpoint 404
+  is not sufficient evidence that the draft is absent.
 
 ## Target State
 
@@ -153,7 +162,8 @@ fallback for Official changes made after the switch.
   when safety evidence cannot be proven.
 - Make failed-upload Release recreation idempotent across GitHub's bounded
   create/readback propagation window without retrying permission, rate-limit,
-  unknown validation, or conflicting states.
+  unknown validation, or conflicting states. A tag-endpoint 404 must still find
+  one exact draft through the authenticated paginated Releases collection.
 
 **Non-Goals:**
 
@@ -634,6 +644,15 @@ are deterministic and fast; production uses `time.sleep`. Unbounded polling,
 blind reruns, and one fixed delay were rejected because they either widen
 mutation authority or fail to model the observed state transitions.
 
+`GitHubCliAdapter.inspect_release()` uses the tag-specific endpoint as the
+normal fast path. Only an explicit 404 activates a paginated
+`GET /repos/{owner}/{repo}/releases` scan with `per_page=100`; the adapter
+selects one exact `tag_name` match so an authenticated draft remains visible.
+Zero matches preserve the missing snapshot. Duplicate matches, malformed list
+records, invalid JSON, pagination exhaustion, and every non-404 tag-endpoint
+failure remain terminal. This fallback is read-only and does not broaden
+creation, deletion, upload, publish, or clobber authority.
+
 ### Decision 24: One deep module owns readiness and actionable reporting
 
 `codex_switch_shared_configuration.py` remains the deep module for source/target
@@ -709,6 +728,10 @@ weaken its independent recovery contract.
   tag-and-absence revalidation, readback-only handling after create success,
   and immediate rejection of permission, rate-limit, unknown validation,
   published, non-empty, moved-tag, or exhausted states.
+- A tag-specific 404 followed by an authenticated Releases listing containing
+  one exact draft tag returns that draft snapshot and continues through the
+  existing asset-state guards; absence and duplicate/malformed list records
+  remain fail closed.
 - A latest package can promote over the exact immediately prior 20-path
   manifest generation while preserving it as rollback; unknown required-path
   lists remain rejected before reference mutation.
@@ -847,7 +870,7 @@ remain separate Human Gates.
 | Backend-managed acceptance repair | main, serialized | catalog adapter, shared materializer, focused tests, README/SKILL, OpenSpec/control plane | live-shape source/target divergence RED/GREEN, installed precedence, native cache-lifecycle replacement, one post-add batch catalog, precise findings, full/static/spec/package review, functional managed-shim acceptance | split/install/App stop or mutation/internal binary update/direct codex-switch cache mutation/Git/release/archive | complete 2026-08-11; tasks 13.1-13.4 verified and native cache-lifecycle decision reconciled |
 | Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | complete 2026-08-11; tasks 14.1-14.3 verified |
 | Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter, disappearing Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete in source 2026-08-11; tasks 15.1-15.6 verified, second submit awaits Human Gate |
-| Release-recreation propagation repair | main, serialized | `scripts/release_auto.py`, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | exact tag-name-exists, server/transport, delayed-visibility, unknown-error, conflict, retry-exhaustion RED/GREEN; complete update/release/profile/static/spec/workflow/diff proof; remote ref/Release/asset readback | authority gate `614cc025...` resolved for one source repair, commit/push, Auto Release, `v0.1.14` recovery, and `v0.1.15` atomic publication; all other effects excluded | source verification complete through task 16.3; task 16.4 external submission is next |
+| Release-recreation propagation repair | main, serialized | `scripts/release_auto.py`, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | exact tag-name-exists, server/transport, delayed-visibility, draft-list fallback, unknown-error, conflict, retry-exhaustion RED/GREEN; complete update/release/profile/static/spec/workflow/diff proof; remote ref/Release/asset readback | authority gate `614cc025...` was consumed by commit `6a5fa85`, push, and failed run `31666160863`; gate `a40cea2a...` is now resolved for one verified task 16.9 commit/push and the exact `v0.1.14`/`v0.1.15` Auto Release effects | first submission failed acceptance; draft-list fallback passes 6/6 focused, 171/171 update/release, 227/227 profile, strict/static/workflow/diff gates, and task 16.9 is ready for external effects |
 | Official-authoritative shared readiness | main, serialized | shared configuration module, functional preflight/parser/wrapper, focused tests, README/SKILL, this OpenSpec change, ledger/state/verification | public-seam RED/GREEN for Official/internal/overlapping drift, CAS, automatic preflight, non-interactive remediation, read-only diagnostics, package/static/spec/workflow/diff/review | live config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 17.1-17.6 verified, live/install/Git effects remain excluded |
 | Split-triggered shared readiness | main, serialized | wrapper, public wrapper lifecycle tests, README/SKILL, this OpenSpec change, ledger/state/verification | apply ordering, failure-stop/remediation, dry-run zero-write/zero-network, focused/full/static/spec/workflow/package/diff/review | live split/config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 18.1-18.4 verified and both independent review axes pass; install/live/Git effects remain excluded |
 
@@ -1005,6 +1028,10 @@ present and a packaged split dry-run imports no checkout code.
   states; revalidate immutable tag plus missing Release before bounded create
   retries, use readback-only retries after success, and fail every unknown or
   conflicting state before upload.
+- [A created draft is invisible to the tag endpoint] -> on explicit 404 only,
+  scan the authenticated paginated Releases collection, require one exact
+  `tag_name` match, and fail duplicate, malformed, non-404, or unbounded states
+  before upload.
 - [An internal drift is accidentally promoted into the App] -> keep Official as
   the only source in the planner and materializer, expose no source-choice API,
   and cover internal-only/disjoint/overlapping/remove-vs-modify cases with an
@@ -1046,11 +1073,13 @@ cleanup or direct codex-switch copy/link/delete, migration, and dependency
 changes remain unperformed. The already-observed native replacement of prior
 installed Plugin versions is recorded as backend-owned lifecycle behavior.
 Task 15 additionally performed no live GitHub release mutation or workflow
-rerun. Task 16 may consume the resolved `614cc025...` grant only after fresh
-source verification: commit and push the exact repair to `origin/main`, allow
-the repository Auto Release workflow to recover `v0.1.14` and atomically
-publish `v0.1.15`, then require remote ref, Release metadata, canonical asset,
-and checksum readback before completion.
+rerun. Task 16 consumed the resolved `614cc025...` grant through commit
+`6a5fa85`, its push, and failed Auto Release run `31666160863`. The resulting
+draft-discovery repair now passes fresh source verification. The user's
+2026-08-13 `授权` decision resolves gate `a40cea2a...` for one verified
+commit/push that may trigger recovery of `v0.1.14` and atomic publication of
+`v0.1.15`. Completion still requires remote ref, Release metadata, canonical
+asset, and checksum readback.
 Task 17 is source-only in this execution: no live resolver command, functional
 managed backend command, install, App/profile/config/cache mutation, task-16
 Git/Release effect, archive, migration, cleanup, or dependency change is part
