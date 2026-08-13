@@ -272,6 +272,18 @@ selection contract.
 - **AND** a hosted-runner default update cannot silently change the release
   validation runtime.
 
+#### Scenario: Profile validation retries once without becoming fail-open
+
+- **WHEN** a complete Profile/Wrapper verification attempt exits nonzero during
+  automatic preparation, historical reconciliation, or tag-triggered release
+  validation
+- **THEN** the workflow emits an explicit warning and retries that complete
+  suite exactly once with verbose per-test diagnostics
+- **AND** a successful retry may continue to the unchanged later validation
+  gates
+- **AND** a second failure remains nonzero and blocks every release commit,
+  tag, Release, and asset effect.
+
 ### Requirement: Official-authoritative shared Plugin and Skill desired state
 
 For the supported internal-CLI/official-App split, the system SHALL treat the

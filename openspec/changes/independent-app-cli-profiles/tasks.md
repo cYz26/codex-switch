@@ -369,11 +369,31 @@
   strict OpenSpec, DevFlow validation, package preview, remote readback, and
   `git diff --check`. Record a fresh Human Gate before another commit, push,
   workflow run, tag, or Release effect.
-- [ ] 16.15 Under resolved gate `ff784b1f...`, commit and fast-forward push
-  only the verified Python-runtime pin and control-plane write set. Require
-  `origin/main` and `v0.1.15` to resolve to the release commit, require the
-  published `v0.1.15` Release to contain exactly the canonical three assets,
-  and independently verify asset size/checksum before claiming publication
+- [x] 16.15 Under resolved gate `ff784b1f...`, commit and fast-forward push
+  the verified Python-runtime pin. Commit `700aa57` reached `origin/main`, and
+  Auto Release run `31691783338` confirmed `Set up Python`, planning,
+  abandonment, source restore, and the `v0.1.15` bump all passed. `Verify
+  release source` still failed after 6m53s, disproving the floating-runtime
+  root-cause hypothesis. No release commit, tag, Release, or asset effect
+  followed, and gate `ff784b1f...` is consumed.
+- [x] 16.16 Add RED workflow coverage requiring every automatic, historical
+  reconciliation, and tag-triggered Profile/Wrapper validation step to retry
+  exactly once with `-v` diagnostics after a first failure while retaining a
+  nonzero second failure. Implement the bounded retry without changing release
+  planning, version selection, `v0.1.14`, or later validation gates.
+- [x] 16.17 Run focused workflow tests, complete Python 3.12 Update/Release and
+  clean bumped-candidate Profile/Wrapper suites, static checks, strict
+  OpenSpec, DevFlow validation, package/asset proof, remote readback, and
+  `git diff --check`. Update/Release passes 177/177, the clean `v0.1.15`
+  Profile/Wrapper candidate passes 227/227, strict OpenSpec passes 22/22,
+  DevFlow reports `ok=true`, and deterministic assets validate. Correct prior
+  root-cause claims and record a fresh Human Gate before another commit, push,
+  workflow run, tag, or Release effect.
+- [ ] 16.18 Under resolved gate `3fe75b3f...`, commit and fast-forward push only
+  the verified bounded-retry and control-plane write set. Require `origin/main`
+  and `v0.1.15` to resolve to the release commit, require the published
+  `v0.1.15` Release to contain exactly the canonical three assets, and
+  independently verify asset size/checksum before claiming publication
   complete. Preserve `v0.1.14=19a2433` and do not modify its Release records.
 
 ## 17. Official-Authoritative Shared Plugin Readiness

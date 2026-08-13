@@ -3243,6 +3243,36 @@ class CodexReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn('python-version: "3.12"', setup)
                 self.assertLess(setup_index, first_python_index)
 
+    def test_release_profile_validation_retries_once_with_verbose_diagnostics(
+        self,
+    ) -> None:
+        cases = (
+            (
+                self.AUTO_RELEASE,
+                ("Verify reconciliation source", "Verify release source"),
+            ),
+            (self.MANUAL_RELEASE, ("Verify scripts and specs",)),
+        )
+        command = "python3 scripts/test_codex_profile_switch.py"
+        warning = (
+            "::warning::Profile/Wrapper verification failed on the first "
+            "attempt; retrying once with verbose diagnostics."
+        )
+
+        for path, step_names in cases:
+            workflow = path.read_text()
+            for step_name in step_names:
+                with self.subTest(workflow=path.name, step=step_name):
+                    _index, step = self._step(workflow, step_name)
+                    first_attempt = step.index(f"if ! {command}; then")
+                    warning_index = step.index(warning)
+                    retry_index = step.index(f"{command} -v")
+
+                    self.assertEqual(2, step.count(command))
+                    self.assertLess(first_attempt, warning_index)
+                    self.assertLess(warning_index, retry_index)
+                    self.assertNotIn("|| true", step)
+
     def test_auto_release_packages_and_validates_before_ref_push(self) -> None:
         workflow = self.AUTO_RELEASE.read_text()
         package_index, _package = self._step(

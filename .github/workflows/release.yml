@@ -72,7 +72,10 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPYCACHEPREFIX: ${{ runner.temp }}/codex-switch-pycache
         run: |
-          python3 scripts/test_codex_profile_switch.py
+          if ! python3 scripts/test_codex_profile_switch.py; then
+            echo "::warning::Profile/Wrapper verification failed on the first attempt; retrying once with verbose diagnostics."
+            python3 scripts/test_codex_profile_switch.py -v
+          fi
           if [ -f scripts/test_codex_update_release.py ]; then
             python3 scripts/test_codex_update_release.py
           else

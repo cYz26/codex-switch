@@ -1,0 +1,34 @@
+{
+  "authorityContractSha256": "sha256:5d3222c3d4b26e0d0c5a921008f9eae8f3e1608e6161d155bc547e162a340695",
+  "decision": "AWAIT_HUMAN",
+  "evidenceSha256": "sha256:6a473b33477e1ca1bd4ffe03c83347edfc5852442410e47f5df12393f741d4a1",
+  "gateKey": "sha256:3fe75b3f919d54fa7ba057f9a2a6aea4a442df2e508dbcde868105f8c5c2b061",
+  "invalidations": [
+    "authority_gate:ff784b1fcb442d96936f0e01152cf87fd771be1d33d49cf2887eb69a34c67447:consumed",
+    "workflow_run:31691783338:failed",
+    "release:v0.1.15:absent"
+  ],
+  "kind": "devflow-authority-gate-receipt",
+  "materialDelta": true,
+  "missingAuthority": [
+    "action:submit_verified_bounded_profile_retry_and_publish_v0.1.15",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:git.atomic_release_ref_push",
+    "effect:github.release.mutate",
+    "target:origin/main",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "nextQuestion": "是否授权提交并推送有界 Profile 重试修复到 origin/main，并保持 v0.1.14 不变、创建并发布 v0.1.15？",
+  "reasonCodes": [
+    "prior_submit_authority_consumed",
+    "bounded_profile_retry_requires_fresh_authority",
+    "external_effect_requires_fresh_authority"
+  ],
+  "receiptPath": ".planning/devflow/authority-gates/3fe75b3f919d54fa7ba057f9a2a6aea4a442df2e508dbcde868105f8c5c2b061.json",
+  "requestSha256": "sha256:9f0afcb66fb840978db68d9f0f21fae3b0635191c50ce7fc233fb154abf929b3",
+  "schemaVersion": "1.0",
+  "status": "recorded"
+}

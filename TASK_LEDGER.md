@@ -3102,6 +3102,20 @@ write task.
   `v0.1.15` Release publication. It continues to exclude all `v0.1.14`
   tag/Release mutation, force push, migration, dependency/credential change,
   archive, cleanup, install, and unrelated runtime effects.
+- 2026-08-13: commit `700aa57` and Auto Release run `31691783338` consumed
+  gate `ff784b1f...`. Python 3.12 setup, planning, abandonment, source restore,
+  and the `v0.1.15` bump passed, but `Verify release source` exited 1 after
+  6m53s before any commit, tag, Release, or asset effect. The floating-runtime
+  hypothesis is therefore disproved; the exact remote test remains unknown
+  because current unauthenticated log retrieval is unavailable.
+- 2026-08-13: task 16.16-16.17 adds one complete, verbose, fail-closed
+  Profile/Wrapper retry to automatic preparation, historical reconciliation,
+  and tag-triggered release validation. Fresh Python 3.12 Update/Release passes
+  177/177 in 310.532s, and a clean `VERSION=0.1.15` candidate passes
+  Profile/Wrapper 227/227 in 345.516s. Python/Bash/39 JSON, strict OpenSpec
+  22/22, DevFlow `ok=true`, deterministic package/assets, remote ref, and diff
+  checks pass. The user's current publication instruction resolves gate
+  `3fe75b3f...` for task 16.18 only; every `v0.1.14` mutation remains excluded.
 
 ## Validation Commands
 

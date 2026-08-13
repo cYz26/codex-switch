@@ -1,0 +1,24 @@
+{
+  "approvedAt": "2026-08-13T19:26:00+08:00",
+  "changeId": "independent-app-cli-profiles",
+  "decisionSource": "user: 授权跳过 v0.1.14，修改并推送，发布 v0.1.15",
+  "gateKey": "sha256:3fe75b3f919d54fa7ba057f9a2a6aea4a442df2e508dbcde868105f8c5c2b061",
+  "goalId": "019f8f8f-e64c-7093-af73-2c0247cf2891",
+  "grantedAuthority": [
+    "action:submit_verified_bounded_profile_retry_and_publish_v0.1.15",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:git.atomic_release_ref_push",
+    "effect:github.release.mutate",
+    "target:origin/main",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "kind": "devflow-authority-grant",
+  "priorAuthorityContractSha256": "sha256:5d3222c3d4b26e0d0c5a921008f9eae8f3e1608e6161d155bc547e162a340695",
+  "priorEvidenceSha256": "sha256:6a473b33477e1ca1bd4ffe03c83347edfc5852442410e47f5df12393f741d4a1",
+  "priorReceiptSha256": "sha256:00480c704d46acf2f48172c5fec3c179c435c9813bb8e394b518cf84058152ac",
+  "schemaVersion": "1.0",
+  "status": "approved"
+}

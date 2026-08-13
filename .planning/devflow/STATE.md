@@ -18,10 +18,10 @@ standing_milestone:
   review_digest: none
 
 authority_gate:
-  key: sha256:ff784b1fcb442d96936f0e01152cf87fd771be1d33d49cf2887eb69a34c67447
+  key: sha256:3fe75b3f919d54fa7ba057f9a2a6aea4a442df2e508dbcde868105f8c5c2b061
   status: resolved
-  resolution_digest: sha256:155a6edbdb42eea4ec2a90bf4af3fe8b3697d62f9ce65beacaea3929b4f1f30f
-  evidence_digest: sha256:96ff6e337e308ca2d8289e0e0badcbc147c3f74eb4114442ec7e1a8be0863c34
+  resolution_digest: sha256:5f72bb8bc916eb6892346ea2611e2e1dda56d1608e5ef64f98df79e28bbdbd09
+  evidence_digest: sha256:a92af789bfac32cda8cecd5851f276f66a321e67f2b8cb5202c891a9eabbab13
   next_question: none
   missing_authority: []
 
@@ -41,13 +41,13 @@ implementation_readiness:
 
 context_management:
   compact_policy: checkpoint_boundary
-  last_checkpoint_id: 2026-08-13-python312-v0.1.15-submit-authorized
+  last_checkpoint_id: 2026-08-13-bounded-profile-retry-v0.1.15-submit-authorized
   last_checkpoint_file: .planning/devflow/verification/independent-app-cli-profiles.md
   compact_recommended: false
   compact_status: not_needed
   last_compact_result_file: none
   compact_source: openspec
-  compact_updated_at: 2026-08-13T18:18:00+08:00
+  compact_updated_at: 2026-08-13T19:26:00+08:00
   compact_skip_reason: bounded_change_context_is_healthy
   compact_error: none
   compact_after:
@@ -79,7 +79,7 @@ context_health:
   last_report: .planning/context-health/reports/20260629130742-context-health.json
   last_risk: medium
   last_confidence: medium
-  last_decision: authorize_python312_fix_and_publish_v0.1.15
+  last_decision: authorize_bounded_profile_retry_and_publish_v0.1.15
   last_goal_status: aligned
   goal_summary: Separate backend-managed official source identity from internal target identity and prove the managed CLI starts successfully.
 ---
@@ -88,15 +88,17 @@ context_health:
 
 ## Current Status
 
-Tasks 16.13-16.14 are complete. Both Release workflows select Python 3.12
-before any Python command, and gate `ff784b1f...` is resolved by the user's
-2026-08-13 authorization for one verified commit/push and the exact
-`v0.1.15` Auto Release chain. `v0.1.14` tag and Release mutation remain
-excluded.
+Tasks 16.16-16.17 are complete. Every Release Profile/Wrapper validation path
+retries one failed complete suite exactly once with verbose diagnostics, while
+a repeated failure remains blocking. Fresh Python 3.12 verification passes
+Update/Release 177/177 and a clean `VERSION=0.1.15` Profile/Wrapper candidate
+227/227; strict OpenSpec, DevFlow, static, JSON, package, and asset gates pass.
+Gate `3fe75b3f...` is resolved for the exact commit/push and `v0.1.15`
+publication, with every `v0.1.14` mutation excluded.
 
 ## Next Action
 
-Run the final non-interactive candidate and control-plane verification, stage
-only the verified Python-runtime repair and authority evidence, fast-forward
-push once to `origin/main`, then require `v0.1.15` tag, published Release,
-canonical three assets, and checksum readback before completing task 16.15.
+Stage only the verified bounded-retry, OpenSpec, ledger, state, verification,
+and authority write set. Fast-forward push once to `origin/main`, then require
+`v0.1.15` tag, published Release, canonical three assets, and independent
+checksum readback while preserving `v0.1.14=19a2433`.

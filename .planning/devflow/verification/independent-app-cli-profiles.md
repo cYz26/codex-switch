@@ -1847,3 +1847,74 @@ publication assets:
   SHA-256 `da059463e948051751acbb724f3082cb2b66732b4f1c753ba8e891afe92b0a36`;
 - asset manifest SHA-256
   `6878ca9bd6a35c38e18a76506b5a052c47150c12e6b411082a234e061aefe1df`.
+
+## Tasks 16.16-16.18 Bounded Profile Retry and Submit Authority
+
+Commit `700aa5751f6bd896fb39af84abad7aa6a1cfcfef` reached `origin/main`
+and triggered Auto Release run `31691783338`, job `94420491373`. Python 3.12
+setup, planning, explicit `v0.1.14` abandonment, source restoration, and the
+`v0.1.15` bump all passed. `Verify release source` then ran for 6m53s and
+exited 1. Every later release commit, ref, Release, and asset step was skipped.
+This disproves the floating-Python root-cause hypothesis. Current anonymous
+job-log retrieval is unavailable, so no unobserved remote test failure is
+claimed.
+
+All three Release Profile/Wrapper validation paths now run the complete suite
+once and, only after a nonzero result, emit one warning and retry the complete
+suite exactly once with `-v`. The retry remains an ordinary failing command
+under `bash -e`; a second failure blocks all later release effects. RED workflow
+coverage failed for all three steps before the edit, and the focused GREEN
+contract passes 4/4.
+
+Fresh final-source verification on 2026-08-13:
+
+- complete Python 3.12 Update/Release: 177/177 in 310.532 seconds;
+- complete Python 3.12 Profile/Wrapper on a clean full-Git
+  `VERSION=0.1.15` candidate: 227/227 in 345.516 seconds;
+- Python compile and five Bash entrypoint syntax checks: pass;
+- tracked repository JSON parsing: 39/39;
+- active strict OpenSpec: valid;
+- repository-wide strict OpenSpec: 22/22;
+- DevFlow 0.4.1: `ok=true`, zero issues, existing Project-Directed
+  Implementation Readiness guidance warning only;
+- `git diff --check`: pass.
+
+The first asset attempt correctly rejected a test-owned ignored
+`scripts/__pycache__` entry. A fresh clone of temporary candidate commit
+`400ac79a1390268a396461c28eaf687ca4df42c1` then validated the exact
+`v0.1.15` asset set:
+
+- `install.sh`: 13,878 bytes,
+  SHA-256 `8e7bb4c0a342cb4401c9653ea32d4b8dce0437cc74651e26e766323955ed5bd7`;
+- `run.sh`: 13,117 bytes,
+  SHA-256 `35ab16f888b9915326ee7acb0e36f7dbbcba4314468bca10b497151dd5aa3fdb`;
+- `codex-switch.tar.gz`: 651,052 bytes,
+  SHA-256 `abe05d0ea98c016324d7dd53bd7a6a010a04fde1f862d179b97fd9faa6c02133`;
+- asset manifest: 858 bytes,
+  SHA-256 `4beee06cbaf2c56b7eafc7b82c761d78ef3a503d2c8028111a40631587c9cfd9`.
+
+Read-only remote proof remains:
+
+- `refs/heads/main` =
+  `700aa5751f6bd896fb39af84abad7aa6a1cfcfef`;
+- `refs/tags/v0.1.14` =
+  `19a243342ef9f78776b3fad0b2292198845147d3`;
+- `refs/tags/v0.1.15` is absent.
+
+The user's current
+`授权跳过 v0.1.14，修改并推送，发布 v0.1.15` instruction is recorded in
+`release-bounded-profile-retry-v0.1.15-submit-authority-grant.json` and
+resolves gate
+`3fe75b3f919d54fa7ba057f9a2a6aea4a442df2e508dbcde868105f8c5c2b061`.
+The clearance binds authority contract
+`f3a91d455cc96f6930f81c3b351db7bd2be210012a8c63a164120291e614b956`,
+evidence
+`a92af789bfac32cda8cecd5851f276f66a321e67f2b8cb5202c891a9eabbab13`,
+and request
+`5f72bb8bc916eb6892346ea2611e2e1dda56d1608e5ef64f98df79e28bbdbd09`.
+It authorizes one verified bounded-retry commit, one fast-forward push to
+`origin/main`, the push-triggered Auto Release run, atomic `v0.1.15` ref
+creation, and `v0.1.15` Release publication. It excludes every `v0.1.14`
+tag/Release mutation, force push, Release deletion, migration,
+dependency/credential change, archive, cleanup, install, and unrelated runtime
+effect.
