@@ -1770,3 +1770,80 @@ Read-only pre-submit remote proof remains:
 No Git push, workflow run, tag creation, Release mutation, migration, install,
 cleanup, archive, dependency, credential, or unrelated runtime effect followed
 the abandonment repair before this checkpoint.
+
+## Tasks 16.12-16.14 Release Python Runtime Pin
+
+Commit `7bc2bdf9e8fa324acd26f67f94a6dd369b1d4a38` reached `origin/main`
+and triggered Auto Release run `31686051375`, job `94402258535`. Planning
+reported the exact `v0.1.14` abandonment, every reconciliation step was
+skipped, the original source commit was restored, and the candidate version was
+bumped to `v0.1.15`. `Verify release source` then ran from
+2026-08-13T09:19:38Z through 2026-08-13T09:26:38Z and exited 1. No release
+commit, tag, Release, or asset step ran afterward.
+
+The workflow had no Python setup step and delegated every release command to
+the hosted image's floating `python3`. The repository requires Python 3.11+
+and its complete release qualification uses Python 3.12. The bounded repair
+adds `actions/setup-python@v7` with `python-version: "3.12"` to both
+`.github/workflows/auto-release.yml` and `.github/workflows/release.yml`,
+immediately after checkout and before the first Python command.
+
+RED first failed for both workflow files because `Set up Python` was absent.
+GREEN passes the new focused contract and all 9 Release workflow tests.
+Fresh complete Python 3.12 verification passes:
+
+- Update/Release: 176/176 in 309.651 seconds;
+- Profile/Wrapper on a clean `VERSION=0.1.15` candidate: 227/227 in
+  415.259 seconds.
+
+Read-only remote proof after the failed run remains:
+
+- `refs/heads/main` =
+  `7bc2bdf9e8fa324acd26f67f94a6dd369b1d4a38`;
+- `refs/tags/v0.1.14` =
+  `19a243342ef9f78776b3fad0b2292198845147d3`;
+- `refs/tags/v0.1.15` is absent;
+- the `v0.1.15` Release page and all three canonical asset URLs return 404.
+
+Gate `d9a08a71...` was consumed by the commit, push, and failed workflow run.
+The Python-runtime repair changes the verified submit write set, so another
+commit, push, workflow run, tag creation, or Release publication requires a
+fresh Human Gate. `v0.1.14` tag and Release mutation remain excluded.
+
+## Task 16.15 Python Runtime Repair Submit Authority
+
+The user's 2026-08-13
+`授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision resolves fresh
+authority gate
+`ff784b1fcb442d96936f0e01152cf87fd771be1d33d49cf2887eb69a34c67447`.
+The structured grant is
+`release-python312-v0.1.15-submit-authority-grant.json`; the receipt,
+resolution, and promotion proof are retained under
+`.planning/devflow/authority-gates/ff784b1f...`.
+
+The grant permits one verified Python-runtime repair commit, one fast-forward
+push to `origin/main`, the push-triggered Auto Release run, atomic
+`v0.1.15` ref creation, and `v0.1.15` Release publication. It explicitly
+excludes moving, deleting, uploading to, publishing, or otherwise mutating the
+`v0.1.14` tag or Release, plus force push, migration, dependency/credential
+change, archive, cleanup, install, and unrelated runtime effects.
+
+Pre-submit remote identity remains:
+
+- `refs/heads/main` =
+  `7bc2bdf9e8fa324acd26f67f94a6dd369b1d4a38`;
+- `refs/tags/v0.1.14` =
+  `19a243342ef9f78776b3fad0b2292198845147d3`;
+- `refs/tags/v0.1.15` is absent.
+
+A clean full-Git candidate with `VERSION=0.1.15` validates the canonical
+publication assets:
+
+- `install.sh`: 13,878 bytes,
+  SHA-256 `8e7bb4c0a342cb4401c9653ea32d4b8dce0437cc74651e26e766323955ed5bd7`;
+- `run.sh`: 13,117 bytes,
+  SHA-256 `35ab16f888b9915326ee7acb0e36f7dbbcba4314468bca10b497151dd5aa3fdb`;
+- `codex-switch.tar.gz`: 650,768 bytes,
+  SHA-256 `da059463e948051751acbb724f3082cb2b66732b4f1c753ba8e891afe92b0a36`;
+- asset manifest SHA-256
+  `6878ca9bd6a35c38e18a76506b5a052c47150c12e6b411082a234e061aefe1df`.

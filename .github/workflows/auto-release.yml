@@ -25,6 +25,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
       - name: Stage trusted release tooling
         run: |
           install -d "$RUNNER_TEMP/codex-switch-release-tools"

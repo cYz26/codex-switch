@@ -3232,6 +3232,17 @@ class CodexReleaseWorkflowTests(unittest.TestCase):
         end = len(workflow) if next_step == -1 else next_step
         return start, workflow[start:end]
 
+    def test_release_workflows_pin_supported_python_before_use(self) -> None:
+        for path in (self.AUTO_RELEASE, self.MANUAL_RELEASE):
+            with self.subTest(workflow=path.name):
+                workflow = path.read_text()
+                setup_index, setup = self._step(workflow, "Set up Python")
+                first_python_index = workflow.index("python3 ")
+
+                self.assertIn("uses: actions/setup-python@v7", setup)
+                self.assertIn('python-version: "3.12"', setup)
+                self.assertLess(setup_index, first_python_index)
+
     def test_auto_release_packages_and_validates_before_ref_push(self) -> None:
         workflow = self.AUTO_RELEASE.read_text()
         package_index, _package = self._step(

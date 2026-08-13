@@ -156,4 +156,11 @@ None.
   `授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision resolves gate
   `d9a08a71...` for one verified follow-up commit/push and `v0.1.15`
   publication while explicitly excluding any move, deletion, upload, publish,
-  or other mutation of the `v0.1.14` tag or Release.
+  or other mutation of the `v0.1.14` tag or Release. Commit `7bc2bdf` and Auto
+  Release run `31686051375` consumed that authority but failed during source
+  verification after the hosted runner supplied a floating Python runtime.
+  The bounded follow-up pins Python 3.12 in both Release workflows. The user's
+  2026-08-13 `授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision resolves
+  fresh gate `ff784b1f...` for one verified repair commit/push and the exact
+  `v0.1.15` Auto Release chain, while all `v0.1.14` tag/Release mutation
+  remains excluded.

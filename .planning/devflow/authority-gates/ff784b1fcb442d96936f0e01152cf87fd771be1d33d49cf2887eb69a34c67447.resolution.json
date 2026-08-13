@@ -1,0 +1,31 @@
+{
+  "authorityDigest": "df915165d8e76d6f2916842a4a49a51fe4cd84f4be5ce9ac64d4ad9db17db4c1",
+  "decision": "AWAIT_HUMAN",
+  "evidenceDigest": "f7c561a0beaf70f2713e7853c324ac6b53218193aa38625c9f0af25f52e6133f",
+  "gateKey": "ff784b1fcb442d96936f0e01152cf87fd771be1d33d49cf2887eb69a34c67447",
+  "invalidations": [
+    "authority_gate:d9a08a71a599cb9b12e3ced6346344a3cf2f4cc1b313178eece33038d71e462b:consumed",
+    "workflow_run:31686051375:failed",
+    "release:v0.1.15:absent"
+  ],
+  "materialDelta": true,
+  "missingAuthority": [
+    "action:submit_verified_python312_release_fix_and_publish_v0.1.15",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:git.atomic_release_ref_push",
+    "effect:github.release.mutate",
+    "target:origin/main",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "reasonCodes": [
+    "prior_submit_authority_consumed",
+    "release_runtime_repair_requires_fresh_authority",
+    "external_effect_requires_fresh_authority"
+  ],
+  "requestDigest": "74fdd348a4492320e52022349eece6c184efca8fe646be7d754d237b170dfb58",
+  "schemaVersion": 1,
+  "standingContractDigest": null
+}

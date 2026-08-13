@@ -3082,6 +3082,26 @@ write task.
   explicit publication decision resolves gate `d9a08a71...` for one verified
   commit/push and `v0.1.15` publication only. Remote prestate remains
   `main=5da41a8`, `v0.1.14=19a2433`, and `v0.1.15` absent.
+- 2026-08-13: task 16.12 consumed gate `d9a08a71...` through commit `7bc2bdf`,
+  its fast-forward push, and Auto Release run `31686051375`. The workflow
+  correctly skipped all `v0.1.14` reconciliation and bumped the candidate to
+  `v0.1.15`, then failed in `Verify release source`; no release commit, tag,
+  Release, or asset effect followed. Tasks 16.13-16.14 add a RED/GREEN contract
+  that both Release workflows select Python 3.12 with
+  `actions/setup-python@v7` before any Python command. Release workflow tests
+  pass 9/9, complete Update/Release passes 176/176, and a clean bumped
+  `v0.1.15` Profile/Wrapper candidate passes 227/227. Remote proof remains
+  `main=7bc2bdf`, `v0.1.14=19a2433`, and `v0.1.15` absent with all three asset
+  URLs at 404. A fresh Human Gate is required before task 16.15 commit, push,
+  workflow, tag, or Release effects; `v0.1.14` mutation remains excluded.
+- 2026-08-13: the user's fresh
+  `授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision resolves gate
+  `ff784b1f...` for task 16.15. The exact grant covers one verified
+  Python-runtime repair commit, one fast-forward push to `origin/main`, the
+  push-triggered Auto Release run, atomic `v0.1.15` ref creation, and
+  `v0.1.15` Release publication. It continues to exclude all `v0.1.14`
+  tag/Release mutation, force push, migration, dependency/credential change,
+  archive, cleanup, install, and unrelated runtime effects.
 
 ## Validation Commands
 

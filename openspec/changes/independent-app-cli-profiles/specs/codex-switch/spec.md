@@ -261,6 +261,17 @@ selection contract.
 - **AND** no abandoned tag or Release is moved, deleted, uploaded, published,
   or otherwise mutated.
 
+#### Scenario: Release workflows pin the supported Python runtime
+
+- **WHEN** automatic or tag-triggered release validation runs on a hosted macOS
+  image whose default `python3` version can change independently of this
+  repository
+- **THEN** the workflow selects Python 3.12 before its first Python command
+- **AND** planning, source verification, asset validation, and reconciliation
+  use that selected interpreter
+- **AND** a hosted-runner default update cannot silently change the release
+  validation runtime.
+
 ### Requirement: Official-authoritative shared Plugin and Skill desired state
 
 For the supported internal-CLI/official-App split, the system SHALL treat the

@@ -726,6 +726,27 @@ Release deletion or edit step. Moving/deleting `v0.1.14`, selecting an
 arbitrary next version, suppressing all reconciliation globally, and cleaning
 duplicate drafts inside the publication run were rejected.
 
+### Decision 27: Release validation pins the supported Python baseline
+
+Auto Release run `31686051375` successfully planned the `v0.1.14`
+abandonment, skipped every reconciliation step, restored the source commit,
+and bumped the candidate to `v0.1.15`. It then failed in
+`Verify release source` after seven minutes. The workflow used the floating
+`python3` supplied by `macos-latest`, while the repository's complete release
+and profile verification baseline is Python 3.12.
+
+The hosted macOS image can change its default Python independently of this
+repository. Both automatic and tag-triggered Release workflows therefore run
+`actions/setup-python@v7` with `python-version: "3.12"` immediately after
+checkout and before any Python command. One shared workflow contract test
+requires that ordering and version in both files.
+
+Expanding the source contract to an unverified newer interpreter, pinning the
+entire hosted OS image, or changing only the failing automatic workflow were
+rejected. The selected repair keeps the supported source baseline explicit,
+preserves the existing macOS runner surface, and prevents the manual Release
+workflow from retaining the same latent drift.
+
 ## Completion Contract
 
 - The named split command has a failing-then-passing wrapper and transaction
@@ -761,6 +782,8 @@ duplicate drafts inside the publication run were rejected.
   old tag and all old Release records untouched. Abandonment without a
   replacement fails closed, and older entries do not suppress future latest
   Release inspection.
+- Automatic and tag-triggered Release workflows select Python 3.12 before any
+  Python command, independent of the hosted runner's default interpreter.
 - A latest package can promote over the exact immediately prior 20-path
   manifest generation while preserving it as rollback; unknown required-path
   lists remain rejected before reference mutation.
@@ -771,9 +794,9 @@ duplicate drafts inside the publication run were rejected.
   codex-switch cache copy/link/delete occurs; final
   acceptance may run the separately confirmed single functional managed
   internal CLI command, including backend-owned replacement of prior installed
-  Plugin versions. The latest task-16 authority permits only one verified
-  commit/push and the `v0.1.15` Auto Release chain; `v0.1.14` tag/Release
-  mutation remains excluded.
+  Plugin versions. Resolved gate `ff784b1f...` permits only one verified
+  Python-runtime repair commit/push and the `v0.1.15` Auto Release chain;
+  `v0.1.14` tag/Release mutation remains excluded.
 - App add/update/enable/disable/remove advances one desired generation and the
   next functional internal CLI invocation either completes independent
   materialization before backend execution or fails with a stable finding and
@@ -899,7 +922,7 @@ remain separate Human Gates.
 | Backend-managed acceptance repair | main, serialized | catalog adapter, shared materializer, focused tests, README/SKILL, OpenSpec/control plane | live-shape source/target divergence RED/GREEN, installed precedence, native cache-lifecycle replacement, one post-add batch catalog, precise findings, full/static/spec/package review, functional managed-shim acceptance | split/install/App stop or mutation/internal binary update/direct codex-switch cache mutation/Git/release/archive | complete 2026-08-11; tasks 13.1-13.4 verified and native cache-lifecycle decision reconciled |
 | Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | complete 2026-08-11; tasks 14.1-14.3 verified |
 | Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter, disappearing Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete in source 2026-08-11; tasks 15.1-15.6 verified, second submit awaits Human Gate |
-| Release-recreation and abandonment repair | main, serialized | `scripts/release_auto.py`, Auto Release workflow, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | typed recreation and draft-list fallback plus exact latest-tag abandonment, replacement requirement, older-entry non-interference, no old-Release inspection/mutation, complete update/release/profile/static/spec/workflow/package/diff proof, remote `v0.1.15` ref/Release/asset readback | gates `614cc025...` and `a40cea2a...` were consumed by failed recovery submissions; gate `d9a08a71...` is resolved for one verified commit/push and `v0.1.15` publication, with all `v0.1.14` tag/Release mutation excluded | abandonment GREEN passes 4/4, Update/Release 175/175, Profile/Wrapper 227/227, strict/static/workflow/package/diff gates, and task 16.12 is ready for external effects |
+| Release-recreation and abandonment repair | main, serialized | `scripts/release_auto.py`, both Release workflows, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | typed recreation and draft-list fallback plus exact latest-tag abandonment, replacement requirement, older-entry non-interference, no old-Release inspection/mutation, Python 3.12 workflow pin, complete update/release/profile/static/spec/workflow/package/diff proof, remote `v0.1.15` ref/Release/asset readback | gates `614cc025...`, `a40cea2a...`, and `d9a08a71...` were consumed by failed submissions; gate `ff784b1f...` is resolved for one verified repair commit/push and `v0.1.15` publication, with all `v0.1.14` tag/Release mutation excluded | Release workflow 9/9, Update/Release 176/176, bumped-candidate Profile/Wrapper 227/227, strict/static/workflow/package/diff gates; task 16.15 is authorized and awaits external effects |
 | Official-authoritative shared readiness | main, serialized | shared configuration module, functional preflight/parser/wrapper, focused tests, README/SKILL, this OpenSpec change, ledger/state/verification | public-seam RED/GREEN for Official/internal/overlapping drift, CAS, automatic preflight, non-interactive remediation, read-only diagnostics, package/static/spec/workflow/diff/review | live config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 17.1-17.6 verified, live/install/Git effects remain excluded |
 | Split-triggered shared readiness | main, serialized | wrapper, public wrapper lifecycle tests, README/SKILL, this OpenSpec change, ledger/state/verification | apply ordering, failure-stop/remediation, dry-run zero-write/zero-network, focused/full/static/spec/workflow/package/diff/review | live split/config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 18.1-18.4 verified and both independent review axes pass; install/live/Git effects remain excluded |
 

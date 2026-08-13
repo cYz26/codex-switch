@@ -354,12 +354,27 @@
   175/175, Profile/Wrapper 227/227, Python 61/61, Bash 5/5, JSON 86/86,
   strict OpenSpec 22/22, DevFlow `ok=true`, package preview, real local plan,
   and `git diff --check`.
-- [ ] 16.12 Commit and fast-forward push only the verified abandonment
-  repair/control-plane write set. Require `origin/main` and `v0.1.15` to resolve
-  to the release commit, require the published `v0.1.15` Release to contain
-  exactly the canonical three assets, and independently verify asset
-  size/checksum before claiming publication complete. Preserve
-  `v0.1.14=19a2433` and do not modify its Release records.
+- [x] 16.12 Commit and fast-forward push the verified abandonment repair.
+  Commit `7bc2bdf` reached `origin/main`; Auto Release run `31686051375`
+  planned `v0.1.15`, skipped every `v0.1.14` reconciliation step, and completed
+  the version bump, but failed at `Verify release source`. No release commit,
+  `v0.1.15` ref, Release, or asset followed, and gate `d9a08a71...` is
+  consumed.
+- [x] 16.13 Add RED workflow coverage requiring automatic and tag-triggered
+  Release workflows to select Python 3.12 before their first Python command.
+  Add `actions/setup-python@v7` to both workflows without changing the runner,
+  release plan, abandonment behavior, or `v0.1.14`.
+- [x] 16.14 Run focused workflow tests, complete Python 3.12 Update/Release and
+  Profile/Wrapper suites, the bumped `v0.1.15` candidate path, static checks,
+  strict OpenSpec, DevFlow validation, package preview, remote readback, and
+  `git diff --check`. Record a fresh Human Gate before another commit, push,
+  workflow run, tag, or Release effect.
+- [ ] 16.15 Under resolved gate `ff784b1f...`, commit and fast-forward push
+  only the verified Python-runtime pin and control-plane write set. Require
+  `origin/main` and `v0.1.15` to resolve to the release commit, require the
+  published `v0.1.15` Release to contain exactly the canonical three assets,
+  and independently verify asset size/checksum before claiming publication
+  complete. Preserve `v0.1.14=19a2433` and do not modify its Release records.
 
 ## 17. Official-Authoritative Shared Plugin Readiness
 
@@ -519,3 +534,19 @@ to `origin/main`, the workflow run, atomic `v0.1.15` tag creation, and
 `v0.1.15` Release publication. It explicitly excludes moving, deleting, or
 mutating the `v0.1.14` tag or Release, along with force push, migration,
 dependency/credential change, archive, cleanup, and unrelated runtime effects.
+
+The `d9a08a71...` authority was consumed by commit `7bc2bdf`, its fast-forward
+push, and failed Auto Release run `31686051375`. The run did not mutate
+`v0.1.14` and did not create `v0.1.15`. Task 16.13-16.14 source, test,
+OpenSpec, ledger, namespaced-state, verification-record, and isolated package
+effects are allowed as the bounded failure repair, but task 16.15 requires a
+new Human Gate before commit, push, workflow, tag, or Release effects.
+
+The user's 2026-08-13
+`授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision is recorded in
+`release-python312-v0.1.15-submit-authority-grant.json` and resolves fresh gate
+`ff784b1f...` for task 16.15. It authorizes one verified repair commit and
+fast-forward push to `origin/main`, the push-triggered Auto Release run, atomic
+`v0.1.15` ref creation, and `v0.1.15` Release publication. It does not
+authorize any `v0.1.14` tag/Release mutation, force push, migration,
+dependency/credential change, archive, cleanup, or unrelated runtime effect.
