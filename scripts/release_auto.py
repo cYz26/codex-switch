@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,7 @@ REQUIRED_RELEASE_ASSETS = (
 )
 ASSET_MANIFEST_SCHEMA = "codex-switch.release-assets"
 ASSET_MANIFEST_VERSION = 1
+RELEASE_RECREATION_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0)
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,14 @@ class ReleaseConflict(ReleaseError):
     """Observed release state conflicts with the intended immutable release."""
 
 
+class ReleaseCreateRetryable(ReleaseError):
+    """A release-create attempt failed in a state that may be retried safely."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        self.reason = reason
+        super().__init__(detail)
+
+
 @dataclass(frozen=True)
 class ReleaseAsset:
     name: str
@@ -106,6 +116,86 @@ class ReleaseSnapshot:
 class CommitFile:
     mode: str
     object_id: str
+
+
+def _json_error_payload(text: str) -> Optional[Mapping[str, Any]]:
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _release_create_retry_reason(
+    stdout: str,
+    stderr: str,
+) -> Optional[str]:
+    texts = tuple(text for text in (stdout, stderr) if text)
+    payloads = tuple(
+        payload
+        for text in texts
+        if (payload := _json_error_payload(text)) is not None
+    )
+    detail = "\n".join(texts)
+    status: Optional[int] = None
+    for payload in payloads:
+        raw_status = payload.get("status")
+        if type(raw_status) is int:
+            status = raw_status
+            break
+        if isinstance(raw_status, str) and raw_status.isdigit():
+            status = int(raw_status)
+            break
+    if status is None:
+        match = re.search(r"\bHTTP\s+(\d{3})\b", detail, re.IGNORECASE)
+        if match:
+            status = int(match.group(1))
+
+    if status is not None and 400 <= status < 500 and status != 422:
+        return None
+
+    for payload in payloads:
+        errors = payload.get("errors")
+        if not isinstance(errors, list):
+            continue
+        for error in errors:
+            if (
+                isinstance(error, dict)
+                and error.get("resource") == "Release"
+                and error.get("field") == "tag_name"
+                and error.get("code") == "already_exists"
+            ):
+                return "tag_name_exists"
+
+    if re.search(r"\bRelease\.tag_name already exists\b", detail):
+        return "tag_name_exists"
+
+    if status is not None and 400 <= status < 500:
+        return None
+    if status in {500, 502, 503, 504}:
+        return "server_error"
+
+    lowered = detail.lower()
+    if "server error" in lowered and re.search(
+        r"\b(?:timed out|timeout)\b",
+        lowered,
+    ):
+        return "server_error"
+    if any(
+        marker in lowered
+        for marker in (
+            "connection reset",
+            "connection force closed",
+            "connection forcibly closed",
+            "connection was forcibly closed",
+            "context deadline exceeded",
+            "unexpected eof",
+            "timed out",
+            "timeout",
+        )
+    ):
+        return "transport_error"
+    return None
 
 
 def _run(
@@ -354,7 +444,7 @@ class GitHubCliAdapter:
         )
 
     def create_release(self, tag: str) -> None:
-        self._gh(
+        args = (
             "release",
             "create",
             tag,
@@ -367,6 +457,21 @@ class GitHubCliAdapter:
             "--verify-tag",
             "--draft",
         )
+        result = self._gh(*args, check=False)
+        if result.returncode == 0:
+            return
+        detail = result.stderr.strip() or result.stdout.strip()
+        message = (
+            f"Command failed ({result.returncode}): gh {' '.join(args)}: "
+            f"{detail}"
+        )
+        retry_reason = _release_create_retry_reason(
+            result.stdout,
+            result.stderr,
+        )
+        if retry_reason is not None:
+            raise ReleaseCreateRetryable(retry_reason, message)
+        raise ReleaseError(message)
 
     def download_asset(self, tag: str, name: str, destination: Path) -> None:
         if destination.exists():
@@ -1087,29 +1192,76 @@ def _create_empty_draft_release(
     create_release = getattr(github, "create_release", None)
     if not callable(create_release):
         raise ReleaseError("GitHub adapter cannot create a draft release")
-    if tag_identity_check is not None:
-        tag_identity_check()
-    create_release(tag)
-    created = github.inspect_release(tag)
-    if not isinstance(created, ReleaseSnapshot):
+
+    def inspect_checked(context: str) -> ReleaseSnapshot:
+        if tag_identity_check is not None:
+            tag_identity_check()
+        snapshot = github.inspect_release(tag)
+        if not isinstance(snapshot, ReleaseSnapshot):
+            raise ReleaseError(
+                f"GitHub adapter returned an invalid release snapshot {context} "
+                f"for {tag}"
+            )
+        return snapshot
+
+    def require_empty_draft(snapshot: ReleaseSnapshot) -> ReleaseSnapshot:
+        if not snapshot.exists:
+            raise ReleaseError(f"GitHub release {tag} is missing after draft creation")
+        if not snapshot.draft:
+            raise ReleaseConflict(
+                f"GitHub release {tag} is not a draft after creation"
+            )
+        hidden = _snapshot_hidden_assets(tag, snapshot)
+        names = sorted(set(snapshot.assets) | set(hidden))
+        if names:
+            raise ReleaseConflict(
+                f"GitHub release {tag} is not empty after draft creation: "
+                f"{', '.join(names)}"
+            )
+        return snapshot
+
+    max_attempts = len(RELEASE_RECREATION_BACKOFF_SECONDS) + 1
+    last_retryable: Optional[ReleaseCreateRetryable] = None
+    for attempt in range(max_attempts):
+        before = inspect_checked("before draft creation")
+        if before.exists:
+            return require_empty_draft(before)
+        try:
+            create_release(tag)
+        except ReleaseCreateRetryable as error:
+            last_retryable = error
+            confirmed = inspect_checked("after failed draft creation")
+            if confirmed.exists:
+                return require_empty_draft(confirmed)
+            if attempt + 1 >= max_attempts:
+                raise ReleaseError(
+                    f"GitHub release {tag} draft creation failed after "
+                    f"{max_attempts} attempts: {error}"
+                ) from error
+            time.sleep(RELEASE_RECREATION_BACKOFF_SECONDS[attempt])
+            continue
+        except ReleaseError:
+            confirmed = inspect_checked("after failed draft creation")
+            if confirmed.exists:
+                return require_empty_draft(confirmed)
+            raise
+
+        for readback in range(max_attempts):
+            created = inspect_checked("after draft creation")
+            if created.exists:
+                return require_empty_draft(created)
+            if readback + 1 >= max_attempts:
+                raise ReleaseError(
+                    f"GitHub release {tag} is missing after draft creation "
+                    f"and {max_attempts} readback attempts"
+                )
+            time.sleep(RELEASE_RECREATION_BACKOFF_SECONDS[readback])
+
+    if last_retryable is not None:
         raise ReleaseError(
-            f"GitHub adapter returned an invalid release snapshot after "
-            f"creating {tag}"
-        )
-    if not created.exists:
-        raise ReleaseError(f"GitHub release {tag} is missing after draft creation")
-    if not created.draft:
-        raise ReleaseConflict(
-            f"GitHub release {tag} is not a draft after creation"
-        )
-    hidden = _snapshot_hidden_assets(tag, created)
-    names = sorted(set(created.assets) | set(hidden))
-    if names:
-        raise ReleaseConflict(
-            f"GitHub release {tag} is not empty after draft creation: "
-            f"{', '.join(names)}"
-        )
-    return created
+            f"GitHub release {tag} draft creation failed: {last_retryable}"
+        ) from last_retryable
+    raise ReleaseError(f"GitHub release {tag} draft creation did not complete")
 
 
 def reconcile_release_assets(

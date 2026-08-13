@@ -1,0 +1,48 @@
+{
+  "authorityArtifactPath": "openspec/changes/independent-app-cli-profiles/evidence/release-recreation-retry-and-v0.1.15-authority-grant.json",
+  "authorityArtifactSha256": "sha256:4de5e427674254b24db4ac7e06aa0c5937937f2e86ca58c395a4ef6d858a7404",
+  "changeId": "independent-app-cli-profiles",
+  "current": true,
+  "decision": "CONTINUE",
+  "evidenceCurrent": true,
+  "gateKey": "sha256:614cc0253ca0735cf2af34acc60564687b7b081de9fa2e417045ea447a851d38",
+  "goalId": "019f8f8f-e64c-7093-af73-2c0247cf2891",
+  "kind": "devflow-authority-promotion-proof",
+  "materialDelta": false,
+  "missingAuthority": [],
+  "priorAuthorityContractSha256": "sha256:ebe053491b9158be4fc8ff76d20c3f7f3f4d194cfda14a5c6181b404dcbe65cb",
+  "priorEvidenceSha256": "sha256:0d3d20a3a4f61e2876442c3f9ccef5da8724c3c94bf70757a547725181e9e47e",
+  "priorMissingAuthority": [
+    "action:implement_bounded_release_recreation_retry_and_republish",
+    "effect:repository.write",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:github.release.mutate",
+    "effect:git.atomic_release_ref_push",
+    "target:origin/main",
+    "target:github-release/v0.1.14",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "priorReceiptSha256": "sha256:d0f261d5995e8d231b3907a3e53801294a881df7e7a4ccd2b2c8d0c7e81e5404",
+  "promotedAuthority": [
+    "action:implement_bounded_release_recreation_retry_and_republish",
+    "effect:repository.write",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:github.release.mutate",
+    "effect:git.atomic_release_ref_push",
+    "target:origin/main",
+    "target:github-release/v0.1.14",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "reasonCodes": [
+    "user_authorized_bounded_release_repair_and_publication"
+  ],
+  "resumeStage": "planning",
+  "schemaVersion": "1.0",
+  "trusted": true
+}

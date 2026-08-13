@@ -1278,3 +1278,338 @@ INC-018 and was not applied.
 
 No commit, push, workflow run/rerun, tag creation, Release mutation, DevFlow
 migration, archive, cleanup, or destructive effect occurred.
+
+## Task 15 Second-Submit Acceptance Failure
+
+The user authorized both the second repair submission and the additional
+`v0.1.15` publication target. Commit
+`2c90db77535479cd8a12783d79658798b50f1516` reached `origin/main` and triggered
+Auto Release run `31558709842`, job `93996366843`.
+
+The run completed with `failure`. Steps 1-10 passed, including historical
+source verification from `2026-08-12T03:01:05Z` through
+`2026-08-12T03:09:30Z`, reconciliation packaging, and deterministic asset
+validation. Step 11, `Reconcile existing release assets`, ran from
+`2026-08-12T03:09:32Z` through `2026-08-12T03:09:35Z` and failed with exit code
+2. Steps 12-20, including every `v0.1.15` preparation, atomic ref update, and
+publication action, were skipped.
+
+Fresh remote readback after the failure proves:
+
+```text
+origin/main  2c90db77535479cd8a12783d79658798b50f1516
+v0.1.14     19a243342ef9f78776b3fad0b2292198845147d3
+v0.1.15     absent
+run         31558709842 completed/failure
+failed step 11 Reconcile existing release assets
+```
+
+GitHub REST returns 404 for release-by-tag `v0.1.14`, and the repository
+release list begins at `v0.1.13`. The direct `install.sh`, `run.sh`, and
+`codex-switch.tar.gz` URLs for `v0.1.14` all return 404. The public tag-derived
+web page exposes only GitHub's two source archives; it does not prove a Release
+record or custom assets.
+
+The anonymous workflow-log endpoint returns
+`403 Must have admin rights to Repository`, so this record does not claim the
+unavailable recreation command stderr. The accepted implementation deletes the
+exact starter, observes the missing Release, and immediately issues
+`gh release create --draft`. The terminal missing-Release state and three-second
+failure make an unhandled post-delete consistency or transient recreation
+failure the leading diagnosis, not a proven verbatim server response.
+
+The systemic repair must classify only exact transient create/readback
+conditions, revalidate the tag and absent Release before every bounded attempt,
+require one empty draft readback before upload, and preserve all existing
+non-empty, published, moved-tag, duplicate, checksum, and no-`--clobber`
+fail-closed guards. A fixed sleep, manual Release construction, or unrestricted
+rerun is not an accepted repair.
+
+This acceptance failure consumes the second submit authority. Another
+planning/code change, commit/push, workflow trigger, `v0.1.14` Release mutation,
+and `v0.1.15` atomic publication require a new Human Gate. No rerun, manual
+Release edit, extra push, migration, cleanup, or implementation followed.
+
+## Task 16 Typed Bounded Recreation RED/GREEN
+
+The user answered `授权发布`. Authority gate
+`614cc0253ca0735cf2af34acc60564687b7b081de9fa2e417045ea447a851d38`
+was recorded, promoted through
+`release-recreation-retry-and-v0.1.15-authority-grant.json`, and cleared into
+`planning`, then task 16 moved to `executing`. The grant covers the bounded
+source repair, repository writes, one commit/push to `origin/main`, the
+push-triggered `v0.1.14` recovery, and atomic `v0.1.15` tag/Release
+publication. Archive, project migration, dependency/credential changes, manual
+broad Release edits, force push, cleanup, and unrelated runtime effects remain
+excluded.
+
+The public seam is `reconcile_release_assets`; the adapter seam classifies
+release-create failures without owning retry state. RED evidence:
+
+- the first adapter test errored because `ReleaseCreateRetryable` did not
+  exist;
+- the four public state-machine tests raised immediately on typed tag conflict,
+  raised after one missing post-success readback, or stopped after one create
+  instead of the required five-attempt bound;
+- structured tag-conflict, HTTP 503/server-timeout, unexpected-EOF, and forced-
+  close classification tests raised generic `ReleaseError`.
+
+GREEN adds `ReleaseCreateRetryable`, exact structured/text tag-name conflict
+classification, terminal-4xx precedence, specified GitHub 500/502/503/504 and
+server-timeout classification, and narrow timeout/reset/forced-close/
+unexpected-EOF transport classification. The reconciliation helper:
+
+- revalidates the tag and confirms the Release is missing before every create;
+- confirms state after every create error and accepts only an empty draft;
+- retries typed missing outcomes at most five times with 1/2/4/8 second
+  backoff;
+- performs readback-only retries after a successful create;
+- rechecks the tag before every accepted readback; and
+- preserves immediate failure for unknown errors and all published/non-empty
+  conflicts.
+
+Focused evidence:
+
+```text
+adapter first RED                         1 error
+public state-machine first RED           2 errors, 1 failure, 1 pass
+expanded classification RED              5 errors, 1 pass
+adapter GREEN                             4/4
+public state-machine GREEN                4/4
+tag/readback guard GREEN                  4/4
+complete reconciliation focused matrix  23/23
+```
+
+The focused matrix also tightened the pre-existing tag-movement assertion:
+the new post-create tag check stops before any asset upload, rather than after
+the first upload. No network mutation, Git effect, Release mutation, workflow
+rerun, migration, cleanup, dependency, credential, archive, or runtime action
+occurred during tasks 16.1-16.2. INC-018 remains deferred and unmodified.
+
+## Task 17 Official-Authoritative Shared Readiness
+
+The reopened contract makes the Official App projection the sole shared
+Plugin/Skill authority and treats the internal CLI view as derived readiness
+state. No reverse sync, source-choice prompt, watcher, App-stopped dependency,
+or direct codex-switch cache deletion is exposed.
+
+Public-seam RED evidence reproduced the required failures before production
+changes:
+
+- overlapping and internal-only drift returned conflict/pending behavior;
+- unsafe preflight printed only a bare attestation/error path;
+- a secret-bearing internal marketplace field blocked as `secret_field`
+  instead of being overwritten from Official;
+- a missing sidecar reported `cli_ready=true` without source/materialization
+  proof; and
+- the common diagnostic output omitted automatic actions while OpenSpec still
+  retained bidirectional/manual-source language.
+
+GREEN now plans only `openai-official -> internal`, re-attests the Official
+source, CAS-protects the internal target, and preserves unrelated internal
+model/provider/auth/MCP/runtime bytes. Repairable invalid fields in the
+internal shared tables are represented only by a value-free, redacted target
+shape; their values never enter canonical state, receipts, or diagnostics.
+Functional preflight applies and verifies one generation before backend
+`execve`. Unsafe states keep the backend stopped and print finding code,
+message, and exact `sync-shared --dry-run`, `sync-shared`, and Doctor commands.
+Status, Doctor, verify, and explicit sync use one pure renderer for source,
+target, generation, readiness, actions, secret-safe changes, findings, and
+remediation; diagnostic paths remain zero-write.
+
+Fresh final source evidence:
+
+```text
+shared configuration                         54/54
+shared lifecycle                             19/19
+shared materialization                       36/36
+verify                                       35/35
+runtime binding                              90/90
+profile/wrapper                            226/226
+update/release                             165/165
+transaction                                258/258
+parity                                       95/95
+config document                              31/31
+protocol configuration                       41/41
+official release                              6/6
+aggregate                                 1056/1056
+```
+
+One maximally parallel exploratory run produced resource-sensitive parity and
+protocol timing failures; isolated serial reruns passed 95/95 and 41/41 and
+are the qualifying results. Python 3.12 compile, four Bash syntax checks,
+active strict OpenSpec, repository-wide strict OpenSpec 22/22, DevFlow 0.4.1
+validation, and `git diff --check` pass.
+
+The retained, uninstalled package is
+`/private/tmp/codex-switch-official-authority-final.p0TWtw`. It contains 72
+files, payload SHA-256
+`3f8fe9367e504062ef5d6d1bf3bd506790c5af48ce697e28a26cf9c2d33256e8`,
+archive SHA-256
+`402a6b34399ead493040fc2b7840479a3cb0aeee744736347d634aaf46a67ba7`,
+and manifest SHA-256
+`1bb1f6fa9aafbe79f127c2f71412b4f8b664b1bea1d5a6280d9fc88f9d019773`.
+Twelve task paths are byte-exact against source; packaged shared and verify
+suites pass 144/144. Release-counterpart Plugin Eval remains 54/100, grade F,
+with two static token-budget failures and four existing structural/complexity
+warnings under INC-012; this behavior repair does not expand into the separate
+benchmark-backed package architecture change.
+
+The independent Spec review approved the value-free target fallback, missing
+state readiness, and common report after repair. The Standards review closed
+the stale bidirectional Goals, orphan acceptance clauses, duplicate planner
+construction, duplicate renderer, stale both-homes statement, and verify
+characterization. No live functional backend, install, App/config/cache
+mutation, migration, dependency, credential, Git/release, archive, cleanup, or
+destructive effect occurred.
+
+## Task 18 Split-Triggered Shared Readiness
+
+The public wrapper seam is `codex-switch split` plus its explicit
+`internal --app-profile official` form. Before production changes, the ordered
+success RED observed `switch:dry-run`, `switch:apply`, Plugin repair, verify,
+Doctor, and status with no `sync-shared` event. The failure-remediation RED then
+proved the first implementation still emitted Doctor-only guidance, and the
+preview RED proved both dry-run forms omitted the planned readiness boundary.
+
+GREEN routes both apply forms through the existing `sync-shared` command
+exactly once after switch commit and before every later wrapper step. A sync
+failure returns its code, preserves the committed CLI/App selection, stops
+Plugin repair/verify/Doctor/status, and prints exact preview/apply/Doctor
+commands. Both dry-run forms invoke only switch planning, state that shared
+readiness follows a successful apply, and leave the store absent. The focused
+public lifecycle file passes 22/22; the two adjacent profile wrapper cases pass
+2/2; Bash syntax, Python 3.12 compilation, active and all strict OpenSpec 22/22,
+DevFlow validation (`ok=true`, zero issues, existing INC-018 warning only), and
+`git diff --check` pass at this checkpoint.
+
+Generated Artifact Contract
+`SPLIT-PROACTIVE-SYNC-20260812T192700+0800` was sealed after confirming the
+exact isolated root
+`/private/tmp/codex-switch-split-proactive-sync-20260812T192700+0800` was
+absent. Task 18.4 alone owns files produced there by the exact command
+`CODEX_SWITCH_DIST_DIR=<root> CODEX_SWITCH_PYTHON=python3.12
+scripts/package-release.sh`. The root is outside the repository and has
+terminal disposition `RETAIN`; no cleanup, install, promotion, cache refresh,
+live split, or release is authorized.
+
+The first Task 18 counterpart was superseded in place only as verification
+evidence after review found that installed-wrapper self-update could violate
+split-preview zero-write/zero-network semantics. Its `RETAIN` disposition is
+unchanged and it was not overwritten or cleaned. Generated Artifact Contract
+`SPLIT-PROACTIVE-SYNC-FINAL-20260812T200447+0800` was sealed after confirming
+the exact root
+`/private/tmp/codex-switch-split-proactive-sync-final-20260812T200447+0800`
+was absent. Task 18.4 alone owns files produced there by the exact command
+`CODEX_SWITCH_DIST_DIR=<root> CODEX_SWITCH_PYTHON=python3.12
+scripts/package-release.sh`; terminal disposition is `RETAIN`, with the same
+no-install/no-live/no-release/no-cleanup boundary.
+
+Final review first found that wrapper self-update still ran before preview
+dispatch, so an installed `split --dry-run` could perform network/write effects.
+It also found asymmetric concise/long-form failure and later-step-skip coverage.
+The correction classifies both supported previews before self-update, reuses one
+official-profile alias authority, and drives both forms through the same public
+lifecycle scenario helper. The qualifying reviewer reruns close both findings:
+the independent Spec axis reports no missing, out-of-scope, or incorrect Task 18
+behavior, and the independent Standards axis reports no remaining documented
+standard violation or material baseline smell in Task 18 scope.
+
+Final source evidence is lifecycle 23/23, combined shared configuration,
+materialization, lifecycle, and verify 148/148, complete profile/wrapper 227/227,
+complete update/release 165/165, and isolated final-package focus 25/25. Python
+3.12 compilation, four Bash syntax checks, repository JSON parsing, active
+strict OpenSpec, all strict OpenSpec 22/22, DevFlow 0.4.1 validation (`ok=true`,
+zero issues, existing INC-018 warning only), and `git diff --check` pass. The
+release-counterpart Plugin Eval remains the known INC-012 result: 54/100, grade
+F, with two token-budget failures and four existing structural/complexity
+warnings; it is not a new Task 18 behavior blocker.
+
+The retained final package contains 72 files and six directories. Its archive
+SHA-256 is
+`ef32726e22007f4bac5113c75b52acc10db6e6e9c6f5b90f30a041ff70529666`,
+bundle-manifest SHA-256 is
+`9dbfd74ea24cd38b9a398a5947b3e90c668ea284f3278f034e3cd488a2c0489e`, and
+payload SHA-256 is
+`ff403759738925b86ccd41f9edc9f7aac71db56314c1feb5600f78c3d6f1608a`.
+The final source wrapper SHA-256 is
+`6bff058f82271b7c2560750e00882676a54dc7db3d130c40fa602db06b8d74da`.
+The current installed wrapper remains deliberately untouched at
+`6132984ce3ad62394ee17b3e4c1888194eaa3f9ba9303c988d25aad69e82d6e0`,
+so activation still requires a separate install/live Human Gate. No live split,
+functional backend, install, App/config/cache mutation, migration, dependency,
+credential, Git/release, archive, cleanup, or destructive effect occurred.
+
+## Task 16 Final Submission Package Contract
+
+Generated Artifact Contract
+`RELEASE-RECREATION-SUBMIT-FINAL-20260813T115849+0800` was sealed on
+2026-08-13 after confirming the exact root
+`/private/tmp/codex-switch-submit-final-20260813T115849+0800` was absent.
+Task 16.3 alone owns files produced there by the exact command
+`CODEX_SWITCH_DIST_DIR=<root> CODEX_SWITCH_PYTHON=python3.12
+scripts/package-release.sh`. The root is outside the repository and has
+terminal disposition `RETAIN`; no install, promotion, cache refresh, Release
+mutation, migration, or cleanup is authorized by this contract.
+
+The earlier root
+`/private/tmp/codex-switch-submit-20260813T115645+0800` was created before a
+durable Generated Artifact Contract. It is retained as unregistered diagnostic
+evidence, is not used as the final package authority, and is not eligible for
+automatic cleanup.
+
+## Task 16.3 Final Source, Package, and Review Proof
+
+Fresh 2026-08-13 verification ran on the final source bytes. The focused
+recreation matrix passes 11/11. Complete Python 3.12 Update/Release passes
+165/165 in 349.236 seconds, complete Profile/Wrapper passes 227/227 in
+328.807 seconds, and shared configuration/materialization/lifecycle/verify
+passes 54/54, 36/36, 24/24, and 35/35 respectively (149/149 aggregate).
+
+Independent Spec and Standards reviews found four required Completion Contract
+gaps before submission:
+
+- HTTP 403/429 containing a tag-conflict phrase could be classified retryable;
+- `internal --app-profile=official` did not populate the wrapper's split
+  identity and skipped proactive shared synchronization;
+- common transport wording `connection was forcibly closed` and
+  `context deadline exceeded` was not classified as typed transient failure;
+- shared diagnostic and preflight output could render TOML-derived control
+  characters as forged lines or terminal escapes.
+
+Each finding received a focused RED before production repair. GREEN now gives
+terminal non-422 4xx status precedence, normalizes both App-profile argument
+forms, recognizes only the additional bounded transport phrases, and routes
+every shared diagnostic/preflight field through one single-line
+control-character escaper. The original and new focused guards pass, and both
+reviewers report no remaining P1/P2 or missing Task 16-18 behavior.
+
+Python AST parsing covers 61 scripts and repository JSON parsing covers 78
+files. Five Bash syntax checks, active strict OpenSpec, repository-wide strict
+OpenSpec 22/22, DevFlow 0.4.1 validation (`ok=true`, zero issues, existing
+INC-018 guidance warning only), and `git diff --check` pass. INC-018 migration
+remains unapplied.
+
+The sealed final package at
+`/private/tmp/codex-switch-submit-final-20260813T115849+0800` contains 71 files
+and five directories. Its payload SHA-256 is
+`b9d5148c285408616f9b6c77ebf604cdc5b27ff9d5b3af0131b88336cc131770`,
+archive SHA-256 is
+`1309e706bb9d5b765fd86344c6cc4007f9a84bc88730079b6219b70b8712a3e1`,
+and bundle-manifest SHA-256 is
+`f73c7c2c6574c4db40e388edcf957d8aeddd050a23f971149d6fb633413412cd`.
+The wrapper, Release adapter, and shared-configuration module are byte-exact
+against source; package-local shared lifecycle passes 24/24 and the focused
+Release matrix passes 6/6.
+
+Release-counterpart Plugin Eval reports 54/100, grade F: the same two token-
+budget failures and four structural/complexity warnings tracked by INC-012.
+Fixing that debt requires a separate benchmark-backed package/skill
+architecture change and is not folded into this behavior/release repair.
+
+The remote prestate remains `origin/main` at
+`2c90db77535479cd8a12783d79658798b50f1516`, `v0.1.14` at
+`19a243342ef9f78776b3fad0b2292198845147d3`, and `v0.1.15` absent. No commit,
+push, workflow rerun, GitHub Release mutation, migration, install, live split,
+cleanup, archive, dependency, credential, or destructive effect occurred
+during task 16.3. Task 16.4 is the next authorized external action.

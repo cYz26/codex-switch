@@ -68,8 +68,10 @@ recoverable rebind. Use
 against its own binding. Internal App parity is explicitly reported as not
 applicable because the App owner is official. `codex-switch split` is the
 concise preset for
-`codex-switch internal --app-profile official`; normal invocation retains both
-codex-switch self-update and internal update detection. When that detection
+`codex-switch internal --app-profile official`; a real apply retains both
+codex-switch self-update and internal update detection. Split preview bypasses
+self-update and update detection so it remains zero-write and zero-network.
+When apply-time detection
 selects a newer internal binary, `split` uses an atomic CLI-only promotion: it
 validates and records the exact version and SHA-256, leaves Desktop/parity
 artifacts untouched, marks internal App readiness unverified, and runs bounded
@@ -85,9 +87,12 @@ Direct `codex-switch update-internal` remains the explicit full Desktop-parity
 update path. For a controlled switch
 that keeps both currently installed versions, use
 `codex-switch split --keep-version`. This option does not skip Plugin repair,
-verify, Doctor, status, App-effect derivation, or transaction validation. Add
-`--dry-run` to either form for a preview; the plan reports an App action of
-`preserve` or `rebind`. A healthy canonical official App may remain
+verify, Doctor, status, App-effect derivation, transaction validation, or the
+mandatory shared-readiness step described below. Add `--dry-run` to either form
+for a preview; the plan reports an App action of `preserve` or `rebind`, states
+that shared synchronization will follow a successful apply without running it,
+and performs no installed-wrapper self-update or network check. A healthy
+canonical official App may remain
 running for `preserve`, and the transaction does not rewrite its LaunchAgent,
 GUI environment, Home, processes, or Desktop global state. Only `rebind`
 requires fully quitting ChatGPT/Codex App and keeping it closed until the
@@ -104,20 +109,40 @@ final CAS and journal rollback.
 
 In this split, Plugin and Skill usage has one generationed desired-state layer,
 while the App and CLI keep separate runtime configs and separate plugin caches.
-When the official App adds, updates, disables, or removes a Plugin or configured
-Skill, the next functional managed internal CLI invocation reconciles that
-generation and proves the internal cache before running the requested Codex
-command. `codex --help` and `codex --version` remain read-only.
+After a real `split` (or `internal --app-profile official`) switch transaction
+commits, the wrapper runs Official-to-internal shared synchronization exactly
+once before generic Plugin repair, verify, Doctor, or status. Later skip options
+do not skip this readiness boundary. If synchronization fails, the wrapper
+returns that failure, stops every later step, and prints exact `sync-shared
+--dry-run`, `sync-shared`, and Doctor recovery commands. The selected split
+identity remains committed, while shared state retains its own last-known-good
+generation.
 
-Changes left by an internal CLI session are captured at the next functional CLI
-preflight. They are not written underneath a running official App. Preview or
-apply the pending App projection with:
+When the official App later adds, updates, disables, or removes a Plugin or
+configured Skill, the next functional managed internal CLI invocation repeats
+the same reconciliation as a fallback and proves the internal cache before
+running the requested Codex command. `codex --help` and `codex --version` remain
+read-only.
+
+The official App is the authority for this shared subset. Direct changes to
+`marketplaces.*`, `plugins.*`, or `skills.config` in the managed internal home
+are treated as target drift and replaced from the current official projection;
+unrelated internal model/provider/auth, MCP, feature, and runtime settings stay
+profile-local. Preview or apply the same Official-to-internal reconciliation
+with:
 
 ```bash
 codex-switch sync-shared --dry-run
-# Quit the official App completely before the apply form:
 codex-switch sync-shared
 ```
+
+The apply form writes only the internal target, so the official App may remain
+running. Status, Doctor, verify, and `sync-shared` report the same generation,
+source/target, secret-safe changed operations, readiness, and remediation. Both
+split apply and functional CLI preflight perform repairable synchronization
+automatically; unsafe source, cache, or compare-and-swap failures stop before
+later wrapper steps or backend execution and print exact preview/apply/Doctor
+commands.
 
 Normal `check-update`, `internal`, and `official` flows also compare the
 selected profile CLI with the latest stable `openai/codex` release. The output
@@ -129,7 +154,8 @@ internal release source. `--skip-update-check` skips both the profile-specific
 check and the upstream stable advisory.
 
 Persistent local commands installed by `install.sh` also check for a
-codex-switch implementation self-update before every ordinary command execution.
+codex-switch implementation self-update before ordinary command execution,
+except the two split-preview forms which remain zero-write and zero-network.
 A release-installed wrapper syncs `~/.local/share/codex-switch/current` from the
 configured release tarball when a newer bundle is available, and re-runs the
 original command against the synced wrapper. Source checkout usage such as
@@ -382,6 +408,9 @@ paths and do not run update, switch, Plugin repair, Doctor, or status steps.
 For the supported internal-CLI/official-App split, the continuous shared layer
 is intentionally narrower than the legacy switch-time merge. It owns only
 secret-screened `marketplaces.*`, `plugins.*`, and `skills.config` semantics.
+The official App is always the source of truth for those semantics and the
+internal CLI is a derived, independently materialized target; there is no
+reverse automatic sync, source-choice prompt, or background watcher.
 The official personal `skills/` directory is the canonical personal-Skill root;
 the internal home may use one validated link to it. Plugin-contributed Skills
 stay inside each profile's independently materialized plugin cache, and their
@@ -412,7 +441,7 @@ reserved for unsafe paths, links, file kinds, cache identities, or traversal.
 
 For `backend_managed` Plugins, the official source identity and the internal
 installed target identity are deliberately independent. The source manifest
-and tree must still match the desired generation, but a pending generation
+and tree must still match the desired generation, but a changed generation
 always reconciles through the internal backend even when an older internal
 cache is already inspectable. Native add/update owns whether that prior version
 is retained, replaced, or removed. After all such adds finish, preflight reads
@@ -422,23 +451,22 @@ contributed Skill roots. Revision cache keys may differ from the manifest
 version; both are recorded in the receipt. A valid catalog without provable
 installed target state reports
 `shared_configuration.materialization.unverified_target`, while command/JSON/
-schema failure remains `unverified_catalog`. This CLI-side reconciliation does
-not require quitting or modifying the official App; only an explicit pending
-CLI-to-App `sync-shared` apply requires the App to be stopped.
+schema failure remains `unverified_catalog`. This CLI-side reconciliation and
+explicit `sync-shared` both target only the internal home, so neither requires
+quitting or modifying the official App.
 
 Each ready receipt is re-attested against the target cache; the sidecar never
 trusts an old receipt after its manifest/tree/Skill roots disappear or drift.
 Before an external target backend can materialize a Plugin, a private durable
 materialization intent binds the exact target config and allowed selector
-activations; an official target also receives a fail-closed stopped-App check
-before that call. Shared publication then uses the prepared commit journal,
-source/target CAS, and a post-materialization stopped-App check. `state.json`
-is the commit point; a later functional preflight recovers either interrupted
-intent under the store lock, while status/Doctor/verify only report the
-recovery boundary. Every external materializer command inherits that store
-lock lease, so a backend that survives parent `SIGKILL` keeps new applies
-fail-closed until it exits; only then may a later apply classify a late
-selector write and retire the intent.
+activations. Shared publication then uses the prepared commit journal,
+Official-source re-attestation, internal-target CAS, and post-materialization
+target verification. `state.json` is the commit point; a later functional
+preflight recovers either interrupted intent under the store lock, while
+status/Doctor/verify only report the recovery boundary. Every external
+materializer command inherits that store lock lease, so a backend that survives
+parent `SIGKILL` keeps new applies fail-closed until it exits; only then may a
+later apply classify a late selector write and retire the intent.
 
 These recovery journals are local rollback evidence, not shared desired state.
 To restore an interrupted write exactly they temporarily contain target
@@ -453,7 +481,7 @@ The broader configuration review is deliberately fail-closed:
 
 | Configuration surface | Ownership in App/CLI split | Synchronization rule |
 | --- | --- | --- |
-| Plugin selectors, non-secret marketplace descriptors, configured Skills | Shared desired state | Three-way generation reconcile; divergent edits conflict |
+| Plugin selectors, non-secret marketplace descriptors, configured Skills | Official-authoritative desired state | Render and independently materialize only into internal; direct internal shared edits are repaired drift |
 | Global Home support (`AGENTS.md`, `prompts/`, `rules/`, `skills/`) | Exact V1 generic allowlist | Plan only these four names; preserve and ignore every unknown target |
 | Personal standalone Skills | Official personal Skills root | One validated internal directory link |
 | Plugin-contributed Skills and plugin code | Per-profile cache | Independently materialize and attest; never share/symlink caches |
@@ -469,8 +497,9 @@ The broader configuration review is deliberately fail-closed:
 | Automations, process/browser/thread routing, catalogs and caches | Runtime-local/derived | Never synchronize as configuration |
 
 `status`, `doctor`, and `verify internal` read the same shared-generation report.
-They report pending, conflict, unsafe cache, personal-Skill ownership, and
-materialization findings without repairing them.
+They report bootstrap/readiness drift, recovery, unsafe cache, personal-Skill
+ownership, automatic actions, secret-safe changes, and exact remediation
+without repairing them.
 
 Profile-level plugin repair does not refresh project-local DevFlow/OpenSpec
 configuration, generated guidance, or skill links. Run project refresh

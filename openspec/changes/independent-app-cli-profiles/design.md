@@ -24,7 +24,11 @@ switch.
   active record, PATH, LaunchAgent, App bundle, running app-server, transaction,
   status, Doctor, verifier, release packaging, official Plugin/Skill surface
   documentation, live sanitized Plugin/Skill projections, and both profile
-  cache layouts were inspected
+  cache layouts were inspected; task 16 additionally uses the GitHub CLI
+  release-create race reports and GitHub REST timeout guidance as authoritative
+  evidence for typed propagation retry; task 17 uses current public preflight,
+  shared-state, immutable-generation, and prompt-adapter seams as local
+  authoritative evidence
 - decision-resolution: required / used; the user selected internal CLI and
   official App, with internal binary/home and official bundle/home as the
   concrete interpretation
@@ -39,16 +43,22 @@ switch.
   Desktop terms are sufficient
 - openspec-routing: required / used; behavior and compatibility are canonical
   in this independent change
-- test-first-execution: required / used for slices 1-5; required / pending for
-  the reopened shared-capability slices, which start with public-seam REDs
+- test-first-execution: required / used for slices 1-13 and tasks 16-18;
+  task 17 records public reconciliation, functional-preflight, diagnostics, and
+  managed-shim RED/GREEN evidence; task 18 records public wrapper ordering,
+  failure-stop, and dry-run RED/GREEN evidence
 - root-cause-diagnosis: required / used; initial feature work was a missing
   supported state, while the 2026-08-10 live bootstrap failure was reproduced
   as an installed-version/source-identity conflation in the production
-  materializer
-- change-review: required / pending after the shared-capability implementation;
-  the previous two-axis split-selection review remains recorded
-- completion-proof: required / pending for the reopened change; the previous
-  split-selection source matrices remain baseline evidence only
+  materializer; task 16 isolates an unsupported create/readback consistency
+  window after exact starter deletion
+- change-review: required / used; tasks 17 and 18 completed independent Spec
+  and Standards reviews with all findings closed; task 18's review found and
+  closed the installed-wrapper preview self-update boundary and both-form
+  coverage gap before final approval
+- completion-proof: required / used; tasks 17 and 18 record fresh
+  source/package matrices, strict/static/workflow/diff proof, explicit
+  non-effects, and split-lifecycle evidence
 - execution-orchestration: required / used; `tasks.md` is the sole execution
   source for this change
 
@@ -87,6 +97,15 @@ switch.
   installed provenance, and the current classifier requires source and target
   manifest versions to match, so a valid catalog is collapsed into the false
   `shared_configuration.materialization.unverified_catalog` finding.
+- `release_recreation_evidence`: Auto Release run `31558709842` passed
+  historical-source verification and deterministic asset validation, then
+  failed in the three-second reconciliation step while `v0.1.14` ended with a
+  valid immutable tag but no Release record. GitHub CLI issue 6599 records
+  successful release creation returning before subsequent reads can observe the
+  Release, issue 4270 records `Release.tag_name already exists` with a draft
+  left behind, and GitHub REST guidance documents timeout `Server Error`
+  responses. This supports a typed bounded confirmation loop, not unrestricted
+  reruns or fixed sleeps.
 
 ## Target State
 
@@ -94,13 +113,19 @@ switch.
 switch, and `codex-switch split` is its concise wrapper preset. It prepares and
 selects the internal profile for shell execution while binding Desktop to the
 current canonical official bundle. Normal `split` preserves codex-switch and
-internal update behavior; `split --keep-version` explicitly freezes both
-update layers for controlled activation. Active state records both identities;
+internal update behavior on real apply; split preview bypasses both update
+layers so it remains zero-write and zero-network. `split --keep-version`
+explicitly freezes both update layers for controlled activation. Active state
+records both identities;
 all readers agree on the split and diagnose each surface against its owner.
 Existing same-profile commands and legacy active records continue to work
-without migration. In the supported split, one store-owned Plugin/Skill desired
-generation is rendered into both homes, each backend owns its materialized
-cache, and the internal CLI never starts with an incomplete generation.
+without migration. In the supported split, the Official App observation seeds
+one store-owned Plugin/Skill desired generation; only the internal home is
+rendered and independently materialized, and the internal CLI never starts with
+an incomplete generation. A real split apply establishes that readiness
+immediately after the profile transaction commits and before the wrapper runs
+generic Plugin repair or diagnostics; functional CLI preflight remains the
+fallback for Official changes made after the switch.
 
 ## Goals / Non-Goals
 
@@ -117,8 +142,18 @@ cache, and the internal CLI never starts with an incomplete generation.
   the official binding.
 - Share a narrow, secret-safe Plugin/Skill desired state while keeping runtime
   configs, plugin caches, credentials, and sessions independently owned.
-- Make App-originated changes usable by the next functional internal CLI
-  invocation and expose a safe explicit boundary for pending CLI-to-App apply.
+- Make the Official App projection authoritative and usable by the next
+  functional internal CLI invocation through automatic internal reconciliation
+  and independent materialization.
+- Make a successful real split proactively establish the same shared readiness
+  before Plugin repair, verify, Doctor, or status, while keeping split preview
+  zero-write and preserving exact failure guidance.
+- Treat internal-only, disjoint, overlapping, and delete-versus-modify drift as
+  derived-target repair, with secret-safe changes and actionable remediation
+  when safety evidence cannot be proven.
+- Make failed-upload Release recreation idempotent across GitHub's bounded
+  create/readback propagation window without retrying permission, rate-limit,
+  unknown validation, or conflicting states.
 
 **Non-Goals:**
 
@@ -127,7 +162,12 @@ cache, and the internal CLI never starts with an incomplete generation.
   credentials, providers, models, or broad shared-config ownership outside the
   explicitly classified Plugin/Skill desired-state projection.
 - Installing source, applying the split to this workstation, restarting
-  ChatGPT, committing, pushing, releasing, archiving, or purging retained data.
+  ChatGPT, archiving, purging retained data, or performing any Git/Release
+  effect outside the exact task-16 `origin/main`, `v0.1.14`, and `v0.1.15`
+  publication grant.
+- A background watcher/daemon, broad config sharing, wall-clock winner,
+  internal-to-Official reverse sync, source-choice prompts, or direct cache
+  deletion.
 
 ## Architecture Decisions
 
@@ -194,23 +234,24 @@ for the managed shell shim, but live Desktop attestation uses the official App
 binding. App-server smoke therefore executes the official bundle/home in split
 mode.
 
-### Decision 7: One neutral Plugin/Skill desired state, two rendered configs
+### Decision 7: Official App Plugin/Skill state is authoritative
 
-The store owns a versioned shared-capability sidecar rather than treating
-either runtime `config.toml` or either plugin cache as the permanent canonical
-file. It contains only the secret-screened semantic projection of
-`marketplaces.*`, `plugins.*`, and `skills.config`, a monotonic generation,
-per-home last-applied baselines, source artifact identities, pending/conflict
-state, and per-profile materialization receipts. Each runtime config keeps its
-profile-local model/provider/auth/feature data and receives an authoritative
-render of only that projection.
+The store owns a versioned shared-capability sidecar rather than sharing either
+runtime `config.toml` or either plugin cache. It contains only the
+secret-screened semantic projection of `marketplaces.*`, `plugins.*`, and
+`skills.config`, a monotonic generation, per-home observation evidence, source
+artifact identities, and internal materialization receipts. Each runtime config
+keeps its profile-local model/provider/auth/MCP/feature data; only the internal
+target receives a managed render of the official projection.
 
-The official App projection is the explicit bootstrap authority for the
-supported split because the user selected App-originated add/update as the
-initial workflow. Once bootstrapped, both sides are compared with their common
-baseline: a single-side change advances the desired generation, identical
-changes coalesce, and divergent changes to the same desired snapshot fail
-closed. No mtime or last-writer-wins rule is allowed.
+The current official App observation is the authority for bootstrap and every
+later generation. An Official-side add, update, enable, disable, or removal is
+propagated to internal. A direct internal edit to the shared subset is target
+drift and is replaced, even when both sides changed overlapping or disjoint
+paths; unrelated internal configuration remains byte-preserved. Baselines are
+used for secret-safe change reporting and legacy-state migration, not source
+arbitration. No mtime, last-writer, merge, or operator-selected source rule is
+allowed.
 
 Every fast-path receipt is evidence, not authority by itself. Before reporting
 `cli_ready`, reconcile and diagnostics re-attest the referenced target cache,
@@ -228,17 +269,15 @@ and contributed-Skill availability, writes a receipt, and only then executes
 the user command. An unchanged committed generation takes a zero-write,
 zero-network fast path. `--help` and `--version` retain read-only behavior.
 
-The preflight also observes changes left by a prior CLI session. When the
-official App/app-server is running, a CLI-originated change advances canonical
-state as `pending_app_apply` but does not overwrite the live App config. A new
-`sync-shared` command previews or applies that pending projection only after the
-App is stopped. “Stopped” is fail-closed evidence from process enumeration: a
-recognized Desktop host, any relevant app-server (including a mismatched
-binding), or an unreadable process inventory blocks apply. The stopped proof
-and target config identity are checked again after materialization and directly
-before the first target write. This change intentionally preserves the shim's `os.execve`
-process/TTY/signal/exit-status contract; supervisor postflight, an official App
-wrapper, a watcher, and a daemon are rejected.
+The preflight also detects direct changes left in the internal shared subset and
+repairs them from Official before backend execution. `sync-shared --dry-run`
+previews the same Official-to-internal plan without writes, while `sync-shared`
+applies it explicitly. Neither operation probes, stops, or writes the official
+App. Stable Official-source re-attestation, internal-target compare-and-swap,
+and post-materialization target proof remain mandatory. This preserves the
+shim's `os.execve` process/TTY/signal/exit-status contract; supervisor
+postflight, an official App wrapper, reverse sync, a watcher, and a daemon are
+rejected.
 
 ### Decision 9: Independent materialization uses explicit artifact policy
 
@@ -303,10 +342,11 @@ OpenSpec delta.
 ### Decision 12: Stable receipts are the diagnostic authority
 
 Status, Doctor, and verify consume one read-only shared-capability report with
-stable finding codes for generation, pending apply, conflict, materialization,
-cache separation, and personal-Skill ownership. They do not independently
-guess source direction or repair state. Dry-run and verify perform no writes,
-catalog refresh, plugin install, cache replacement, or link creation.
+stable source/target, generation, semantic operations, automatic actions,
+readiness, finding codes/messages, and remediation for materialization, cache
+separation, compare-and-swap, and personal-Skill ownership. They do not
+independently guess authority or repair state. Dry-run and verify perform no
+writes, catalog refresh, plugin install, cache replacement, or link creation.
 
 ### Decision 13: Shared publication has one recoverable commit point
 
@@ -316,8 +356,7 @@ shared store. It binds the old state/generation, source and target config
 identities, target file kind/bytes/mode, prior Skill-link state, planned
 projection, target materialization receipts, immutable generation payload, and
 expected committed-state digest. Materialization is re-attested, source and
-target CAS identities are rechecked, and an official target receives a second
-fail-closed stopped-App check before the first target write.
+target CAS identities are rechecked before the first internal target write.
 
 The prepared journal is non-canonical, machine-local recovery evidence. Exact
 rollback requires it to retain the target config before/after bytes and mode,
@@ -343,8 +382,7 @@ remain read-only and report the pending recovery boundary.
 The target backend may persist a Plugin selector activation while materializing
 its cache, so the main prepared-commit journal is not early enough by itself.
 Immediately before any external target-backend materializer call, reconcile
-rechecks target config CAS and, for an official target, performs a fail-closed
-stopped-App proof. It then durably publishes a private
+rechecks internal target config CAS. It then durably publishes a private
 `pending-materialization.json` intent that binds the target path, exact
 before-kind/bytes/mode, source and target profile identities, and the bounded
 enabled selector set that the operation may activate. A main prepared-commit
@@ -364,8 +402,8 @@ store lock before loading state or planning new work, using the same selective
 rules. Cache artifacts left by the interrupted backend are not trusted; their
 continued presence or later replacement remains governed by the native backend
 lifecycle, and normal materialization attestation decides whether a later retry
-can use them. The ordinary post-materialization stopped-App and target CAS
-checks still run before the main prepared commit.
+can use them. The ordinary post-materialization target CAS and Official-source
+re-attestation still run before the main prepared commit.
 
 ### Decision 15: External materializers inherit the store mutation lease
 
@@ -410,8 +448,9 @@ bootstrap entrypoints advance with this validator change.
 `codex-switch split` is an additive wrapper preset for
 `internal --app-profile official`; it does not add a second switch planner,
 transaction, verifier, or result path. All ordinary split options continue to
-flow through `switch_profile internal`, and normal invocation retains the
-existing wrapper self-update plus internal update-check/promotion behavior.
+flow through `switch_profile internal`. A real apply retains the existing
+wrapper self-update plus internal update-check/promotion behavior; a preview is
+recognized before self-update and bypasses both update layers.
 
 `--keep-version` is scoped to `split` and makes the controlled-version intent
 explicit. Argument normalization recognizes it before wrapper self-update,
@@ -455,22 +494,24 @@ official cache was rejected because it violates independent backend ownership.
 Trusting the marketplace path without manifest/tree attestation was rejected
 because local-source drift would become an unverified install authority.
 
-### Decision 19: Functional preflight reports bounded progress without moving the lifecycle boundary
+### Decision 19: Functional preflight reports bounded progress as a fallback lifecycle boundary
 
-The next functional managed internal CLI invocation remains the automatic
-bootstrap and reconciliation boundary. Before potentially expensive source
-attestation it writes one flushed progress line to stderr; when a plan requires
-materialization it reports the target profile and enabled Plugin count before
-the target catalog/backend phase. Findings and exit behavior remain unchanged,
-and help/version stay read-only. A committed unchanged generation retains its
+The next functional managed internal CLI invocation remains an automatic
+reconciliation boundary for Official changes made after a split or for a split
+created by an older wrapper. Before potentially expensive source attestation it
+writes one flushed progress line to stderr; when a plan requires materialization
+it reports the target profile and enabled Plugin count before the target
+catalog/backend phase. Findings and exit behavior remain unchanged, and
+help/version stay read-only. A committed unchanged generation retains its
 zero-write and zero-network contract; progress is observational and does not
 authorize repair, refresh, or cleanup.
 
-Moving materialization into the split transaction was rejected for this repair
-because backend cache/config effects have their own intent and lease lifecycle
-and cannot be made part of the existing switch rollback without a broader
-transaction redesign. Silent first-use work was rejected because a cold source
-attestation plus catalog query can otherwise look like a hung CLI.
+Moving materialization inside the split transaction remains rejected because
+backend cache/config effects have their own intent and lease lifecycle and
+cannot join the existing switch rollback without a broader transaction
+redesign. Task 18 instead adds a post-commit readiness boundary through the
+existing explicit-sync interface. Silent first-use work was rejected because a
+cold source attestation plus catalog query can otherwise look like a hung CLI.
 
 ### Decision 20: Backend-managed source proof and target proof are independent
 
@@ -566,6 +607,82 @@ path. If the Release remains, any changed replacement starter record fails
 closed before deletion; an unchanged remaining starter may proceed through the
 next tag-check/delete/readback iteration.
 
+### Decision 23: Draft recreation uses typed bounded state confirmation
+
+`GitHubCliAdapter.create_release()` classifies a failed create separately from
+ordinary release errors. Retryable create outcomes are limited to structured or
+unambiguous `Release.tag_name already exists`, GitHub HTTP 500/502/503/504 or
+documented server-timeout responses, and bounded transport interruption such as
+timeout, connection reset/forced close, or unexpected EOF. Authentication,
+authorization, rate-limit, arbitrary HTTP 4xx, unknown HTTP 422 validation, and
+unclassified command failures remain terminal.
+
+The reconciliation seam owns the state machine. Before every create attempt it
+revalidates the immutable remote tag and confirms the Release is still missing.
+After any create error it performs one confirming read: an existing empty draft
+is success regardless of the command result; a conflicting snapshot fails
+closed; a still-missing snapshot retries only when the adapter supplied a typed
+retryable outcome. There are at most five create attempts with deterministic
+1, 2, 4, and 8 second delays.
+
+When the create command returns success, reconciliation never issues another
+create merely because the immediate readback is still missing. It performs at
+most five tag-checked readbacks over the same 1, 2, 4, and 8 second schedule,
+accepting only one existing empty draft. Exhaustion fails before upload. The
+sleep function is injectable at the helper boundary so the public-seam tests
+are deterministic and fast; production uses `time.sleep`. Unbounded polling,
+blind reruns, and one fixed delay were rejected because they either widen
+mutation authority or fail to model the observed state transitions.
+
+### Decision 24: One deep module owns readiness and actionable reporting
+
+`codex_switch_shared_configuration.py` remains the deep module for source/target
+observation, baseline-backed change summaries, materialization planning,
+crash-recoverable commit, readiness, and remediation. It derives every plan
+from one stable Official observation and one internal target observation. The
+recursive diff exists only to report value-free add/update/enable/disable/remove
+operations; it never merges or selects authority.
+
+Legacy digest-only baselines and legacy pending-App state remain readable. The
+next apply replaces that unshipped bidirectional state with a new Official-
+authoritative internal generation. Missing baseline detail may reduce the
+change summary but cannot promote the internal view. Selector identity is
+accepted only from the attested Official observation; ambiguous or unsafe
+source/cache evidence remains fail-closed. Under the store lock, Official is
+re-attested before publication and internal is protected by target CAS.
+
+The same receipt feeds preflight, `sync-shared`, status, Doctor, and verify. It
+contains source/target, generation, readiness, automatic actions, semantic
+operations and paths, stable finding codes/messages, and exact
+`sync-shared --dry-run`, `sync-shared`, and Doctor remediation without config
+values. Diagnostics never reconcile. Help/version bypass preflight. No TTY
+prompt, manual source-choice command, reverse sync, watcher, or silent
+last-writer policy is exposed.
+
+### Decision 25: Split applies shared readiness after the switch transaction
+
+`codex-switch split` and its explicit long form normalize through one wrapper
+workflow. After the switch transaction commits the supported internal CLI plus
+Official App selection, the wrapper invokes `sync-shared` exactly once before
+generic Plugin repair, verify, Doctor, or status. This readiness step is
+mandatory even when a later optional step is skipped, because those options do
+not authorize starting from an unready shared generation.
+
+If shared readiness fails, the wrapper returns the sync failure code, labels
+the failed step, prints the exact preview/apply/Doctor remediation, and does not
+run any later post-switch step. The already committed profile selection remains
+truthful; the shared reconciler preserves its own last-known-good generation
+and transaction guarantees. The next functional managed CLI invocation retains
+the same preflight as a safe retry/fallback boundary.
+
+`split --dry-run` does not call the apply interface, run installed-wrapper
+self-update, or observe a not-yet-active selection as though it were committed.
+It reports that shared readiness will run after a successful apply and performs
+no config, cache, state, process, or network mutation. Reimplementing
+reconciliation in the shell wrapper or folding backend effects into the profile
+transaction was rejected because either would duplicate the deep module or
+weaken its independent recovery contract.
+
 ## Completion Contract
 
 - The named split command has a failing-then-passing wrapper and transaction
@@ -587,17 +704,24 @@ next tag-check/delete/readback iteration.
   uploaded or ambiguous asset. If the post-delete Release readback is missing,
   the tag is revalidated and one empty draft is created and read back before
   the same upload, publish, and checksum proof.
+- Exact tag-name-exists, GitHub server/transport, and delayed-visibility
+  creation outcomes have public-seam RED/GREEN coverage for bounded
+  tag-and-absence revalidation, readback-only handling after create success,
+  and immediate rejection of permission, rate-limit, unknown validation,
+  published, non-empty, moved-tag, or exhausted states.
 - A latest package can promote over the exact immediately prior 20-path
   manifest generation while preserving it as rollback; unknown required-path
   lists remain rejected before reference mutation.
 - Strict OpenSpec, workflow validation, Bash/Python static checks,
   plugin-eval for the changed skill, isolated packaging, and diff checks pass.
 - No live profile switch, App stop/restart/mutation, internal binary update,
-  install, Git, release, archive, dependency, credential, standalone cache
-  cleanup, or direct codex-switch cache copy/link/delete occurs; final
+  install, archive, dependency, credential, standalone cache cleanup, or direct
+  codex-switch cache copy/link/delete occurs; final
   acceptance may run the separately confirmed single functional managed
   internal CLI command, including backend-owned replacement of prior installed
-  Plugin versions.
+  Plugin versions. After task-16 source verification, only its separately
+  authorized commit/push and exact `v0.1.14`/`v0.1.15` Auto Release chain may
+  occur.
 - App add/update/enable/disable/remove advances one desired generation and the
   next functional internal CLI invocation either completes independent
   materialization before backend execution or fails with a stable finding and
@@ -613,12 +737,19 @@ next tag-check/delete/readback iteration.
 - A non-current functional preflight emits flushed progress before source
   attestation and again before materialization, while help/version and the
   committed zero-write/zero-network path retain their existing contracts.
-- CLI-originated projection changes are captured at the next preflight; a live
-  official App receives a pending marker, and stopped-App `sync-shared`
-  preview/apply has zero-write and verified-apply regressions.
-- Single-side, identical, divergent, delete-vs-modify, unstable-source, and
-  crash/recovery/rollback cases are covered without last-writer-wins, including
-  every persistent commit boundary, target CAS, and second stopped-App proof.
+- Official-only, internal-only, identical, disjoint, overlapping,
+  delete-vs-modify, legacy-pending, unstable-source, and crash/recovery/rollback
+  cases converge only toward internal without writing the official App.
+- Functional preflight and explicit `sync-shared` prove Official authority,
+  value-free changed operations, internal target CAS, verified generation, and
+  backend-before-`execve`; dry-run/status/Doctor/verify remain zero-write.
+- Real `split` and `internal --app-profile official` apply shared readiness
+  exactly once after switch commit and before Plugin repair/verify/Doctor/status;
+  a sync failure stops those later steps with exact remediation, while split
+  dry-run reports the planned boundary without applying it.
+- Unsafe cases expose stable cause messages and exact preview/apply/Doctor
+  remediation without a prompt, source choice, conflict digest, reverse sync,
+  or App stopped-state dependency.
 - Personal, plugin-contributed, and project-local Skill ownership plus
   plugin-cache separation/path remapping/traversal rejection are covered.
 - Secret/profile/runtime exclusions and the reviewed classification of other
@@ -649,8 +780,9 @@ Stop and update the change before adding a dependency, changing credentials or
 public persistence beyond the additive active fields and shared-capability
 sidecar specified here, supporting another profile
 combination, changing internal parity/proxy/update behavior, expanding beyond
-the named write set, or requiring a real install/switch/restart. Git, release,
-archive, cleanup, and any destructive action remain separate Human Gates.
+the named write set, or requiring a real install/switch/restart. Git or Release
+effects outside the task-16 grant, archive, cleanup, and any destructive action
+remain separate Human Gates.
 
 ## Capability Slices
 
@@ -664,8 +796,9 @@ archive, cleanup, and any destructive action remain separate Human Gates.
    package allowlist, packaged preview, and release-adjacent checks.
 5. Integrated proof: fresh focused/broad/static/spec/workflow/plugin-eval/
    package/diff evidence and canonical state reconciliation.
-6. Shared desired state: semantic projection, generation/baseline persistence,
-   conflict/pending rules, secret guard, and personal-Skill ownership.
+6. Shared desired state: Official-authoritative semantic projection,
+   generation/baseline persistence, secret-safe changed operations, legacy
+   pending-state convergence, and personal-Skill ownership.
 7. Independent materialization: artifact policy/inventory, conditional native
    repair, target cache/path verification, and rollback-safe config commit.
 8. Lifecycle and diagnostics: internal CLI preflight, explicit `sync-shared`,
@@ -686,6 +819,15 @@ archive, cleanup, and any destructive action remain separate Human Gates.
     zero-byte starter deletion, missing-Release draft recreation with immediate
     readback, canonical upload, checksum proof, and no live external effect
     during source verification.
+14. Release-recreation propagation repair: typed create failures, bounded
+    tag/missing-state confirmation, delayed readback handling, full source
+    verification, one authorized submit, and exact remote publication readback.
+15. Official-authoritative shared readiness: value-free drift report,
+    automatic preflight repair, explicit preview/apply, non-interactive
+    remediation, docs/package parity, and source-only completion proof.
+16. Split-triggered shared readiness: post-commit proactive sync, ordered
+    failure-stop behavior, zero-write preview, docs/package parity, and
+    source-only completion proof.
 
 ## Execution Ledger
 
@@ -696,15 +838,18 @@ archive, cleanup, and any destructive action remain separate Human Gates.
 | Diagnostics | main, serialized | status/Doctor/verify plus focused tests | healthy split and per-surface negative matrix | parity/proxy policy change | complete; focused diagnostics and 33 verifier tests GREEN |
 | Wrapper/package | main, serialized | wrapper, README, SKILL, release bundle/test | wrapper test, plugin-eval, isolated package preview | install/release | complete; update/release 133/133, verified packaged preview, source/package identity, and Plugin Eval recorded |
 | Completion proof | main | this change, ledger, namespaced state, verification record | all validation commands and scope review | commit/push/archive | complete; 362 combined, profile 210, update/release 133, parity 95, strict/static/workflow/package/diff and review green |
-| Shared desired state | main, serialized | shared-capability/config modules, focused unit tests, OpenSpec/control plane | generation/three-way/secret/Skill/materializer-crash RED-GREEN matrix | persistence/schema expansion beyond this additive sidecar | in progress |
+| Shared desired state | main, serialized | shared-capability/config modules, focused unit tests, OpenSpec/control plane | generation/Official-authority/secret/Skill/materializer-crash RED-GREEN matrix | persistence/schema expansion beyond this additive sidecar | in progress |
 | Independent materialization | main, serialized | plugin materialization seam and focused tests | add/update/remove, exact/backend-managed, cache isolation, rollback matrix | live plugin/cache mutation | pending |
-| Lifecycle/diagnostics/package | main, serialized | runtime preflight, CLI parser, status/Doctor/verify, wrapper/docs/skill/package/tests | backend-not-called failures, pending apply, package identity | supervisor/watcher/App wrapper/install | pending |
+| Lifecycle/diagnostics/package | main, serialized | runtime preflight, CLI parser, status/Doctor/verify, wrapper/docs/skill/package/tests | backend-not-called failures, automatic internal repair, actionable report, package identity | supervisor/watcher/App wrapper/install | pending |
 | Reopened completion proof | main | tasks, ledger, state, verification record | fresh full/static/spec/workflow/plugin-eval/package/diff/review evidence | commit/push/archive | pending |
 | Concise split preset | main, serialized | wrapper, wrapper tests, README, SKILL, package/control-plane evidence | RED/GREEN routing, update preservation/freeze, help, packaged and installed checks | live split/App stop/internal upgrade | pending; approved 2026-08-10 |
 | Live-bootstrap repair | main, serialized | shared materializer/preflight, focused tests, README/SKILL, OpenSpec/control plane | stale-installed/current-source RED/GREEN, exact post-add attestation, progress capture, focused/broad/static/spec evidence | live cache mutation, install, split retry | approved; task 12.1 is next |
 | Backend-managed acceptance repair | main, serialized | catalog adapter, shared materializer, focused tests, README/SKILL, OpenSpec/control plane | live-shape source/target divergence RED/GREEN, installed precedence, native cache-lifecycle replacement, one post-add batch catalog, precise findings, full/static/spec/package review, functional managed-shim acceptance | split/install/App stop or mutation/internal binary update/direct codex-switch cache mutation/Git/release/archive | complete 2026-08-11; tasks 13.1-13.4 verified and native cache-lifecycle decision reconciled |
 | Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | complete 2026-08-11; tasks 14.1-14.3 verified |
 | Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter, disappearing Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete in source 2026-08-11; tasks 15.1-15.6 verified, second submit awaits Human Gate |
+| Release-recreation propagation repair | main, serialized | `scripts/release_auto.py`, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | exact tag-name-exists, server/transport, delayed-visibility, unknown-error, conflict, retry-exhaustion RED/GREEN; complete update/release/profile/static/spec/workflow/diff proof; remote ref/Release/asset readback | authority gate `614cc025...` resolved for one source repair, commit/push, Auto Release, `v0.1.14` recovery, and `v0.1.15` atomic publication; all other effects excluded | source verification complete through task 16.3; task 16.4 external submission is next |
+| Official-authoritative shared readiness | main, serialized | shared configuration module, functional preflight/parser/wrapper, focused tests, README/SKILL, this OpenSpec change, ledger/state/verification | public-seam RED/GREEN for Official/internal/overlapping drift, CAS, automatic preflight, non-interactive remediation, read-only diagnostics, package/static/spec/workflow/diff/review | live config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 17.1-17.6 verified, live/install/Git effects remain excluded |
+| Split-triggered shared readiness | main, serialized | wrapper, public wrapper lifecycle tests, README/SKILL, this OpenSpec change, ledger/state/verification | apply ordering, failure-stop/remediation, dry-run zero-write/zero-network, focused/full/static/spec/workflow/package/diff/review | live split/config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 18.1-18.4 verified and both independent review axes pass; install/live/Git effects remain excluded |
 
 ## Continuation Policy
 
@@ -742,6 +887,14 @@ internal binary update, standalone cache cleanup, direct codex-switch cache
 copy/link/delete, project migration,
 dependency change, Git, release, archive, credential, or destructive effect.
 
+The user's 2026-08-12 implementation request additionally authorizes task 17
+source, test, README/SKILL, OpenSpec, ledger, namespaced-state, and verification
+record changes. It does not authorize resolving the live workstation conflict,
+running a functional managed backend command, installing the result, stopping
+or restarting the App, mutating either live profile/config/cache, migrating a
+project, changing dependencies, consuming task-16 release authority, Git,
+release, archive, cleanup, credential, or destructive work.
+
 ## Generated Artifact Strategy
 
 No persistent disposable output is introduced. Tests and package validation
@@ -767,6 +920,10 @@ python3 -m unittest \
   scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rejects_nonempty_starter_asset \
   scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rejects_unsupported_hidden_asset_state \
   scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rechecks_tag_identity_before_starter_delete \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_retries_typed_tag_name_exists_recreation \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_waits_for_successful_create_visibility_without_recreating \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_rejects_untyped_recreation_failure_without_retry \
+  scripts.test_codex_update_release.CodexReleasePlannerTests.test_reconcile_stops_after_recreation_retry_exhaustion \
   scripts.test_codex_update_release.CodexReleasePlannerTests.test_github_release_inspection_lists_starter_assets \
   scripts.test_codex_update_release.CodexReleasePlannerTests.test_github_release_inspection_rejects_duplicate_asset_names \
   scripts.test_codex_update_release.CodexReleasePlannerTests.test_github_release_delete_uses_exact_asset_id
@@ -843,6 +1000,21 @@ present and a packaged split dry-run imports no checkout code.
   IDs if the Release disappears, recreate and read back one empty draft, and
   retain no-clobber checksum conflict behavior for every uploaded or ambiguous
   record.
+- [GitHub creation and tag-based readback are briefly inconsistent] -> classify
+  only exact tag-name-exists, server/transport, and post-success visibility
+  states; revalidate immutable tag plus missing Release before bounded create
+  retries, use readback-only retries after success, and fail every unknown or
+  conflicting state before upload.
+- [An internal drift is accidentally promoted into the App] -> keep Official as
+  the only source in the planner and materializer, expose no source-choice API,
+  and cover internal-only/disjoint/overlapping/remove-vs-modify cases with an
+  unchanged Official tree assertion.
+- [Official changes during a repair] -> re-attest the Official observation under
+  the store lock and preserve internal target CAS; block without publishing a
+  mixed generation.
+- [Readiness output leaks configuration] -> expose only allowlisted semantic
+  paths and add/update/remove/enable/disable operation labels, never values or
+  raw TOML fragments.
 
 Rollback for source work is the inverse scoped patch. Runtime rollback is
 tested only in isolated roots; no live rollback is needed because no live
@@ -873,5 +1045,13 @@ App stop/restart/mutation, internal binary update, parity repair, release, cache
 cleanup or direct codex-switch copy/link/delete, migration, and dependency
 changes remain unperformed. The already-observed native replacement of prior
 installed Plugin versions is recorded as backend-owned lifecycle behavior.
-Task 15 additionally performs no live GitHub release mutation or workflow
-rerun; those remain external-effect gates after source verification.
+Task 15 additionally performed no live GitHub release mutation or workflow
+rerun. Task 16 may consume the resolved `614cc025...` grant only after fresh
+source verification: commit and push the exact repair to `origin/main`, allow
+the repository Auto Release workflow to recover `v0.1.14` and atomically
+publish `v0.1.15`, then require remote ref, Release metadata, canonical asset,
+and checksum readback before completion.
+Task 17 is source-only in this execution: no live resolver command, functional
+managed backend command, install, App/profile/config/cache mutation, task-16
+Git/Release effect, archive, migration, cleanup, or dependency change is part
+of its final verification.

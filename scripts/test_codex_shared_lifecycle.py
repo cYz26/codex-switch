@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -88,11 +88,13 @@ class SharedLifecycleFixture(unittest.TestCase):
         manifests = {
             "internal": {
                 "name": "internal",
+                "codex_home": str(internal_home),
                 "codex_bin": str(internal_bin),
                 "app_cli_path": str(internal_bin),
             },
             "openai-official": {
                 "name": "openai-official",
+                "codex_home": str(official_home),
                 "codex_bin": str(official_bin),
                 "app_cli_path": str(official_bin),
             },
@@ -153,6 +155,172 @@ class SharedLifecycleFixture(unittest.TestCase):
 
 
 class InternalCliPreflightTests(SharedLifecycleFixture):
+    def blocked_receipt(self) -> object:
+        module = self.shared_module()
+        return module.SharedConfigurationReceipt(
+            status="blocked",
+            generation_before=7,
+            generation_after=7,
+            cli_ready=False,
+            findings=(
+                module.SharedConfigurationFinding(
+                    code="shared_configuration.secret_field",
+                    severity="error",
+                    message="Credential-like plugin fields cannot enter shared state.",
+                ),
+            ),
+            source_profile="openai-official",
+            target_profile="internal",
+            changes=(
+                module.SharedConfigurationChange(
+                    profile="openai-official",
+                    operation="update",
+                    path="/plugins/dev-flow@cy-codex-skills",
+                ),
+            ),
+            remediation=module.SHARED_REMEDIATION_COMMANDS,
+        )
+
+    def test_blocked_preflight_never_prompts_or_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _selection = self.make_store(root)
+            internal_home = store.internal_codex_home
+            assert internal_home is not None
+            module = self.shared_module()
+            reconcile = Mock(return_value=self.blocked_receipt())
+            output = io.StringIO()
+
+            with (
+                patch.object(module, "reconcile_shared_configuration", reconcile),
+                redirect_stderr(output),
+                self.assertRaisesRegex(
+                    SwitchError,
+                    "shared_configuration.preflight_blocked",
+                ),
+            ):
+                module.preflight_internal_shared_configuration(
+                    store_root=store.root,
+                    internal_home=internal_home,
+                    backend_args=("exec", "hello"),
+                )
+
+            reconcile.assert_called_once()
+            rendered = output.getvalue()
+            self.assertIn("shared_configuration.secret_field", rendered)
+            self.assertIn("codex-switch sync-shared --dry-run", rendered)
+            self.assertIn("codex-switch sync-shared", rendered)
+            self.assertIn("codex-switch doctor", rendered)
+            self.assertNotIn("resolve-shared", rendered)
+            self.assertFalse(hasattr(module, "_shared_prompt_enabled"))
+            self.assertFalse(hasattr(module, "_read_shared_resolution_choice"))
+
+    def test_applied_preflight_reconciles_once_and_reports_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _selection = self.make_store(root)
+            internal_home = store.internal_codex_home
+            assert internal_home is not None
+            module = self.shared_module()
+            applied = module.SharedConfigurationReceipt(
+                status="applied",
+                generation_before=7,
+                generation_after=8,
+                cli_ready=True,
+                source_profile="openai-official",
+                target_profile="internal",
+            )
+            reconcile = Mock(return_value=applied)
+            output = io.StringIO()
+
+            with (
+                patch.object(module, "reconcile_shared_configuration", reconcile),
+                redirect_stderr(output),
+            ):
+                receipt = module.preflight_internal_shared_configuration(
+                    store_root=store.root,
+                    internal_home=internal_home,
+                    backend_args=("exec", "hello"),
+                )
+
+            self.assertIs(receipt, applied)
+            reconcile.assert_called_once()
+            self.assertIn(
+                "Shared configuration synchronized: generation 7 -> 8",
+                output.getvalue(),
+            )
+            self.assertIn(
+                "Shared configuration ready: generation 8",
+                output.getvalue(),
+            )
+
+    def test_unsafe_preflight_prints_cause_and_exact_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _selection = self.make_store(root)
+            store.official_codex_home.joinpath("config.toml").write_text(
+                'model = "official"\n'
+                '\n[plugins."unsafe@example"]\n'
+                'enabled = true\n'
+                'access_token = "must-not-be-shared"\n'
+            )
+            output = io.StringIO()
+
+            with redirect_stderr(output), self.assertRaisesRegex(
+                SwitchError,
+                "shared_configuration.preflight_blocked: "
+                "shared_configuration.secret_field",
+            ):
+                self.shared_module().preflight_internal_shared_configuration(
+                    store_root=store.root,
+                    internal_home=store.internal_codex_home,
+                    backend_args=("features", "list"),
+                )
+
+            rendered = output.getvalue()
+            self.assertIn(
+                "Credential-like plugin fields cannot enter shared state.",
+                rendered,
+            )
+            self.assertIn("codex-switch sync-shared --dry-run", rendered)
+            self.assertIn("codex-switch sync-shared", rendered)
+            self.assertIn("codex-switch doctor", rendered)
+            self.assertNotIn("must-not-be-shared", rendered)
+
+    def test_repairable_preflight_reports_verified_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, selection = self.make_store(root)
+            bootstrapped = self.bootstrap(store, selection)
+            self.assertEqual("applied", bootstrapped.status)
+            store.official_codex_home.joinpath("config.toml").write_text(
+                'model = "official"\n'
+                '\n[plugins."disabled@example"]\n'
+                'enabled = false\n'
+            )
+            output = io.StringIO()
+
+            with redirect_stderr(output):
+                receipt = self.shared_module().preflight_internal_shared_configuration(
+                    store_root=store.root,
+                    internal_home=store.internal_codex_home,
+                    backend_args=("features", "list"),
+                )
+
+            self.assertEqual("applied", receipt.status)
+            self.assertTrue(receipt.cli_ready)
+            self.assertEqual(1, receipt.generation_before)
+            self.assertEqual(2, receipt.generation_after)
+            rendered = output.getvalue()
+            self.assertIn(
+                "Shared configuration synchronized: generation 1 -> 2",
+                rendered,
+            )
+            self.assertIn(
+                "Shared configuration ready: generation 2",
+                rendered,
+            )
+
     def generation_argv(
         self,
         root: Path,
@@ -525,6 +693,271 @@ class InternalCliPreflightTests(SharedLifecycleFixture):
 
 
 class ExplicitSharedSyncTests(SharedLifecycleFixture):
+    def run_split_wrapper_scenario(
+        self,
+        root: Path,
+        command_form: tuple[str, ...],
+        *,
+        extra_args: tuple[str, ...] = (),
+        sync_exit: int = 0,
+        skip_self_update: bool = True,
+    ) -> tuple[subprocess.CompletedProcess[str], tuple[str, ...], Path]:
+        store_root = root / "store"
+        command_log = root / "commands.jsonl"
+        fake_switcher = write_executable(
+            root / "split-lifecycle-switcher.py",
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "commands = {'switch', 'sync-shared', 'repair-plugins', "
+            "'verify', 'doctor', 'status'}\n"
+            "command = next(arg for arg in args if arg in commands)\n"
+            "event = command\n"
+            "if command == 'switch':\n"
+            "    event += ':dry-run' if '--dry-run' in args else ':apply'\n"
+            "with Path(os.environ['CODEX_SWITCH_COMMAND_LOG']).open('a') as log:\n"
+            "    log.write(json.dumps(event) + '\\n')\n"
+            "store = Path(args[args.index('--store-dir') + 1])\n"
+            "if command == 'switch':\n"
+            "    print('CLI profile: internal')\n"
+            "    print('App profile: openai-official')\n"
+            "    print('App action: preserve')\n"
+            "    if '--dry-run' not in args:\n"
+            "        store.mkdir(parents=True, exist_ok=True)\n"
+            "        (store / 'active.json').write_text(json.dumps({\n"
+            "            'profile': 'internal',\n"
+            "            'cli_profile': 'internal',\n"
+            "            'app_profile': 'openai-official',\n"
+            "            'codex_home': str(store / 'homes' / 'internal'),\n"
+            "        }))\n"
+            "elif command == 'sync-shared':\n"
+            "    sync_exit = int(os.environ['CODEX_SWITCH_SYNC_EXIT'])\n"
+            "    if sync_exit:\n"
+            "        print('shared_configuration.source_changed_during_plan: "
+            "Official source changed', file=sys.stderr)\n"
+            "        raise SystemExit(sync_exit)\n"
+            "    print('Shared configuration ready: generation 8')\n",
+        )
+        environment = {
+            **os.environ,
+            "CODEX_SWITCH_COMMAND_LOG": str(command_log),
+            "CODEX_SWITCH_PYTHON": sys.executable,
+            "CODEX_SWITCH_SCRIPT": str(fake_switcher),
+            "CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP": "1",
+            "CODEX_SWITCH_SYNC_EXIT": str(sync_exit),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        global_args = ("--skip-self-update",) if skip_self_update else ()
+        result = subprocess.run(
+            [
+                str(Path(__file__).with_name("codex-switch")),
+                "--store-dir",
+                str(store_root),
+                "--official-codex-home",
+                str(root / "official-home"),
+                "--internal-codex-home",
+                str(root / "internal-home"),
+                "--launch-agent-path",
+                str(root / "agent.plist"),
+                *global_args,
+                *command_form,
+                *extra_args,
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+        )
+        events = tuple(
+            json.loads(line) for line in command_log.read_text().splitlines()
+        )
+        return result, events, store_root
+
+    def test_split_apply_synchronizes_once_before_later_wrapper_steps(self) -> None:
+        command_forms = (
+            ("split",),
+            ("internal", "--app-profile", "official"),
+            ("internal", "--app-profile=official"),
+        )
+
+        for command_form in command_forms:
+            with (
+                self.subTest(command_form=command_form),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                root = Path(temp_dir)
+                result, events, _store_root = self.run_split_wrapper_scenario(
+                    root,
+                    command_form,
+                    extra_args=("--skip-update-check", "--skip-login"),
+                )
+
+                output = result.stdout + result.stderr
+                self.assertEqual(0, result.returncode, output)
+                self.assertEqual(
+                    (
+                        "switch:dry-run",
+                        "switch:apply",
+                        "sync-shared",
+                        "repair-plugins",
+                        "verify",
+                        "doctor",
+                        "status",
+                    ),
+                    events,
+                )
+                self.assertIn("== Shared configuration ==", output)
+                self.assertIn("Shared configuration ready: generation 8", output)
+
+    def test_split_sync_failure_stops_later_steps_with_exact_remediation(self) -> None:
+        command_forms = (
+            ("split",),
+            ("internal", "--app-profile", "official"),
+            ("internal", "--app-profile=official"),
+        )
+
+        for command_form in command_forms:
+            with (
+                self.subTest(command_form=command_form),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                root = Path(temp_dir)
+                result, events, store_root = self.run_split_wrapper_scenario(
+                    root,
+                    command_form,
+                    extra_args=("--skip-update-check", "--skip-login"),
+                    sync_exit=47,
+                )
+                output = result.stdout + result.stderr
+                self.assertEqual(47, result.returncode, output)
+                self.assertEqual(
+                    ("switch:dry-run", "switch:apply", "sync-shared"),
+                    events,
+                )
+                self.assertIn("Outcome: ACTION REQUIRED", output)
+                self.assertIn("Failed step: shared synchronization", output)
+                self.assertIn("codex-switch sync-shared --dry-run", output)
+                self.assertIn("codex-switch sync-shared", output)
+                self.assertIn("codex-switch doctor", output)
+                active = json.loads((store_root / "active.json").read_text())
+                self.assertEqual("internal", active["cli_profile"])
+                self.assertEqual("openai-official", active["app_profile"])
+
+    def test_split_sync_runs_when_every_later_step_is_skipped(self) -> None:
+        command_forms = (
+            ("split",),
+            ("internal", "--app-profile", "official"),
+            ("internal", "--app-profile=official"),
+        )
+        later_skip_args = (
+            "--skip-update-check",
+            "--skip-login",
+            "--skip-plugin-repair",
+            "--skip-verify",
+            "--skip-doctor",
+            "--no-status",
+        )
+
+        for command_form in command_forms:
+            with (
+                self.subTest(command_form=command_form),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                result, events, _store_root = self.run_split_wrapper_scenario(
+                    Path(temp_dir),
+                    command_form,
+                    extra_args=later_skip_args,
+                )
+                output = result.stdout + result.stderr
+                self.assertEqual(0, result.returncode, output)
+                self.assertEqual(
+                    ("switch:dry-run", "switch:apply", "sync-shared"),
+                    events,
+                )
+                self.assertIn("Shared configuration ready: generation 8", output)
+
+    def test_split_dry_run_names_shared_readiness_without_applying_it(self) -> None:
+        command_forms = (
+            ("split", "--dry-run"),
+            ("internal", "--app-profile", "official", "--dry-run"),
+            ("internal", "--app-profile=official", "--dry-run"),
+        )
+
+        for command_form in command_forms:
+            with (
+                self.subTest(command_form=command_form),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                result, events, store_root = self.run_split_wrapper_scenario(
+                    Path(temp_dir),
+                    command_form,
+                    skip_self_update=False,
+                )
+                output = result.stdout + result.stderr
+                self.assertEqual(0, result.returncode, output)
+                self.assertEqual(("switch:dry-run",), events)
+                self.assertIn("== Shared configuration ==", output)
+                self.assertIn(
+                    "Shared configuration: will synchronize "
+                    "openai-official -> internal after a successful switch.",
+                    output,
+                )
+                self.assertIn(
+                    "Dry-run: shared synchronization was not applied.",
+                    output,
+                )
+                self.assertFalse(store_root.exists())
+
+    def test_wrapper_help_exposes_sync_without_manual_resolution(self) -> None:
+        wrapper = Path(__file__).with_name("codex-switch")
+
+        result = subprocess.run(
+            [str(wrapper), "--help"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("sync-shared", result.stdout)
+        self.assertNotIn("resolve-shared", result.stdout)
+
+    def test_resolve_shared_command_is_not_exposed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store, _selection = self.make_store(root)
+            before = tree_snapshot(root)
+            script = Path(__file__).with_name("codex_profile_switch.py")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--store-dir",
+                    str(store.root),
+                    "--official-codex-home",
+                    str(store.official_codex_home),
+                    "--internal-codex-home",
+                    str(store.internal_codex_home),
+                    "--launch-agent-path",
+                    str(store.launch_agent_path),
+                    "resolve-shared",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("invalid choice", result.stderr)
+            self.assertNotIn("ImportError", result.stderr)
+            self.assertEqual(before, tree_snapshot(root))
     def test_sync_shared_dry_run_reports_plan_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -562,14 +995,14 @@ class ExplicitSharedSyncTests(SharedLifecycleFixture):
                 "source",
                 "target",
                 "generation",
-                "pending",
-                "conflict",
-                "materialization",
+                "cli ready",
+                "change",
+                "action",
             ):
                 self.assertIn(label, output)
             self.assertEqual(before, tree_snapshot(root))
 
-    def test_running_app_records_pending_then_stopped_app_sync_applies(self) -> None:
+    def test_running_app_does_not_block_internal_auto_sync(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store, selection = self.make_store(root)
@@ -580,13 +1013,15 @@ class ExplicitSharedSyncTests(SharedLifecycleFixture):
             assert internal_home is not None
             internal_config = internal_home / "config.toml"
             official_before = official_config.read_bytes()
-            official_cache_before = tree_snapshot(store.official_codex_home / "plugins")
+            official_cache_before = tree_snapshot(
+                store.official_codex_home / "plugins"
+            )
             internal_config.write_text(
                 internal_config.read_text()
-                + '\n[plugins."pending@example"]\nenabled = false\n'
+                + '\n[plugins."internal-drift@example"]\nenabled = false\n'
             )
 
-            pending = self.shared_module().reconcile_shared_configuration(
+            applied = self.shared_module().reconcile_shared_configuration(
                 store,
                 selection,
                 boundary="cli-preflight",
@@ -594,37 +1029,25 @@ class ExplicitSharedSyncTests(SharedLifecycleFixture):
                 adapters=self.adapters(app_running=True),
             )
 
-            self.assertEqual("pending", pending.status)
-            self.assertEqual("openai-official", pending.pending_target)
-            self.assertTrue(pending.cli_ready)
+            self.assertEqual("applied", applied.status)
+            self.assertTrue(applied.cli_ready)
+            self.assertIsNone(applied.pending_target)
+            self.assertNotIn(
+                '[plugins."internal-drift@example"]',
+                internal_config.read_text(),
+            )
             self.assertEqual(official_before, official_config.read_bytes())
             self.assertEqual(
                 official_cache_before,
                 tree_snapshot(store.official_codex_home / "plugins"),
-            )
-
-            applied = self.shared_module().reconcile_shared_configuration(
-                store,
-                selection,
-                boundary="explicit-sync",
-                mode="apply",
-                adapters=self.adapters(app_running=False),
-            )
-
-            self.assertEqual("applied", applied.status)
-            self.assertIsNone(applied.pending_target)
-            self.assertIn(
-                '[plugins."pending@example"]',
-                official_config.read_text(),
             )
             report = self.shared_module().shared_configuration_report(
                 store,
                 selection,
             )
             self.assertEqual(applied.generation_after, report.generation)
-            self.assertNotEqual("pending", report.status)
-
-    def test_explicit_sync_conflict_is_zero_write(self) -> None:
+            self.assertEqual("current", report.status)
+    def test_explicit_sync_uses_official_authority_for_overlapping_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store, selection = self.make_store(root)
@@ -635,54 +1058,124 @@ class ExplicitSharedSyncTests(SharedLifecycleFixture):
             internal_config = internal_home / "config.toml"
             official_config.write_text(
                 official_config.read_text()
-                + '\n[plugins."conflict@example"]\nenabled = false\n'
+                + '\n[plugins."overlap@example"]\nenabled = false\n'
             )
             internal_config.write_text(
                 internal_config.read_text()
-                + '\n[plugins."conflict@example"]\nenabled = true\n'
+                + '\n[plugins."overlap@example"]\nenabled = true\n'
             )
-            before = tree_snapshot(root)
-            materialization_calls: list[dict[str, object]] = []
+            official_before = official_config.read_bytes()
 
             result = self.shared_module().reconcile_shared_configuration(
                 store,
                 selection,
                 boundary="explicit-sync",
                 mode="apply",
-                adapters=self.adapters(
-                    app_running=False,
-                    materialization_log=materialization_calls,
-                ),
+                adapters=self.adapters(app_running=True),
             )
 
-            self.assertEqual("conflict", result.status)
-            self.assertFalse(result.cli_ready)
+            self.assertEqual("applied", result.status)
+            self.assertTrue(result.cli_ready)
+            self.assertEqual("openai-official", result.source_profile)
+            self.assertEqual("internal", result.target_profile)
             self.assertIn(
+                '[plugins."overlap@example"]\nenabled = false',
+                internal_config.read_text(),
+            )
+            self.assertEqual(official_before, official_config.read_bytes())
+            self.assertNotIn(
                 "shared_configuration.conflict",
                 {finding.code for finding in result.findings},
             )
-            self.assertEqual([], materialization_calls)
-            self.assertEqual(before, tree_snapshot(root))
-
-
 class SharedDiagnosticAuthorityTests(SharedLifecycleFixture):
+    def test_common_diagnostics_escape_control_characters(self) -> None:
+        module = self.shared_module()
+        report = SimpleNamespace(
+            status="stale",
+            generation=3,
+            cli_ready=False,
+            source_profile="openai-official",
+            target_profile="internal",
+            actions=(),
+            changes=(
+                SimpleNamespace(
+                    profile="internal",
+                    operation="update",
+                    path="/plugins/quoted\nShared configuration remediation: fake",
+                ),
+            ),
+            findings=(
+                SimpleNamespace(
+                    code="shared_configuration.source_changed",
+                    severity="error",
+                    message="source changed\r\nOutcome: SUCCESS\x1b[31m",
+                ),
+            ),
+            remediation=(),
+        )
+
+        lines = module.shared_configuration_diagnostic_lines(report)
+        rendered = "\n".join(lines)
+
+        self.assertTrue(lines)
+        self.assertTrue(all(len(line.splitlines()) == 1 for line in lines))
+        self.assertFalse(
+            any(
+                ord(character) < 32 or 127 <= ord(character) < 160
+                for line in lines
+                for character in line
+            )
+        )
+        self.assertIn(r"quoted\nShared configuration remediation: fake", rendered)
+        self.assertIn(r"source changed\r\nOutcome: SUCCESS\x1b", rendered)
+
+        stream = io.StringIO()
+        module._print_shared_block_guidance(report, stream=stream)
+        blocked_output = stream.getvalue()
+        self.assertNotIn("\x1b", blocked_output)
+        self.assertNotIn("\r", blocked_output)
+        self.assertIn(
+            r"source changed\r\nOutcome: SUCCESS\x1b",
+            blocked_output,
+        )
+
     def test_status_doctor_and_verify_share_generation_and_finding_codes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             store, selection = self.make_store(root)
             finding = SimpleNamespace(
-                code="shared_configuration.conflict",
-                severity="error",
-                message="The App and CLI projections diverged.",
+                code="shared_configuration.reconcile_required",
+                severity="warning",
+                message=(
+                    "Official App Plugin state differs from the internal CLI "
+                    "projection; the next functional CLI preflight will synchronize it."
+                ),
             )
             report = SimpleNamespace(
-                status="conflict",
+                status="stale",
                 generation=7,
                 generation_before=7,
                 generation_after=7,
                 cli_ready=False,
-                pending_target=None,
+                source_profile="openai-official",
+                target_profile="internal",
+                actions=(
+                    "authoritative:openai-official",
+                    "materialize:internal",
+                ),
                 findings=(finding,),
+                changes=(
+                    SimpleNamespace(
+                        profile="openai-official",
+                        operation="remove",
+                        path="/plugins/dev-flow@cy-codex-skills",
+                    ),
+                ),
+                remediation=(
+                    "codex-switch sync-shared --dry-run",
+                    "codex-switch sync-shared",
+                    "codex-switch doctor",
+                ),
             )
             report_reader = Mock(return_value=report)
             forbidden_reconcile = Mock(
@@ -761,11 +1254,27 @@ class SharedDiagnosticAuthorityTests(SharedLifecycleFixture):
 
             status_text = output.getvalue()
             self.assertIn("Shared configuration generation: 7", status_text)
-            self.assertIn("shared_configuration.conflict", status_text)
+            self.assertIn(
+                "Shared configuration source: openai-official",
+                status_text,
+            )
+            self.assertIn("Shared configuration target: internal", status_text)
+            self.assertIn(
+                "Shared configuration action: materialize:internal",
+                status_text,
+            )
+            self.assertIn("shared_configuration.reconcile_required", status_text)
+            self.assertIn("next functional CLI preflight", status_text)
+            self.assertIn("remove /plugins/dev-flow@cy-codex-skills", status_text)
+            self.assertIn("codex-switch sync-shared --dry-run", status_text)
+            self.assertNotIn("resolve-shared", status_text)
             for problems in (doctor_problems, verify_problems):
                 joined = "\n".join(problems)
                 self.assertIn("Shared configuration generation: 7", joined)
-                self.assertIn("shared_configuration.conflict", joined)
+                self.assertIn("shared_configuration.reconcile_required", joined)
+                self.assertIn("next functional CLI preflight", joined)
+                self.assertIn("codex-switch sync-shared", joined)
+                self.assertNotIn("resolve-shared", joined)
             self.assertEqual(3, report_reader.call_count)
             forbidden_reconcile.assert_not_called()
 

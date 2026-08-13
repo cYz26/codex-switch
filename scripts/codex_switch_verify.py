@@ -60,7 +60,10 @@ from codex_switch_selection import (
     active_profile_selection,
     read_active_profile_selection_snapshot,
 )
-from codex_switch_shared_configuration import shared_configuration_report
+from codex_switch_shared_configuration import (
+    shared_configuration_diagnostic_lines,
+    shared_configuration_report,
+)
 from codex_switch_store import Store, make_store
 from codex_switch_toml_scan import toml_table_name
 from codex_switch_toml_validate import commentless_line, validate_toml
@@ -152,29 +155,6 @@ def selection_uses_shared_configuration(selection: object) -> bool:
     ) == ("internal", "openai-official")
 
 
-def shared_configuration_diagnostic_lines(report: object) -> list[str]:
-    generation = getattr(report, "generation", None)
-    if generation is None:
-        generation = getattr(report, "generation_after", 0)
-    status = str(getattr(report, "status", "unknown"))
-    cli_ready = bool(getattr(report, "cli_ready", False))
-    pending_target = getattr(report, "pending_target", None)
-    lines = [
-        f"Shared configuration generation: {generation}",
-        f"Shared configuration status: {status}",
-        f"Shared configuration CLI ready: {'yes' if cli_ready else 'no'}",
-        "Shared configuration pending target: "
-        f"{pending_target if pending_target is not None else '<none>'}",
-    ]
-    for finding in getattr(report, "findings", ()):
-        code = str(getattr(finding, "code", "shared_configuration.unknown"))
-        severity = str(getattr(finding, "severity", "error"))
-        lines.append(
-            f"Shared configuration finding: {code} ({severity})"
-        )
-    return lines
-
-
 def shared_configuration_problem_messages(report: object | None) -> list[str]:
     if report is None:
         return []
@@ -182,14 +162,11 @@ def shared_configuration_problem_messages(report: object | None) -> list[str]:
     findings = tuple(getattr(report, "findings", ()))
     unhealthy = (
         not bool(getattr(report, "cli_ready", False))
-        or getattr(report, "pending_target", None) is not None
         or status
         in {
             "blocked",
-            "conflict",
             "incomplete",
             "materialization_failed",
-            "pending",
             "stale",
             "unsafe",
         }

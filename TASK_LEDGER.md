@@ -498,8 +498,10 @@ contained, typed, recoverable, bounded, and sanitized.
 | INTERNAL-CLI-ONLY-001 | Apply `internal-cli-only-runtime` by serialized TDD | main | existing OpenSpec change; split auto-update routing; internal manifest CLI generation/App readiness metadata; runtime-rebind transaction; internal shell generation; promotion validator; managed runtime smoke; conditional App guidance; focused tests; README/SKILL; namespaced evidence | CLI-only candidate commit and rollback, production-sized streaming runtime validation, promotion/managed-shim validator parity, zero App-owned writes while official App runs, preserve/rebind guidance mapping, unchanged full-parity path, focused/full/static/strict/diff proof | combined source/test/docs/control-plane repair approved by the user; no new promotion/switch/install/App restart/dependency/Git/release/archive/cleanup/provider effect | done in source at 25/25: streaming executable SHA with 2 GiB bound, prepared fresh-shim probe and byte-exact rollback, final actual-store-shim smoke, unbuffered progress, conditional restart guidance; 997/997 source, 9/9 package focus, strict/static/package/plugin-eval/diff, and two-axis rereview pass; no install/live activation |
 | SPLIT-BOOTSTRAP-001 | Apply `independent-app-cli-profiles` task 12 by serialized TDD | main | `scripts/codex_switch_plugins.py`, shared preflight/runtime seam, focused shared/runtime tests, README, SKILL, active OpenSpec task 12, ledger/state/verification evidence | live-shape stale-installed/current-source RED/GREEN, precise finding, exact post-add attestation, flushed progress, zero-write fast path, focused/broad/static/spec/package/diff evidence | source/test/docs/control-plane only; no live cache/install/codex/split/App/dependency/Git/release/archive/cleanup effect | done in source at 4/4; final shared 81/81, runtime 90/90, profile 226/226, packaged 23/23, strict/static/workflow/package/Plugin-Eval/diff gates complete; live activation remains gated |
 | SPLIT-BACKEND-MANAGED-001 | Apply `independent-app-cli-profiles` task 13 by serialized TDD | main | catalog adapter, shared materializer, focused tests, README, SKILL, active OpenSpec task 13, ledger/state/verification evidence | real-shape source/target divergence, installed precedence, mandatory reconcile, one fresh post-call batch catalog, precise findings, full/static/spec/package/review proof, managed functional exit zero with App unchanged | one managed functional command approved; no split/install/App mutation/internal binary update/direct codex-switch cache copy-link-delete/dependency/Git/release/archive/cleanup | done at 4/4: functional CLI exits zero, 18 receipts are current with App unchanged, native backend cache lifecycle is explicitly accepted, codex-switch direct cache mutation remains forbidden, source and package shared matrices pass 94/94 |
+| SPLIT-PROACTIVE-SYNC-001 | Apply `independent-app-cli-profiles` task 18 by serialized TDD | main | wrapper, public shared-lifecycle/profile tests, README, SKILL, active OpenSpec task 18, ledger/state/verification evidence | successful apply ordering for both split forms, sync-failure stop/remediation, dry-run zero-write, focused/full/static/spec/workflow/package/review proof | source/test/docs/control-plane only; no live split/config/cache/backend/App/install/migration/dependency/Git/release/archive/cleanup effect | done in source at 4/4; lifecycle 24/24, shared aggregate 149/149, profile 227/227, update/release 165/165, isolated package focus 30/30, static/spec/workflow/diff and two-axis review pass; install/live activation remain gated |
 | SPLIT-CONFIG-IDEMPOTENCE-001 | Apply `independent-app-cli-profiles` task 14 by serialized TDD | main | managed runtime annotation cleanup, focused config/profile tests, active OpenSpec task 14, ledger/state/verification evidence | repeated-render RED/GREEN, user-format preservation, adjacent suites, strict/static/diff proof | no live config/switch/install/App/plugin/cache/dependency/Git/release/archive/cleanup effect | done at 3/3; config 31/31, focused profile 4/4, complete profile 226/226, strict OpenSpec 22/22, workflow/static/diff gates pass |
 | RELEASE-STARTER-RECOVERY-001 | Apply `independent-app-cli-profiles` task 15 by serialized TDD | main | release adapter/reconciler, focused update-release tests, active OpenSpec task 15, ledger/state/verification evidence | hidden-starter, disappearing-Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | no live Release mutation/workflow rerun/migration/dependency/Git/archive/cleanup effect | done at 6/6; focused 19/19, update/release 154/154, profile 226/226, AST/Bash/OpenSpec 22/22/workflow/diff pass; second submit gated |
+| RELEASE-RECREATION-PROPAGATION-001 | Apply `independent-app-cli-profiles` task 16 by serialized TDD and authorized external effects | main | release adapter/reconciler, wrapper/shared diagnostic guards found by final review, focused tests, active OpenSpec task 16, authority evidence, ledger/state/verification | typed bounded create/readback retries, terminal 4xx precedence, forced-close/deadline coverage, single-line diagnostics, complete source/package/static/spec/workflow/review proof, remote ref/Release/asset readback | gate `614cc025...` plus the 2026-08-13 submit request authorize one verified commit/push and the exact `v0.1.14` recovery plus `v0.1.15` publication; no migration/archive/install/cleanup/force push | source verification complete at 16.3; Update/Release 165/165, Profile 227/227, shared aggregate 149/149, final package focus 30/30, Plugin Eval 54/F under INC-012, and both rereview axes pass; tasks 16.4-16.5 remain external |
 
 ## Dependency and Execution Order
 
@@ -563,6 +565,7 @@ write task.
 | INC-024 | the latest read-only local-reference audit reports an unconfigured upstream for the OpenAI plugins mirror and a preserved local `hatch-pet` divergence; Workshop now verifies `matches-source` | DEFER_AND_CONTINUE | neither remaining item affects the codex-switch source/package Completion Contract; applying updater, marketplace changes, or overwriting a local Skill is outside the confirmed authority | review ownership of the mirror and local Skill in a separate maintenance task before any apply or cleanup |
 | INC-025 | the one task-13 live command succeeded while native internal `plugin add` replaced seven upgraded cache versions and removed their old version directories | DONE_CONTRACT_RECONCILED | the user explicitly assigned installed-version lifecycle to the native backend; OpenSpec now permits backend retention/replacement/removal while codex-switch still performs no direct cache copy/link/delete or garbage collection | no restoration, retry, or cleanup is required; future retention guarantees require a separately approved preservation architecture and cache-mutation authority |
 | INC-026 | the authorized repair push would select Auto Release `reconcile_then_prepare`, repairing `v0.1.14` and then creating a release commit/tag plus published Release for `v0.1.15` | BLOCKED_AWAITING_HUMAN | the current grant explicitly covers the repair commit/push, Auto Release execution, and `v0.1.14` mutation, but does not name the additional `v0.1.15` Git tag or Release target | authorize or reject the `v0.1.15` release commit, atomic main/tag update, and publication before consuming the pending push authority |
+| INC-027 | Auto Release run `31558709842` removed the failed `v0.1.14` starter state but failed while recreating/reconciling the Release; the REST release-by-tag endpoint is now 404 and the release list stops at `v0.1.13` | READY_FOR_EXTERNAL_EFFECT | the user resolved authority gate `614cc025...` for the Full OpenSpec typed bounded recreation repair, verification, one commit/push, `v0.1.14` recovery, and atomic `v0.1.15` publication; fresh task 16.3 proof is complete | execute tasks 16.4-16.5 only; preserve all conflict guards and do not apply INC-018 migration or unrelated effects |
 | INC-009 | installed `0.1.13` official switch attempted to back up internal `ipc/ipc.sock` and failed before commit | DONE_SOURCE | `ipc` and `mcp-oauth-locks` are known profile-local runtime state already inside TPS shared-support ownership; exact-name exclusion preserves unknown-special fail-closed behavior | source repair is verified; installation and live official switch require separate approval |
 | INC-010 | internal and official can drift outside the approved internal binary/model/API/provider/auth differences; current Subagent drift selects v1 because internal Azure model metadata lacks `multi_agent_version=v2` | ACTIVE_FULL_OPENSPEC_PLAN_REVIEW | the previous Goal and TPS live recovery are complete; the parity proposal, design, delta spec, and implementation ledger are complete and strictly valid, but production execution has not started | review the active change, then begin task 1.1 RED through `openspec-apply-change`; capability-gate the v2 overlay and forbid silent fallback |
 | INC-011 | installed strict `0.1.13` validates the same-version historical `v0.1.13` asset before comparing versions and emits `source_invalid` | DONE_SOURCE_AND_ROLLOUT | trusted version metadata now short-circuits same/older releases before download or staging; newer malformed candidates remain fail closed | final source installed; normal `status` prints `already up to date 0.1.13` with no `source_invalid` or sync warning |
@@ -2962,6 +2965,49 @@ write task.
   `v0.1.15`, then publish its assets. INC-026 is
   `BLOCKED_AWAITING_HUMAN`; no commit, push, workflow run, tag, or Release
   mutation followed.
+- 2026-08-12: after the user authorized the additional `v0.1.15` target,
+  commit `2c90db7` reached `origin/main` and triggered Auto Release run
+  `31558709842`, job `93996366843`. Historical-source verification completed
+  successfully in 8m25s, and reconciliation packaging plus deterministic asset
+  validation also passed. Step 11, `Reconcile existing release assets`, then
+  failed in 3s with exit code 2; every `v0.1.15` preparation/publication step
+  was skipped. Fresh readback keeps `origin/main` at `2c90db7`, tag `v0.1.14`
+  at `19a2433`, and reports no `v0.1.15` tag. GitHub REST now returns 404 for
+  release-by-tag `v0.1.14`, the release list begins at `v0.1.13`, and all three
+  required `v0.1.14` asset URLs return 404. Anonymous log download returns
+  `403 Must have admin rights to Repository`, so no verbatim recreation stderr
+  is claimed. The code path and terminal state make immediate draft recreation
+  inside the post-delete consistency window the leading diagnosis. INC-027 is
+  `BLOCKED_AWAITING_HUMAN`; no rerun, manual Release edit, extra push,
+  migration, cleanup, or implementation followed.
+- 2026-08-12: `OFFICIAL-AUTHORITATIVE-SHARED-READINESS-001` completed OpenSpec
+  task 17 at 6/6. Official App Plugin/Skill state is now the only source;
+  repairable internal-only, disjoint, overlapping, delete-versus-modify,
+  legacy-pending, and secret-bearing target drift converges only into the
+  internal home before functional backend `execve`. Unsafe states emit stable
+  cause messages and exact preview/apply/Doctor remediation without a prompt.
+  Status, Doctor, verify, and `sync-shared` share one read-only value-free
+  report. Final source suites pass 1056/1056; strict OpenSpec is 22/22, static
+  and diff checks pass, and both independent review axes close all findings.
+  Retained package
+  `/private/tmp/codex-switch-official-authority-final.p0TWtw` has 72 files,
+  payload `3f8fe936...56e8`, archive `402a6b34...6a67`, 12 byte-exact task paths,
+  and package-local shared/verify tests 144/144. Plugin Eval remains the known
+  54/100 INC-012 debt. No install, live config/cache/backend/App effect,
+  migration, dependency, Git/release, archive, cleanup, credential, or
+  destructive action occurred; unrelated task-16 WIP was preserved.
+- 2026-08-13: task 16.3 completed on the final source bytes. Independent
+  Spec/Standards review found and closed terminal-4xx precedence, equals-form
+  `--app-profile=official` routing, forced-close/deadline transport
+  classification, and diagnostic/preflight control-character injection.
+  Fresh Update/Release passes 165/165, Profile/Wrapper 227/227, shared
+  configuration/materialization/lifecycle/verify 149/149, Python/Bash/JSON,
+  strict OpenSpec 22/22, DevFlow `ok=true`, and diff checks pass. The sealed
+  final package passes 30/30 focused tests with 71 files, payload
+  `b9d5148c...1770`, archive `1309e706...3e1`, and manifest
+  `f73c7c2c...2cd`; release-counterpart Plugin Eval remains the known 54/F
+  INC-012 debt. No Git, Release, migration, install, cleanup, archive,
+  dependency, credential, or runtime effect occurred. Tasks 16.4-16.5 are next.
 
 ## Validation Commands
 

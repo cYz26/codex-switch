@@ -230,8 +230,8 @@ def add_simple_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser])
     sync_shared = sub.add_parser(
         "sync-shared",
         help=(
-            "Preview or apply shared Plugin and Skill desired state between "
-            "the official App and internal CLI profiles."
+            "Preview or apply Official App Plugin and Skill state to the "
+            "internal CLI profile."
         ),
     )
     sync_shared.add_argument(

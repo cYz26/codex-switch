@@ -15,7 +15,7 @@ from typing import Any
 
 from codex_switch_config_document import ConfigDocument
 from codex_switch_constants import SwitchError
-from codex_switch_io import atomic_write, read_json, run_quiet, write_json
+from codex_switch_io import atomic_write, read_json, write_json
 from codex_switch_selection import ProfileSelection, active_profile_selection
 from codex_switch_store import Store, make_store
 
@@ -57,6 +57,12 @@ PENDING_COMMIT_NAME = "pending-commit.json"
 PENDING_COMMIT_SCHEMA = 1
 PENDING_MATERIALIZATION_NAME = "pending-materialization.json"
 PENDING_MATERIALIZATION_SCHEMA = 1
+SHARED_REMEDIATION_COMMANDS = (
+    "codex-switch sync-shared --dry-run",
+    "codex-switch sync-shared",
+    "codex-switch doctor",
+)
+_MISSING = object()
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,13 @@ class SharedConfigurationFinding:
     code: str
     severity: str
     message: str
+
+
+@dataclass(frozen=True)
+class SharedConfigurationChange:
+    profile: str
+    operation: str
+    path: str
 
 
 @dataclass(frozen=True)
@@ -104,6 +117,8 @@ class SharedConfigurationReceipt:
     source_profile: str | None = None
     target_profile: str | None = None
     actions: tuple[str, ...] = ()
+    changes: tuple[SharedConfigurationChange, ...] = ()
+    remediation: tuple[str, ...] = ()
 
     @property
     def generation(self) -> int:
@@ -133,32 +148,6 @@ def _default_read_stable(path: Path) -> str:
     raise SwitchError("shared_configuration.source_changed_during_plan")
 
 
-def _default_app_is_running(store: Store, selection: ProfileSelection) -> bool:
-    try:
-        from codex_switch_plugins import (
-            profile_plugin_runtime,
-            running_target_app_server_pids,
-        )
-
-        code, output = run_quiet(["/bin/ps", "-axo", "pid=,ppid=,args="])
-        if code != 0:
-            return True
-        process_reader = globals().get("running_codex_processes")
-        if process_reader is None:
-            from codex_switch_running_app import running_codex_processes as process_reader
-        processes = process_reader(process_output=output)
-        if any(
-            getattr(process, "kind", "") in {"desktop", "app-server"}
-            for process in processes
-        ):
-            return True
-        runtime = profile_plugin_runtime(store, selection.app_profile)
-        return bool(running_target_app_server_pids(store, runtime))
-    except Exception:
-        # A stopped-App apply must be proved; an unreadable runtime is not proof.
-        return True
-
-
 def _default_materialize_plugins(**kwargs: Any) -> tuple[dict[str, object], ...]:
     from codex_switch_plugins import materialize_shared_plugins
 
@@ -184,7 +173,6 @@ def _stderr_progress(message: str) -> None:
 @dataclass(frozen=True)
 class SharedConfigurationAdapters:
     read_stable: Callable[[Path], str] = _default_read_stable
-    app_is_running: Callable[[Store, ProfileSelection], bool] = _default_app_is_running
     materialize_plugins: Callable[..., Sequence[object]] = _default_materialize_plugins
     before_commit: Callable[..., None] = _default_before_commit
     commit_checkpoint: Callable[..., None] = _default_commit_checkpoint
@@ -194,18 +182,6 @@ class SharedConfigurationAdapters:
 def _report_progress(adapters: object, message: str) -> None:
     callback = getattr(adapters, "progress", _default_progress)
     callback(message)
-
-
-def _app_running(
-    adapters: object,
-    store: Store,
-    selection: ProfileSelection,
-) -> bool:
-    callback = getattr(adapters, "app_is_running", _default_app_is_running)
-    try:
-        return bool(callback(store, selection))
-    except Exception:
-        return True
 
 
 @dataclass(frozen=True)
@@ -220,6 +196,7 @@ class _HomeObservation:
     observation_sha256: str
     config_kind: str
     config_mode: int
+    repairable_target_drift: bool = False
 
 
 @dataclass(frozen=True)
@@ -235,20 +212,27 @@ class _ConfigSnapshot:
 
 @dataclass(frozen=True)
 class _ReconcilePlan:
-    status: str
     generation_before: int
     generation_after: int
-    source_profile: str | None
-    target_profile: str | None
-    source_observation: _HomeObservation | None
-    target_observation: _HomeObservation | None
-    projection: dict[str, Any] | None
+    source_profile: str
+    target_profile: str
+    source_observation: _HomeObservation
+    target_observation: _HomeObservation
+    projection: dict[str, Any]
     desired_plugins: tuple[SharedDesiredPlugin, ...]
-    pending_target: str | None
     bootstrap: bool = False
     link_personal_skills: bool = False
     findings: tuple[SharedConfigurationFinding, ...] = ()
     actions: tuple[str, ...] = ()
+    changes: tuple[SharedConfigurationChange, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ProjectionChange:
+    profile: str
+    path: tuple[str, ...]
+    before: object
+    after: object
 
 
 class _ProjectionError(Exception):
@@ -256,10 +240,6 @@ class _ProjectionError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
-
-
-class _OfficialAppApplyPending(Exception):
-    pass
 
 
 def _finding(code: str, message: str, *, severity: str = "error") -> SharedConfigurationFinding:
@@ -498,9 +478,14 @@ def _load_state(store: Store) -> dict[str, Any] | None:
         raise SwitchError("shared_configuration.state_schema")
     for profile in (OFFICIAL_PROFILE, INTERNAL_PROFILE):
         baseline = baselines.get(profile)
+        baseline_keys = set(baseline) if isinstance(baseline, Mapping) else set()
         if (
             not isinstance(baseline, Mapping)
-            or set(baseline) != {"observation_sha256", "projection_sha256"}
+            or baseline_keys
+            not in (
+                {"observation_sha256", "projection_sha256"},
+                {"observation_sha256", "projection_sha256", "projection"},
+            )
             or not _valid_sha256(baseline.get("observation_sha256"))
             or not _valid_sha256(baseline.get("projection_sha256"))
             or (
@@ -509,6 +494,19 @@ def _load_state(store: Store) -> dict[str, Any] | None:
             )
         ):
             raise SwitchError("shared_configuration.state_integrity")
+        if "projection" in baseline:
+            baseline_projection = _validate_persisted_projection(
+                baseline.get("projection")
+            )
+            if (
+                _semantic_sha256(baseline_projection)
+                != baseline.get("projection_sha256")
+                or (
+                    profile != pending_target
+                    and baseline_projection != normalized_projection
+                )
+            ):
+                raise SwitchError("shared_configuration.state_integrity")
     if not set(materializations).issubset({OFFICIAL_PROFILE, INTERNAL_PROFILE}):
         raise SwitchError("shared_configuration.state_schema")
     enabled_selectors = {
@@ -857,6 +855,99 @@ def _project_config(
     }
 
 
+def _repairable_internal_target_projection(
+    text: str,
+    *,
+    label: str,
+    validation_error: _ProjectionError,
+) -> dict[str, Any]:
+    """Return a value-free shape for shared target drift that can be replaced.
+
+    The Official projection remains strictly validated.  An internal target may
+    contain stale or unsupported fields inside the shared tables; those tables
+    are replaced wholesale, so their values must neither block repair nor enter
+    state, receipts, or diagnostics.
+    """
+
+    try:
+        parsed = _toml_parser().loads(text or "")
+    except Exception:
+        raise validation_error
+    if not isinstance(parsed, Mapping):
+        raise validation_error
+
+    raw_skills = parsed.get("skills", {})
+    if not isinstance(raw_skills, Mapping):
+        raise validation_error
+    raw_skill_entries = raw_skills.get("config", [])
+    if not isinstance(raw_skill_entries, list) or any(
+        not isinstance(item, Mapping) for item in raw_skill_entries
+    ):
+        # ConfigDocument can remove complete [[skills.config]] tables, but not a
+        # scalar config assignment inside a retained [skills] table.
+        raise validation_error
+
+    marker = "<internal-target-drift>"
+
+    def safe_field(raw_key: object, *, allowed: frozenset[str]) -> str:
+        key = str(raw_key)
+        if SECRET_FIELD_RE.search(key):
+            return "<credential-field>"
+        return key if key in allowed else "<unsupported-field>"
+
+    def table_shape(
+        value: object,
+        *,
+        allowed_fields: frozenset[str],
+    ) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {"<invalid-table>": marker}
+        return {
+            str(name): (
+                {
+                    safe_field(key, allowed=allowed_fields): marker
+                    for key in sorted(item, key=str)
+                }
+                if isinstance(item, Mapping)
+                else {"<invalid-entry>": marker}
+            )
+            for name, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+
+    # Prove that the current TOML can be rendered after removing the complete
+    # managed projection.  This is read-only and prevents a repair plan from
+    # reaching materialization when the target document cannot be rewritten.
+    try:
+        _replace_shared_projection(
+            text,
+            "",
+            label=f"{label} repairability check",
+        )
+    except SwitchError:
+        raise validation_error
+
+    return {
+        "marketplaces": table_shape(
+            parsed.get("marketplaces", {}),
+            allowed_fields=MARKETPLACE_SAFE_FIELDS,
+        ),
+        "plugins": table_shape(
+            parsed.get("plugins", {}),
+            allowed_fields=frozenset({"enabled"}),
+        ),
+        "skills": [
+            {
+                "<target-entry>": index,
+                **{
+                    safe_field(key, allowed=frozenset({"path", "enabled"})): marker
+                    for key in item
+                },
+            }
+            for index, item in enumerate(raw_skill_entries)
+        ],
+    }
+
+
 def _selector_parts(selector: str) -> tuple[str, str] | None:
     if "@" not in selector:
         return None
@@ -1111,6 +1202,7 @@ def _observation_from_text(
     config_kind: str,
     config_mode: int,
     state: Mapping[str, Any] | None,
+    allow_repairable_target_drift: bool = False,
 ) -> _HomeObservation:
     home = _profile_home(store, profile)
     allowed_missing_paths: frozenset[str] = frozenset()
@@ -1123,17 +1215,32 @@ def _observation_from_text(
             for skill in state["projection"].get("skills", [])
             if isinstance(skill, Mapping) and skill.get("owner") == "plugin-cache"
         )
-    projection = _project_config(
-        raw,
-        home,
-        label=str(home / "config.toml"),
-        allowed_missing_plugin_paths=allowed_missing_paths,
-    )
-    desired = _desired_plugins(
-        home,
-        projection,
-        profile_receipts=_state_receipts(state, profile),
-        policy_receipts=_state_receipts(state),
+    repairable_target_drift = False
+    try:
+        projection = _project_config(
+            raw,
+            home,
+            label=str(home / "config.toml"),
+            allowed_missing_plugin_paths=allowed_missing_paths,
+        )
+    except _ProjectionError as error:
+        if not allow_repairable_target_drift:
+            raise
+        projection = _repairable_internal_target_projection(
+            raw,
+            label=str(home / "config.toml"),
+            validation_error=error,
+        )
+        repairable_target_drift = True
+    desired = (
+        ()
+        if repairable_target_drift
+        else _desired_plugins(
+            home,
+            projection,
+            profile_receipts=_state_receipts(state, profile),
+            policy_receipts=_state_receipts(state),
+        )
     )
     identity = [
         {
@@ -1156,10 +1263,15 @@ def _observation_from_text(
         projection_sha256=_semantic_sha256(projection),
         desired_plugins=desired,
         observation_sha256=_semantic_sha256(
-            {"projection": projection, "plugin_identities": identity}
+            {
+                "projection": projection,
+                "plugin_identities": identity,
+                "repairable_target_drift": repairable_target_drift,
+            }
         ),
         config_kind=config_kind,
         config_mode=config_mode,
+        repairable_target_drift=repairable_target_drift,
     )
 
 
@@ -1192,6 +1304,7 @@ def _observe_home(
         config_kind=before.kind,
         config_mode=before.mode,
         state=state,
+        allow_repairable_target_drift=(profile == INTERNAL_PROFILE),
     )
 
 
@@ -1217,22 +1330,129 @@ def _baseline_projection_hash(state: Mapping[str, Any], profile: str) -> str:
     return str(raw) if isinstance(raw, str) else ""
 
 
-def _same_semantic_change(left: _HomeObservation, right: _HomeObservation) -> bool:
-    if left.projection_sha256 != right.projection_sha256:
-        return False
-    left_exact = {
-        item.selector: (item.cache_key, item.manifest_version, item.tree_sha256)
-        for item in left.desired_plugins
-        if item.enabled and item.policy == "portable_exact"
-    }
-    right_exact = {
-        item.selector: (item.cache_key, item.manifest_version, item.tree_sha256)
-        for item in right.desired_plugins
-        if item.enabled and item.policy == "portable_exact"
-    }
-    return left_exact == right_exact
+def _projection_from_generation_payload(payload: bytes) -> dict[str, Any]:
+    try:
+        parsed = _toml_parser().loads(payload.decode())
+    except (UnicodeDecodeError, Exception) as error:
+        raise SwitchError("shared_configuration.generation_integrity") from error
+    if not isinstance(parsed, Mapping) or parsed.get("schema_version") != SHARED_CONFIGURATION_SCHEMA:
+        raise SwitchError("shared_configuration.generation_integrity")
+    if set(parsed) - {"schema_version", "marketplaces", "plugins", "skills"}:
+        raise SwitchError("shared_configuration.generation_integrity")
+    raw_skills = parsed.get("skills", {})
+    if raw_skills is None:
+        raw_skills = {}
+    if not isinstance(raw_skills, Mapping) or set(raw_skills) - {"config"}:
+        raise SwitchError("shared_configuration.generation_integrity")
+    return _validate_persisted_projection(
+        {
+            "marketplaces": parsed.get("marketplaces", {}),
+            "plugins": parsed.get("plugins", {}),
+            "skills": raw_skills.get("config", []),
+        }
+    )
 
 
+def _baseline_projection(
+    store: Store,
+    state: Mapping[str, Any],
+    profile: str,
+) -> dict[str, Any]:
+    baselines = state.get("baselines", {})
+    baseline = baselines.get(profile, {}) if isinstance(baselines, Mapping) else {}
+    if not isinstance(baseline, Mapping):
+        raise SwitchError("shared_configuration.baseline_unavailable")
+    expected = baseline.get("projection_sha256")
+    if not _valid_sha256(expected):
+        raise SwitchError("shared_configuration.baseline_unavailable")
+    if "projection" in baseline:
+        projection = _validate_persisted_projection(baseline.get("projection"))
+        if _semantic_sha256(projection) != expected:
+            raise SwitchError("shared_configuration.baseline_unavailable")
+        return projection
+    current = state.get("projection")
+    if isinstance(current, Mapping) and _semantic_sha256(current) == expected:
+        return _clone_json(current)
+    generations = _shared_root(store) / "generations"
+    try:
+        candidates = sorted(generations.iterdir(), key=lambda path: path.name)
+    except OSError as error:
+        raise SwitchError("shared_configuration.baseline_unavailable") from error
+    for path in candidates:
+        if re.fullmatch(r"[0-9]{20}\.toml", path.name) is None:
+            continue
+        snapshot = _path_snapshot(
+            path,
+            unsafe_code="shared_configuration.generation_integrity",
+        )
+        if snapshot.kind != "regular":
+            raise SwitchError("shared_configuration.generation_integrity")
+        projection = _projection_from_generation_payload(snapshot.payload)
+        if _semantic_sha256(projection) == expected:
+            return projection
+    raise SwitchError("shared_configuration.baseline_unavailable")
+
+
+def _projection_changes(
+    profile: str,
+    before: object,
+    after: object,
+    *,
+    path: tuple[str, ...] = (),
+) -> tuple[_ProjectionChange, ...]:
+    if isinstance(before, Mapping) and isinstance(after, Mapping):
+        changes: list[_ProjectionChange] = []
+        for raw_key in sorted(set(before) | set(after), key=str):
+            key = str(raw_key)
+            left = before.get(raw_key, _MISSING)
+            right = after.get(raw_key, _MISSING)
+            if left is _MISSING or right is _MISSING:
+                changes.append(
+                    _ProjectionChange(
+                        profile=profile,
+                        path=path + (key,),
+                        before=left,
+                        after=right,
+                    )
+                )
+                continue
+            changes.extend(
+                _projection_changes(
+                    profile,
+                    left,
+                    right,
+                    path=path + (key,),
+                )
+            )
+        return tuple(changes)
+    if before == after:
+        return ()
+    return (
+        _ProjectionChange(
+            profile=profile,
+            path=path,
+            before=before,
+            after=after,
+        ),
+    )
+
+
+def _change_operation(change: _ProjectionChange) -> str:
+    if change.before is _MISSING:
+        return "add"
+    if change.after is _MISSING:
+        return "remove"
+    if change.path and change.path[-1] == "enabled" and isinstance(change.after, bool):
+        return "enable" if change.after else "disable"
+    return "update"
+
+
+def _public_change(change: _ProjectionChange) -> SharedConfigurationChange:
+    return SharedConfigurationChange(
+        profile=change.profile,
+        operation=_change_operation(change),
+        path="/" + "/".join(change.path),
+    )
 def _validate_supported_selection(selection: ProfileSelection) -> None:
     if (selection.cli_profile, selection.app_profile) != SUPPORTED_SELECTION:
         raise SwitchError(
@@ -1330,6 +1550,8 @@ def _receipt(
     source_profile: str | None = None,
     target_profile: str | None = None,
     actions: Sequence[str] = (),
+    changes: Sequence[SharedConfigurationChange] = (),
+    remediation: Sequence[str] = (),
 ) -> SharedConfigurationReceipt:
     return SharedConfigurationReceipt(
         status=status,
@@ -1342,15 +1564,120 @@ def _receipt(
         source_profile=source_profile,
         target_profile=target_profile,
         actions=tuple(actions),
+        changes=tuple(changes),
+        remediation=tuple(remediation),
     )
+
+
+def _diagnostic_text(value: object) -> str:
+    escapes = {
+        "\0": r"\0",
+        "\b": r"\b",
+        "\t": r"\t",
+        "\n": r"\n",
+        "\v": r"\v",
+        "\f": r"\f",
+        "\r": r"\r",
+    }
+    rendered: list[str] = []
+    for character in str(value):
+        if character in escapes:
+            rendered.append(escapes[character])
+            continue
+        codepoint = ord(character)
+        if codepoint < 32 or 127 <= codepoint < 160:
+            rendered.append(f"\\x{codepoint:02x}")
+        elif codepoint in {0x2028, 0x2029}:
+            rendered.append(f"\\u{codepoint:04x}")
+        else:
+            rendered.append(character)
+    return "".join(rendered)
+
+
+def shared_configuration_diagnostic_lines(report: object) -> list[str]:
+    """Render the common, secret-safe shared-readiness report."""
+
+    before = getattr(report, "generation_before", None)
+    after = getattr(report, "generation_after", None)
+    generation = getattr(report, "generation", None)
+    if generation is None:
+        generation = after if after is not None else 0
+    if before is not None and after is not None and before != after:
+        rendered_generation = _diagnostic_text(f"{before} -> {after}")
+    else:
+        rendered_generation = _diagnostic_text(generation)
+    source = _diagnostic_text(
+        getattr(report, "source_profile", None) or "none"
+    )
+    target = _diagnostic_text(
+        getattr(report, "target_profile", None) or "none"
+    )
+    status = _diagnostic_text(getattr(report, "status", "unknown"))
+    cli_ready = bool(getattr(report, "cli_ready", False))
+    lines = [
+        f"Shared configuration source: {source}",
+        f"Shared configuration target: {target}",
+        f"Shared configuration generation: {rendered_generation}",
+        f"Shared configuration status: {status}",
+        f"Shared configuration CLI ready: {'yes' if cli_ready else 'no'}",
+    ]
+
+    actions = tuple(getattr(report, "actions", ()))
+    if actions:
+        lines.extend(
+            f"Shared configuration action: {_diagnostic_text(action)}"
+            for action in actions
+        )
+    else:
+        lines.append("Shared configuration action: none")
+
+    changes = tuple(getattr(report, "changes", ()))
+    if changes:
+        for change in changes:
+            profile = _diagnostic_text(
+                getattr(change, "profile", "unknown")
+            )
+            operation = _diagnostic_text(
+                getattr(change, "operation", "update")
+            )
+            path = _diagnostic_text(getattr(change, "path", "/"))
+            lines.append(
+                f"Shared configuration change: {profile} {operation} {path}"
+            )
+    else:
+        lines.append("Shared configuration change: none")
+
+    for finding in getattr(report, "findings", ()):
+        code = _diagnostic_text(
+            getattr(finding, "code", "shared_configuration.unknown")
+        )
+        severity = _diagnostic_text(
+            getattr(finding, "severity", "error")
+        )
+        message = _diagnostic_text(getattr(finding, "message", ""))
+        lines.append(
+            "Shared configuration finding: "
+            f"{code} ({severity})"
+            + (f": {message}" if message else "")
+        )
+
+    remediation = tuple(getattr(report, "remediation", ()))
+    if remediation:
+        lines.extend(
+            f"Shared configuration remediation: {_diagnostic_text(command)}"
+            for command in remediation
+        )
+    else:
+        lines.append("Shared configuration remediation: none")
+    return lines
 
 
 def _blocked_receipt(
     generation: int,
     finding: SharedConfigurationFinding,
     *,
-    source_profile: str | None = None,
-    target_profile: str | None = None,
+    source_profile: str | None = OFFICIAL_PROFILE,
+    target_profile: str | None = INTERNAL_PROFILE,
 ) -> SharedConfigurationReceipt:
     return _receipt(
         status="blocked",
@@ -1360,6 +1687,88 @@ def _blocked_receipt(
         findings=(finding,),
         source_profile=source_profile,
         target_profile=target_profile,
+        remediation=SHARED_REMEDIATION_COMMANDS,
+    )
+
+
+def _public_changes_since_baseline(
+    store: Store,
+    state: Mapping[str, Any],
+    official: _HomeObservation,
+    internal: _HomeObservation,
+) -> tuple[SharedConfigurationChange, ...]:
+    changes: list[_ProjectionChange] = []
+    for profile, observation in (
+        (OFFICIAL_PROFILE, official),
+        (INTERNAL_PROFILE, internal),
+    ):
+        try:
+            baseline = _baseline_projection(store, state, profile)
+        except SwitchError:
+            continue
+        changes.extend(
+            _projection_changes(
+                profile,
+                baseline,
+                observation.projection,
+            )
+        )
+    return tuple(
+        _public_change(change)
+        for change in sorted(
+            changes,
+            key=lambda item: (item.profile, item.path, _change_operation(item)),
+        )
+    )
+
+
+def _initial_public_changes(
+    official: _HomeObservation,
+    internal: _HomeObservation,
+) -> tuple[SharedConfigurationChange, ...]:
+    empty = {"marketplaces": {}, "plugins": {}, "skills": []}
+    changes = (
+        *_projection_changes(OFFICIAL_PROFILE, empty, official.projection),
+        *_projection_changes(INTERNAL_PROFILE, empty, internal.projection),
+    )
+    return tuple(
+        _public_change(change)
+        for change in sorted(
+            changes,
+            key=lambda item: (item.profile, item.path, _change_operation(item)),
+        )
+    )
+
+
+def _official_internal_plan(
+    official: _HomeObservation,
+    internal: _HomeObservation,
+    *,
+    generation_before: int,
+    generation_after: int,
+    link_personal_skills: bool,
+    actions: Sequence[str],
+    bootstrap: bool = False,
+    findings: Sequence[SharedConfigurationFinding] = (),
+    changes: Sequence[SharedConfigurationChange] = (),
+) -> _ReconcilePlan:
+    planned_actions = [f"authoritative:{OFFICIAL_PROFILE}", *actions]
+    if link_personal_skills and "link:personal-skills" not in planned_actions:
+        planned_actions.append("link:personal-skills")
+    return _ReconcilePlan(
+        generation_before=generation_before,
+        generation_after=generation_after,
+        source_profile=OFFICIAL_PROFILE,
+        target_profile=INTERNAL_PROFILE,
+        source_observation=official,
+        target_observation=internal,
+        projection=_clone_json(official.projection),
+        desired_plugins=official.desired_plugins,
+        bootstrap=bootstrap,
+        link_personal_skills=link_personal_skills,
+        findings=tuple(findings),
+        actions=tuple(planned_actions),
+        changes=tuple(changes),
     )
 
 
@@ -1367,7 +1776,6 @@ def _plan_reconcile(
     store: Store,
     selection: ProfileSelection,
     *,
-    boundary: str,
     adapters: object,
 ) -> _ReconcilePlan | SharedConfigurationReceipt:
     _validate_supported_selection(selection)
@@ -1387,7 +1795,10 @@ def _plan_reconcile(
     except _ProjectionError as error:
         return _blocked_receipt(generation, _finding(error.code, error.message))
     except SwitchError as error:
-        code = _code_from_error(error, "shared_configuration.source_changed_during_plan")
+        code = _code_from_error(
+            error,
+            "shared_configuration.source_changed_during_plan",
+        )
         return _blocked_receipt(generation, _finding(code, str(error)))
 
     if state is None:
@@ -1402,28 +1813,34 @@ def _plan_reconcile(
                     severity="info",
                 ),
             )
-        return _ReconcilePlan(
-            status="apply",
+        return _official_internal_plan(
+            official,
+            internal,
             generation_before=0,
             generation_after=1,
-            source_profile=OFFICIAL_PROFILE,
-            target_profile=INTERNAL_PROFILE,
-            source_observation=official,
-            target_observation=internal,
-            projection=official.projection,
-            desired_plugins=official.desired_plugins,
-            pending_target=None,
             bootstrap=True,
             link_personal_skills=link_personal,
             findings=findings,
-            actions=("bootstrap", "materialize:internal", "render:internal"),
+            actions=(
+                "bootstrap",
+                "materialize:internal",
+                "render:internal",
+            ),
+            changes=_initial_public_changes(official, internal),
         )
 
-    pending_target = state.get("pending_target")
-    official_changed = official.observation_sha256 != _baseline_hash(state, OFFICIAL_PROFILE)
-    internal_changed = internal.observation_sha256 != _baseline_hash(state, INTERNAL_PROFILE)
+    legacy_pending = state.get("pending_target") is not None
+    official_changed = (
+        official.observation_sha256
+        != _baseline_hash(state, OFFICIAL_PROFILE)
+    )
+    internal_changed = (
+        internal.observation_sha256
+        != _baseline_hash(state, INTERNAL_PROFILE)
+    )
+
     if (
-        not pending_target
+        not legacy_pending
         and not official_changed
         and internal_changed
         and internal.projection_sha256
@@ -1437,105 +1854,20 @@ def _plan_reconcile(
                 _stored_materializations(state, INTERNAL_PROFILE),
             )
         except SwitchError:
-            return _ReconcilePlan(
-                status="repair",
+            return _official_internal_plan(
+                official,
+                internal,
                 generation_before=generation,
                 generation_after=generation,
-                source_profile=OFFICIAL_PROFILE,
-                target_profile=INTERNAL_PROFILE,
-                source_observation=official,
-                target_observation=internal,
-                projection=_clone_json(state["projection"]),
-                desired_plugins=official.desired_plugins,
-                pending_target=None,
                 link_personal_skills=link_personal,
-                actions=("repair:internal", "materialize:internal", "render:internal"),
-            )
-    if pending_target:
-        if official_changed or internal_changed:
-            return _receipt(
-                status="conflict",
-                before=generation,
-                after=generation,
-                cli_ready=False,
-                findings=(
-                    _finding(
-                        "shared_configuration.conflict",
-                        "A profile changed while an App apply was pending.",
-                    ),
+                actions=(
+                    "repair:internal",
+                    "materialize:internal",
+                    "render:internal",
                 ),
             )
-        if boundary != "explicit-sync":
-            try:
-                materializations = _validate_materializations(
-                    store,
-                    INTERNAL_PROFILE,
-                    internal.desired_plugins,
-                    _stored_materializations(state, INTERNAL_PROFILE),
-                )
-            except SwitchError as error:
-                return _blocked_receipt(
-                    generation,
-                    _finding(
-                        _code_from_error(
-                            error,
-                            "shared_configuration.materialization.unsafe_cache",
-                        ),
-                        str(error),
-                    ),
-                )
-            return _receipt(
-                status="pending",
-                before=generation,
-                after=generation,
-                cli_ready=True,
-                pending_target=str(pending_target),
-                materializations=materializations,
-                findings=(
-                    _finding(
-                        "shared_configuration.pending_app_apply",
-                        "Shared configuration is waiting for a stopped-App apply.",
-                        severity="warning",
-                    ),
-                ),
-                source_profile=INTERNAL_PROFILE,
-                target_profile=OFFICIAL_PROFILE,
-            )
-        app_running = _app_running(adapters, store, selection)
-        if app_running:
-            return _receipt(
-                status="pending",
-                before=generation,
-                after=generation,
-                cli_ready=True,
-                pending_target=OFFICIAL_PROFILE,
-                findings=(
-                    _finding(
-                        "shared_configuration.pending_app_apply",
-                        "Quit the official App before applying shared configuration.",
-                        severity="warning",
-                    ),
-                ),
-                source_profile=INTERNAL_PROFILE,
-                target_profile=OFFICIAL_PROFILE,
-            )
-        projection = _clone_json(state["projection"])
-        return _ReconcilePlan(
-            status="apply",
-            generation_before=generation,
-            generation_after=generation,
-            source_profile=INTERNAL_PROFILE,
-            target_profile=OFFICIAL_PROFILE,
-            source_observation=internal,
-            target_observation=official,
-            projection=projection,
-            desired_plugins=internal.desired_plugins,
-            pending_target=None,
-            link_personal_skills=link_personal,
-            actions=("materialize:openai-official", "render:openai-official"),
-        )
 
-    if not official_changed and not internal_changed and not link_personal:
+    if not legacy_pending and not official_changed and not internal_changed:
         try:
             stored = _validate_materializations(
                 store,
@@ -1544,81 +1876,65 @@ def _plan_reconcile(
                 _stored_materializations(state, INTERNAL_PROFILE),
             )
         except SwitchError:
-            return _ReconcilePlan(
-                status="repair",
+            return _official_internal_plan(
+                official,
+                internal,
                 generation_before=generation,
                 generation_after=generation,
+                link_personal_skills=link_personal,
+                actions=(
+                    "repair:internal",
+                    "materialize:internal",
+                    "render:internal",
+                ),
+            )
+        if not link_personal:
+            return _receipt(
+                status="current",
+                before=generation,
+                after=generation,
+                cli_ready=True,
+                materializations=stored,
                 source_profile=OFFICIAL_PROFILE,
                 target_profile=INTERNAL_PROFILE,
-                source_observation=official,
-                target_observation=internal,
-                projection=_clone_json(state["projection"]),
-                desired_plugins=official.desired_plugins,
-                pending_target=None,
-                link_personal_skills=False,
-                actions=("repair:internal", "materialize:internal", "render:internal"),
             )
-        return _receipt(
-            status="current",
-            before=generation,
-            after=generation,
-            cli_ready=True,
-            materializations=stored,
-        )
-    if official_changed and internal_changed and not _same_semantic_change(official, internal):
-        return _receipt(
-            status="conflict",
-            before=generation,
-            after=generation,
-            cli_ready=False,
-            findings=(
-                _finding(
-                    "shared_configuration.conflict",
-                    "Official App and internal CLI changed from the same baseline.",
-                ),
+        return _official_internal_plan(
+            official,
+            internal,
+            generation_before=generation,
+            generation_after=generation,
+            link_personal_skills=True,
+            actions=(
+                "materialize:internal",
+                "render:internal",
             ),
         )
 
-    if official_changed or (official_changed and internal_changed):
-        source = official
-        source_profile = OFFICIAL_PROFILE
-        target_profile = INTERNAL_PROFILE
-        pending_after = None
-    elif internal_changed:
-        source = internal
-        source_profile = INTERNAL_PROFILE
-        if boundary == "explicit-sync" and not _app_running(
-            adapters, store, selection
-        ):
-            target_profile = OFFICIAL_PROFILE
-            pending_after = None
-        else:
-            target_profile = INTERNAL_PROFILE
-            pending_after = OFFICIAL_PROFILE
-    else:
-        # Only the personal Skills link is missing from an otherwise current state.
-        source = official
-        source_profile = OFFICIAL_PROFILE
-        target_profile = INTERNAL_PROFILE
-        pending_after = None
-
-    return _ReconcilePlan(
-        status="apply",
+    findings: tuple[SharedConfigurationFinding, ...] = ()
+    if legacy_pending:
+        findings = (
+            _finding(
+                "shared_configuration.legacy_pending_repaired",
+                "Legacy bidirectional pending state will be replaced from Official App.",
+                severity="info",
+            ),
+        )
+    return _official_internal_plan(
+        official,
+        internal,
         generation_before=generation,
-        generation_after=(generation + 1 if official_changed or internal_changed else generation),
-        source_profile=source_profile,
-        target_profile=target_profile,
-        source_observation=source,
-        target_observation=(
-            internal if target_profile == INTERNAL_PROFILE else official
-        ),
-        projection=source.projection,
-        desired_plugins=source.desired_plugins,
-        pending_target=pending_after,
+        generation_after=generation + 1,
         link_personal_skills=link_personal,
+        findings=findings,
         actions=(
-            f"materialize:{target_profile}",
-            f"render:{target_profile}" if target_profile != source_profile else "capture:internal",
+            "materialize:internal",
+            "render:internal",
+        ),
+        changes=_public_changes_since_baseline(
+            store,
+            state,
+            official,
+            internal,
         ),
     )
 
@@ -1891,10 +2207,6 @@ def _materialize_plan(
     before = _config_snapshot(target_config)
     if before != planned_before:
         raise SwitchError("shared_configuration.target_changed_during_plan")
-    if plan.target_profile == OFFICIAL_PROFILE and _app_running(
-        adapters, store, selection
-    ):
-        raise _OfficialAppApplyPending()
     selectors = tuple(sorted({item.selector for item in enabled}))
     _write_pending_materialization(
         store,
@@ -2044,7 +2356,14 @@ def _render_generation_projection(projection: Mapping[str, Any]) -> str:
 def _replace_shared_projection(target_text: str, projection_text: str, *, label: str) -> str:
     target = ConfigDocument.parse(target_text, f"{label} target")
     without_shared = target.select(
-        include_top_level=lambda _path: True,
+        include_top_level=lambda path: not (
+            bool(path)
+            and (
+                path[0] in SHARED_TABLE_ROOTS
+                or path == ("skills",)
+                or path[:2] == ("skills", "config")
+            )
+        ),
         include_table=lambda path, _is_array: not (
             bool(path)
             and (path[0] in SHARED_TABLE_ROOTS or path[:2] == ("skills", "config"))
@@ -2192,6 +2511,12 @@ def _write_pending_materialization(
     selectors: tuple[str, ...],
 ) -> None:
     _validate_shared_storage(store)
+    if (
+        source_profile != OFFICIAL_PROFILE
+        or target_profile != INTERNAL_PROFILE
+        or target_path != _config_path(store, INTERNAL_PROFILE)
+    ):
+        raise SwitchError("shared_configuration.pending_recovery")
     shared_root = _shared_root(store)
     remove_empty_root = not shared_root.exists()
     _ensure_private_durable_directory(shared_root)
@@ -2254,17 +2579,15 @@ def _load_pending_materialization(store: Store) -> dict[str, Any] | None:
         or intent.get("schema_version") != PENDING_MATERIALIZATION_SCHEMA
         or intent.get("intent_sha256")
         != _materialization_intent_sha256(intent)
-        or intent.get("source_profile") not in SUPPORTED_SELECTION
-        or intent.get("target_profile") not in SUPPORTED_SELECTION
-        or intent.get("source_profile") == intent.get("target_profile")
+        or intent.get("source_profile") != OFFICIAL_PROFILE
+        or intent.get("target_profile") != INTERNAL_PROFILE
         or not isinstance(intent.get("target"), Mapping)
         or set(intent["target"]) != {"path", "before"}
         or not isinstance(intent.get("selectors"), list)
         or not isinstance(intent.get("remove_empty_root"), bool)
     ):
         raise SwitchError("shared_configuration.pending_recovery")
-    target_profile = str(intent["target_profile"])
-    if intent["target"].get("path") != str(_config_path(store, target_profile)):
+    if intent["target"].get("path") != str(_config_path(store, INTERNAL_PROFILE)):
         raise SwitchError("shared_configuration.pending_recovery")
     selectors = intent["selectors"]
     if (
@@ -2311,10 +2634,12 @@ def _load_pending_journal(store: Store) -> dict[str, Any] | None:
     generation = journal["generation"]
     if (
         not isinstance(source.get("path"), str)
+        or source.get("path") != str(_config_path(store, OFFICIAL_PROFILE))
         or source.get("kind") not in {"missing", "regular"}
         or not _valid_sha256(source.get("payload_sha256"))
         or not isinstance(source.get("mode"), int)
         or not isinstance(target.get("path"), str)
+        or target.get("path") != str(_config_path(store, INTERNAL_PROFILE))
         or not isinstance(personal.get("path"), str)
         or not _valid_link_snapshot(personal.get("before"))
         or not _valid_link_snapshot(personal.get("after"))
@@ -2355,6 +2680,8 @@ def _load_pending_journal(store: Store) -> dict[str, Any] | None:
         or expected_state.get("generation") != generation["number"]
         or expected_state.get("projection") != projection
         or expected_state.get("projection_sha256") != _semantic_sha256(projection)
+        or expected_state.get("producer_profile") != OFFICIAL_PROFILE
+        or expected_state.get("pending_target") is not None
         or any(not _valid_sha256(receipt.tree_sha256) for receipt in receipts)
     ):
         raise SwitchError("shared_configuration.pending_recovery")
@@ -2588,23 +2915,33 @@ def _checkpoint(adapters: object, phase: str, **kwargs: Any) -> None:
     callback(phase=phase, **kwargs)
 
 
-def _pending_app_receipt(plan: _ReconcilePlan) -> SharedConfigurationReceipt:
-    return _receipt(
-        status="pending",
-        before=plan.generation_before,
-        after=plan.generation_before,
-        cli_ready=True,
-        pending_target=OFFICIAL_PROFILE,
-        findings=(
-            _finding(
-                "shared_configuration.pending_app_apply",
-                "Quit the official App before applying shared configuration.",
-                severity="warning",
-            ),
-        ),
-        source_profile=plan.source_profile,
-        target_profile=plan.target_profile,
-    )
+def _reobserve_plan_sources(
+    store: Store,
+    plan: _ReconcilePlan,
+    adapters: object,
+    previous_state: Mapping[str, Any] | None,
+) -> dict[str, _HomeObservation] | None:
+    current: dict[str, _HomeObservation] = {}
+    for observation in (plan.source_observation,):
+        try:
+            observed = _observe_home(
+                store,
+                observation.profile,
+                adapters,
+                previous_state,
+            )
+        except (_ProjectionError, SwitchError):
+            return None
+        if (
+            observed.raw_sha256 != observation.raw_sha256
+            or (
+                observation.profile != plan.target_profile
+                and observed.observation_sha256 != observation.observation_sha256
+            )
+        ):
+            return None
+        current[observation.profile] = observed
+    return current
 
 
 def _commit_plan(
@@ -2621,6 +2958,19 @@ def _commit_plan(
     assert plan.projection is not None
     assert plan.source_profile is not None
     assert plan.target_profile is not None
+    if (
+        plan.source_profile != OFFICIAL_PROFILE
+        or plan.target_profile != INTERNAL_PROFILE
+    ):
+        return _blocked_receipt(
+            plan.generation_before,
+            _finding(
+                "shared_configuration.invalid_direction",
+                "Shared Plugin readiness may only synchronize Official App to internal CLI.",
+            ),
+            source_profile=plan.source_profile,
+            target_profile=plan.target_profile,
+        )
 
     target_path = _config_path(store, plan.target_profile)
     target_before = _ConfigSnapshot(
@@ -2636,8 +2986,6 @@ def _commit_plan(
             adapters,
             store_lock_descriptor=store_lock_descriptor,
         )
-    except _OfficialAppApplyPending:
-        return _pending_app_receipt(plan)
     except (OSError, SwitchError) as error:
         code = _code_from_error(error, "shared_configuration.materialization.failed")
         return _blocked_receipt(
@@ -2659,20 +3007,18 @@ def _commit_plan(
             target_profile=plan.target_profile,
         )
 
-    try:
-        current_source = _observe_home(
-            store,
-            plan.source_profile,
-            adapters,
-            previous_state,
-        )
-    except (_ProjectionError, SwitchError):
-        current_source = None
-    if (
-        current_source is None
-        or current_source.raw_sha256 != plan.source_observation.raw_sha256
-        or current_source.observation_sha256 != plan.source_observation.observation_sha256
-    ):
+    current_sources = _reobserve_plan_sources(
+        store,
+        plan,
+        adapters,
+        previous_state,
+    )
+    current_source = (
+        current_sources.get(plan.source_profile)
+        if current_sources is not None
+        else None
+    )
+    if current_source is None:
         return _blocked_receipt(
             plan.generation_before,
             _finding(
@@ -2701,11 +3047,6 @@ def _commit_plan(
             source_profile=plan.source_profile,
             target_profile=plan.target_profile,
         )
-
-    if plan.target_profile == OFFICIAL_PROFILE and _app_running(
-        adapters, store, selection
-    ):
-        return _pending_app_receipt(plan)
 
     try:
         materializations = _validate_materializations(
@@ -2813,11 +3154,12 @@ def _commit_plan(
             "projection_sha256": _semantic_sha256(projection),
             "projection": projection,
             "producer_profile": plan.source_profile,
-            "pending_target": plan.pending_target,
+            "pending_target": None,
             "baselines": {
                 profile: {
                     "observation_sha256": observation.observation_sha256,
                     "projection_sha256": observation.projection_sha256,
+                    "projection": _clone_json(observation.projection),
                 }
                 for profile, observation in observations.items()
             },
@@ -2889,21 +3231,13 @@ def _commit_plan(
             plan=plan,
         )
 
-        try:
-            prepared_source = _observe_home(
-                store,
-                plan.source_profile,
-                adapters,
-                previous_state,
-            )
-        except (_ProjectionError, SwitchError):
-            prepared_source = None
-        if (
-            prepared_source is None
-            or prepared_source.raw_sha256 != plan.source_observation.raw_sha256
-            or prepared_source.observation_sha256
-            != plan.source_observation.observation_sha256
-        ):
+        prepared_sources = _reobserve_plan_sources(
+            store,
+            plan,
+            adapters,
+            previous_state,
+        )
+        if prepared_sources is None:
             _recover_pending_commit(store)
             return _blocked_receipt(
                 plan.generation_before,
@@ -2946,12 +3280,6 @@ def _commit_plan(
                 source_profile=plan.source_profile,
                 target_profile=plan.target_profile,
             )
-        if plan.target_profile == OFFICIAL_PROFILE and _app_running(
-            adapters, store, selection
-        ):
-            _recover_pending_commit(store)
-            return _pending_app_receipt(plan)
-
         if target_after != target_before:
             if target_after.kind != "regular":
                 raise SwitchError("shared_configuration.target_config_unsafe")
@@ -3020,27 +3348,17 @@ def _commit_plan(
                 raise
             raise SwitchError("shared_configuration.commit_failed") from error
 
-    status = "pending" if plan.pending_target else "applied"
-    findings = list(plan.findings)
-    if plan.pending_target:
-        findings.append(
-            _finding(
-                "shared_configuration.pending_app_apply",
-                "Shared configuration is waiting for a stopped-App apply.",
-                severity="warning",
-            )
-        )
     return _receipt(
-        status=status,
+        status="applied",
         before=plan.generation_before,
         after=plan.generation_after,
         cli_ready=True,
-        pending_target=plan.pending_target,
         materializations=materializations,
-        findings=findings,
+        findings=plan.findings,
         source_profile=plan.source_profile,
         target_profile=plan.target_profile,
         actions=plan.actions,
+        changes=plan.changes,
     )
 
 
@@ -3052,7 +3370,11 @@ def reconcile_shared_configuration(
     mode: str = "apply",
     adapters: object | None = None,
 ) -> SharedConfigurationReceipt:
-    if boundary not in {"cli-preflight", "explicit-sync", "verify"}:
+    if boundary not in {
+        "cli-preflight",
+        "explicit-sync",
+        "verify",
+    }:
         raise SwitchError(f"shared_configuration.invalid_boundary: {boundary}")
     if mode not in {"plan", "apply", "verify"}:
         raise SwitchError(f"shared_configuration.invalid_mode: {mode}")
@@ -3097,7 +3419,6 @@ def reconcile_shared_configuration(
             planned = _plan_reconcile(
                 store,
                 selection,
-                boundary=boundary,
                 adapters=selected_adapters,
             )
     except SwitchError as error:
@@ -3120,11 +3441,16 @@ def reconcile_shared_configuration(
             before=planned.generation_before,
             after=planned.generation_after,
             cli_ready=False,
-            pending_target=planned.pending_target,
             findings=planned.findings,
             source_profile=planned.source_profile,
             target_profile=planned.target_profile,
             actions=planned.actions,
+            changes=planned.changes,
+            remediation=(
+                SHARED_REMEDIATION_COMMANDS
+                if planned.generation_after != planned.generation_before
+                else ()
+            ),
         )
 
     # Plan again while holding the existing store-wide cooperative mutation lock.
@@ -3143,7 +3469,6 @@ def reconcile_shared_configuration(
             locked_plan = _plan_reconcile(
                 store,
                 selection,
-                boundary=boundary,
                 adapters=selected_adapters,
             )
             if isinstance(locked_plan, SharedConfigurationReceipt):
@@ -3233,142 +3558,91 @@ def shared_configuration_report(
                 "Shared configuration has unfinished locked recovery.",
             ),
         )
+    adapters = SharedConfigurationAdapters()
     try:
-        state = _load_state(store)
+        planned = _plan_reconcile(
+            store,
+            selection,
+            adapters=adapters,
+        )
     except SwitchError as error:
         return _blocked_receipt(
             0,
-            _finding(_code_from_error(error, "shared_configuration.state_schema"), str(error)),
-        )
-    generation = int(state["generation"]) if state is not None else 0
-    link_personal, skills_problem = _validate_personal_skills(store)
-    if skills_problem is not None:
-        return _blocked_receipt(generation, skills_problem)
-    cache_problem = _cache_root_problem(store)
-    if cache_problem is not None:
-        return _blocked_receipt(generation, cache_problem)
-    if state is None:
-        return _receipt(
-            status="missing",
-            before=0,
-            after=0,
-            cli_ready=True,
-            findings=(
-                _finding(
-                    "shared_configuration.bootstrap_required",
-                    "The next functional internal CLI invocation will bootstrap shared state.",
-                    severity="info",
-                ),
-            ),
-        )
-    if link_personal:
-        return _receipt(
-            status="stale",
-            before=generation,
-            after=generation,
-            cli_ready=False,
-            findings=(
-                _finding(
-                    "shared_configuration.personal_skills.link_required",
-                    "The internal personal Skills link is missing.",
-                    severity="warning",
-                ),
-            ),
-        )
-    adapters = SharedConfigurationAdapters()
-    try:
-        official = _observe_home(store, OFFICIAL_PROFILE, adapters, state)
-        internal = _observe_home(store, INTERNAL_PROFILE, adapters, state)
-    except _ProjectionError as error:
-        return _blocked_receipt(generation, _finding(error.code, error.message))
-    except SwitchError as error:
-        return _blocked_receipt(
-            generation,
             _finding(_code_from_error(error, "shared_configuration.failed"), str(error)),
         )
-    official_changed = official.observation_sha256 != _baseline_hash(state, OFFICIAL_PROFILE)
-    internal_changed = internal.observation_sha256 != _baseline_hash(state, INTERNAL_PROFILE)
-    pending_target = state.get("pending_target")
-    try:
-        internal_materializations = _validate_materializations(
-            store,
-            INTERNAL_PROFILE,
-            internal.desired_plugins,
-            _stored_materializations(state, INTERNAL_PROFILE),
-        )
-    except SwitchError as error:
-        return _blocked_receipt(
-            generation,
-            _finding(
-                _code_from_error(
-                    error,
-                    "shared_configuration.materialization.unsafe_cache",
-                ),
-                str(error),
-            ),
-        )
-    if pending_target:
-        if official_changed or internal_changed:
+    if isinstance(planned, SharedConfigurationReceipt):
+        return planned
+
+    if "repair:internal" in planned.actions:
+        try:
+            state = _load_state(store)
+            if state is None:
+                raise SwitchError("shared_configuration.state_schema")
+            _validate_materializations(
+                store,
+                INTERNAL_PROFILE,
+                planned.target_observation.desired_plugins,
+                _stored_materializations(state, INTERNAL_PROFILE),
+            )
+        except SwitchError as error:
             return _receipt(
-                status="conflict",
-                before=generation,
-                after=generation,
+                status="blocked",
+                before=planned.generation_before,
+                after=planned.generation_before,
                 cli_ready=False,
                 findings=(
                     _finding(
-                        "shared_configuration.conflict",
-                        "A profile changed while an App apply was pending.",
+                        _code_from_error(
+                            error,
+                            "shared_configuration.materialization.unsafe_cache",
+                        ),
+                        str(error),
                     ),
                 ),
+                source_profile=planned.source_profile,
+                target_profile=planned.target_profile,
+                actions=planned.actions,
+                changes=planned.changes,
+                remediation=SHARED_REMEDIATION_COMMANDS,
             )
-        return _receipt(
-            status="pending",
-            before=generation,
-            after=generation,
-            cli_ready=True,
-            pending_target=str(pending_target),
-            materializations=internal_materializations,
-            findings=(
-                _finding(
-                    "shared_configuration.pending_app_apply",
-                    "Shared configuration is waiting for a stopped-App apply.",
-                    severity="warning",
-                ),
-            ),
+
+    if planned.bootstrap:
+        readiness_finding = _finding(
+            "shared_configuration.bootstrap_required",
+            "The next functional internal CLI invocation will bootstrap the "
+            "Official-authoritative shared state before backend execution.",
+            severity="warning",
         )
-    if not official_changed and not internal_changed:
-        return _receipt(
-            status="current",
-            before=generation,
-            after=generation,
-            cli_ready=True,
-            materializations=internal_materializations,
+    elif (
+        "link:personal-skills" in planned.actions
+        and planned.generation_after == planned.generation_before
+        and "repair:internal" not in planned.actions
+        and not planned.changes
+    ):
+        readiness_finding = _finding(
+            "shared_configuration.personal_skills.link_required",
+            "The internal personal Skills link is missing.",
+            severity="warning",
         )
-    if official_changed and internal_changed and not _same_semantic_change(official, internal):
-        return _receipt(
-            status="conflict",
-            before=generation,
-            after=generation,
-            cli_ready=False,
-            findings=(
-                _finding(
-                    "shared_configuration.conflict",
-                    "Official App and internal CLI diverged from the shared baseline.",
-                ),
-            ),
+    else:
+        readiness_finding = _finding(
+            "shared_configuration.reconcile_required",
+            "Shared Plugin readiness requires the listed Official-to-internal "
+            "actions; the next functional CLI preflight will apply them.",
+            severity="warning",
         )
+
     return _receipt(
         status="stale",
-        before=generation,
-        after=generation,
+        before=planned.generation_before,
+        after=planned.generation_before,
         cli_ready=False,
-        findings=(
-            _finding(
-                "shared_configuration.reconcile_required",
-                "A functional internal CLI preflight must reconcile the changed projection.",
-                severity="warning",
-            ),
-        ),
+        findings=(readiness_finding, *planned.findings),
+        source_profile=planned.source_profile,
+        target_profile=planned.target_profile,
+        actions=planned.actions,
+        changes=planned.changes,
+        remediation=SHARED_REMEDIATION_COMMANDS,
     )
 
 
@@ -3382,6 +3656,30 @@ def _official_home_from_store_root(store_root: Path) -> Path:
         if isinstance(raw, str) and raw and Path(raw).expanduser().is_absolute():
             return Path(raw).expanduser()
     return Path.home() / ".codex"
+
+
+def _print_shared_block_guidance(
+    receipt: SharedConfigurationReceipt,
+    *,
+    stream: Any,
+) -> None:
+    if receipt.cli_ready:
+        return
+    for finding in receipt.findings:
+        print(
+            "Shared configuration blocked: "
+            f"{_diagnostic_text(finding.code)}: "
+            f"{_diagnostic_text(finding.message)}",
+            file=stream,
+            flush=True,
+        )
+    for command in receipt.remediation or SHARED_REMEDIATION_COMMANDS:
+        print(
+            "Shared configuration remediation: "
+            f"{_diagnostic_text(command)}",
+            file=stream,
+            flush=True,
+        )
 
 
 def preflight_internal_shared_configuration(
@@ -3428,17 +3726,38 @@ def preflight_internal_shared_configuration(
         mode="apply",
         adapters=adapters,
     )
+    if receipt.cli_ready:
+        if receipt.generation_after != receipt.generation_before:
+            _report_progress(
+                adapters,
+                "Shared configuration synchronized: generation "
+                f"{receipt.generation_before} -> {receipt.generation_after}",
+            )
+        _report_progress(
+            adapters,
+            f"Shared configuration ready: generation {receipt.generation_after}",
+        )
     if not receipt.cli_ready:
+        _print_shared_block_guidance(receipt, stream=sys.stderr)
         codes = ", ".join(finding.code for finding in receipt.findings) or receipt.status
         raise SwitchError(f"shared_configuration.preflight_blocked: {codes}")
     return receipt
 
 
-def cmd_sync_shared(args: Any) -> None:
+def _print_shared_receipt(receipt: SharedConfigurationReceipt) -> None:
+    for line in shared_configuration_diagnostic_lines(receipt):
+        print(line)
+
+
+def _active_shared_selection(args: Any) -> tuple[Store, ProfileSelection]:
     store = make_store(args)
     if not store.active_path.exists():
         raise SwitchError(f"Active profile state not found: {store.active_path}")
-    selection = active_profile_selection(read_json(store.active_path))
+    return store, active_profile_selection(read_json(store.active_path))
+
+
+def cmd_sync_shared(args: Any) -> None:
+    store, selection = _active_shared_selection(args)
     dry_run = bool(getattr(args, "dry_run", False))
     receipt = reconcile_shared_configuration(
         store,
@@ -3446,21 +3765,7 @@ def cmd_sync_shared(args: Any) -> None:
         boundary="explicit-sync",
         mode="plan" if dry_run else "apply",
     )
-    print(f"Shared configuration source: {receipt.source_profile or 'none'}")
-    print(f"Shared configuration target: {receipt.target_profile or 'none'}")
-    print(
-        "Shared configuration generation: "
-        f"{receipt.generation_before} -> {receipt.generation_after}"
-    )
-    print(f"Shared configuration status: {receipt.status}")
-    print(f"Shared configuration pending: {receipt.pending_target or 'none'}")
-    print(f"Shared configuration conflict: {'yes' if receipt.status == 'conflict' else 'no'}")
-    print(
-        "Shared configuration materialization: "
-        + (", ".join(receipt.actions) if receipt.actions else "none")
-    )
-    for finding in receipt.findings:
-        print(f"Shared configuration finding: {finding.code} ({finding.severity})")
+    _print_shared_receipt(receipt)
     if not dry_run and not receipt.cli_ready:
         codes = ", ".join(finding.code for finding in receipt.findings) or receipt.status
         raise SwitchError(f"Shared configuration sync blocked: {codes}")

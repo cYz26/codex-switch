@@ -18,7 +18,10 @@ from codex_switch_selection import (
     ActiveProfileSelectionSnapshot,
     read_active_profile_selection_snapshot,
 )
-from codex_switch_shared_configuration import shared_configuration_report
+from codex_switch_shared_configuration import (
+    shared_configuration_diagnostic_lines,
+    shared_configuration_report,
+)
 from codex_switch_store import Store, make_store
 from codex_switch_verify import (
     collect_parity_report,
@@ -26,7 +29,6 @@ from codex_switch_verify import (
     parity_problem_messages,
     print_parity_diagnostics,
     selection_uses_shared_configuration,
-    shared_configuration_diagnostic_lines,
     shared_configuration_problem_messages,
 )
 

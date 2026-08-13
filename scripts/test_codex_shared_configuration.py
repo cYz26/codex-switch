@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import importlib
+import inspect
 import json
 import os
 import shutil
@@ -441,17 +442,18 @@ class SharedConfigurationTests(unittest.TestCase):
         self.assertIn(f'[plugins."{SECOND_SELECTOR}"]', internal_config)
         self.assertIn('model = "internal-model"', internal_config)
 
-    def test_single_internal_change_applies_at_explicit_stopped_app_boundary(self) -> None:
+    def test_explicit_sync_repairs_internal_shared_drift_without_app_write(self) -> None:
         self._reconcile()
         self._write_config(
             self.internal_home,
             profile_marker="internal",
             plugins=((SELECTOR, True), (SECOND_SELECTOR, False)),
         )
+        official_before = tree_snapshot(self.official_home)
 
         result = self._reconcile(
             boundary="explicit-sync",
-            adapters=self._adapters(app_running=False),
+            adapters=self._adapters(app_running=True),
         )
 
         self._assert_generation(
@@ -461,12 +463,11 @@ class SharedConfigurationTests(unittest.TestCase):
             after=2,
             cli_ready=True,
         )
-        official_config = (self.official_home / "config.toml").read_text()
-        self.assertIn(f'[plugins."{SECOND_SELECTOR}"]', official_config)
-        self.assertIn('model = "official-model"', official_config)
-        self.assertIn(OFFICIAL_SECRET, official_config)
+        internal_config = (self.internal_home / "config.toml").read_text()
+        self.assertNotIn(f'[plugins."{SECOND_SELECTOR}"]', internal_config)
+        self.assertEqual(official_before, tree_snapshot(self.official_home))
 
-    def test_internal_change_records_pending_state_while_app_is_running(self) -> None:
+    def test_internal_shared_drift_is_repaired_without_writing_running_app(self) -> None:
         self._reconcile()
         self._write_config(
             self.internal_home,
@@ -482,21 +483,74 @@ class SharedConfigurationTests(unittest.TestCase):
 
         self._assert_generation(
             result,
-            status="pending",
+            status="applied",
             before=1,
             after=2,
             cli_ready=True,
-            pending_target="openai-official",
         )
         self.assertEqual(official_before, tree_snapshot(self.official_home))
+        internal_config = (self.internal_home / "config.toml").read_text()
+        self.assertIn(f'[plugins."{SELECTOR}"]\nenabled = true', internal_config)
+        self.assertNotIn(f'[plugins."{SECOND_SELECTOR}"]', internal_config)
         report = self._report()
         self._assert_generation(
             report,
-            status="pending",
+            status="current",
             before=2,
             after=2,
             cli_ready=True,
-            pending_target="openai-official",
+        )
+
+    def test_read_only_report_describes_enabled_internal_drift_before_cache_proof(
+        self,
+    ) -> None:
+        self._reconcile()
+        self._write_config(
+            self.internal_home,
+            profile_marker="internal",
+            plugins=((SELECTOR, True), (SECOND_SELECTOR, True)),
+        )
+        before = tree_snapshot(
+            self.store.root,
+            self.official_home,
+            self.internal_home,
+        )
+
+        report = self._report()
+
+        self._assert_generation(
+            report,
+            status="stale",
+            before=1,
+            after=1,
+            cli_ready=False,
+        )
+        self.assertEqual(
+            ("shared_configuration.reconcile_required",),
+            finding_codes(report),
+        )
+        self.assertIn(
+            ("internal", "add", f"/plugins/{SECOND_SELECTOR}"),
+            tuple(
+                (change.profile, change.operation, change.path)
+                for change in report.changes
+            ),
+        )
+        self.assertEqual(
+            (
+                "codex-switch sync-shared --dry-run",
+                "codex-switch sync-shared",
+                "codex-switch doctor",
+            ),
+            report.remediation,
+        )
+        self.assertEqual(
+            before,
+            tree_snapshot(
+                self.store.root,
+                self.official_home,
+                self.internal_home,
+            ),
         )
 
     def test_identical_semantic_changes_coalesce_despite_formatting(self) -> None:
@@ -526,7 +580,7 @@ class SharedConfigurationTests(unittest.TestCase):
         )
         self.assertNotIn("shared_configuration.conflict", finding_codes(result))
 
-    def test_divergent_changes_report_conflict_with_zero_reconcile_writes(self) -> None:
+    def test_disjoint_drift_uses_official_snapshot_not_three_way_merge(self) -> None:
         self._reconcile()
         self._write_config(
             self.official_home,
@@ -538,26 +592,21 @@ class SharedConfigurationTests(unittest.TestCase):
             profile_marker="internal",
             plugins=((SELECTOR, True), (SECOND_SELECTOR, False)),
         )
-        before = tree_snapshot(self.store.root, self.official_home, self.internal_home)
-
         result = self._reconcile()
 
         self._assert_generation(
             result,
-            status="conflict",
+            status="applied",
             before=1,
-            after=1,
-            cli_ready=False,
+            after=2,
+            cli_ready=True,
         )
-        self.assertEqual(
-            ("shared_configuration.conflict",), finding_codes(result)
-        )
-        self.assertEqual(
-            before,
-            tree_snapshot(self.store.root, self.official_home, self.internal_home),
-        )
+        internal_config = (self.internal_home / "config.toml").read_text()
+        self.assertIn(f'[plugins."{SELECTOR}"]\nenabled = false', internal_config)
+        self.assertNotIn(f'[plugins."{SECOND_SELECTOR}"]', internal_config)
+        self.assertNotIn("shared_configuration.conflict", finding_codes(result))
 
-    def test_delete_versus_modify_reports_conflict_with_zero_writes(self) -> None:
+    def test_delete_versus_modify_auto_repairs_and_reports_secret_safe_changes(self) -> None:
         self._reconcile()
         self._write_config(
             self.official_home,
@@ -570,24 +619,247 @@ class SharedConfigurationTests(unittest.TestCase):
             profile_marker="internal",
             plugins=((SELECTOR, False),),
         )
-        before = tree_snapshot(self.store.root, self.official_home, self.internal_home)
+        official_before = tree_snapshot(self.official_home)
 
         result = self._reconcile()
 
         self._assert_generation(
             result,
-            status="conflict",
+            status="applied",
             before=1,
-            after=1,
-            cli_ready=False,
+            after=2,
+            cli_ready=True,
         )
-        self.assertEqual(
-            ("shared_configuration.conflict",), finding_codes(result)
+        change_summary = tuple(
+            (change.profile, change.operation, change.path)
+            for change in result.changes
         )
+        self.assertIn(
+            ("openai-official", "remove", f"/plugins/{SELECTOR}"),
+            change_summary,
+        )
+        self.assertIn(
+            ("internal", "disable", f"/plugins/{SELECTOR}/enabled"),
+            change_summary,
+        )
+        self.assertNotIn(OFFICIAL_SECRET, repr(result))
+        self.assertNotIn(INTERNAL_SECRET, repr(result))
+        self.assertEqual(official_before, tree_snapshot(self.official_home))
+        self.assertNotIn(
+            f'[plugins."{SELECTOR}"]',
+            (self.internal_home / "config.toml").read_text(),
+        )
+
+    def test_official_authority_repairs_overlapping_internal_drift(self) -> None:
+        self._reconcile()
+        self._write_config(
+            self.official_home,
+            profile_marker="official",
+            plugins=(),
+            include_marketplace=False,
+        )
+        self._write_config(
+            self.internal_home,
+            profile_marker="internal",
+            plugins=((SELECTOR, False),),
+        )
+        official_before = tree_snapshot(self.official_home)
+
+        result = self._reconcile()
+
+        self._assert_generation(
+            result,
+            status="applied",
+            before=1,
+            after=2,
+            cli_ready=True,
+        )
+        self.assertEqual("openai-official", result.source_profile)
+        self.assertEqual("internal", result.target_profile)
+        self.assertNotIn(
+            f'[plugins."{SELECTOR}"]',
+            (self.internal_home / "config.toml").read_text(),
+        )
+        self.assertEqual(official_before, tree_snapshot(self.official_home))
+
+    def test_internal_secret_bearing_shared_drift_is_overwritten_from_official(self) -> None:
+        self._reconcile()
+        internal_config = self.internal_home / "config.toml"
+        target_secret = "INTERNAL-TARGET-SHARED-TOKEN-MUST-BE-REMOVED"
+        internal_config.write_text(
+            internal_config.read_text().replace(
+                'source = "team/plugins"',
+                'source = "team/plugins"\napi_token = '
+                + toml_string(target_secret),
+            )
+        )
+        official_before = tree_snapshot(self.official_home)
+
+        result = self._reconcile()
+
+        self.assertEqual("applied", result.status, repr(result))
+        self.assertTrue(result.cli_ready)
+        rendered = internal_config.read_text()
+        self.assertNotIn("api_token", rendered)
+        self.assertNotIn(target_secret, rendered)
+        self.assertIn(INTERNAL_SECRET, rendered)
+        self.assertIn(
+            "/marketplaces/team/<credential-field>",
+            tuple(change.path for change in result.changes),
+        )
+        self.assertNotIn(target_secret, repr(result))
+        self.assertEqual(official_before, tree_snapshot(self.official_home))
+        persisted_store_bytes = b"\n".join(
+            path.read_bytes()
+            for path in sorted(self.store.root.rglob("*"))
+            if path.is_file()
+        )
+        self.assertNotIn(target_secret.encode(), persisted_store_bytes)
+
+    def test_secret_bearing_internal_drift_report_is_value_free_and_read_only(self) -> None:
+        self._reconcile()
+        internal_config = self.internal_home / "config.toml"
+        target_secret = "INTERNAL-REPORT-TOKEN-MUST-NOT-LEAK"
+        internal_config.write_text(
+            internal_config.read_text().replace(
+                'source = "team/plugins"',
+                'source = "team/plugins"\napi_token = '
+                + toml_string(target_secret),
+            )
+        )
+        before = tree_snapshot(self.store.root, self.official_home, self.internal_home)
+
+        report = self._report()
+
+        self.assertEqual("stale", report.status, repr(report))
+        self.assertFalse(report.cli_ready)
+        self.assertIn(
+            "/marketplaces/team/<credential-field>",
+            tuple(change.path for change in report.changes),
+        )
+        self.assertNotIn(target_secret, repr(report))
         self.assertEqual(
             before,
             tree_snapshot(self.store.root, self.official_home, self.internal_home),
         )
+
+    def test_official_removal_after_internal_drift_updates_cli_usage(self) -> None:
+        self._reconcile()
+        self._write_config(
+            self.internal_home,
+            profile_marker="internal",
+            plugins=((SELECTOR, True), (SECOND_SELECTOR, False)),
+        )
+        repaired = self._reconcile(adapters=self._adapters(app_running=True))
+        self.assertEqual("applied", repaired.status)
+        self._write_config(
+            self.official_home,
+            profile_marker="official",
+            plugins=(),
+            include_marketplace=False,
+        )
+        official_before = tree_snapshot(self.official_home)
+
+        result = self._reconcile(adapters=self._adapters(app_running=True))
+
+        self._assert_generation(
+            result,
+            status="applied",
+            before=2,
+            after=3,
+            cli_ready=True,
+        )
+        internal_config = (self.internal_home / "config.toml").read_text()
+        self.assertNotIn(f'[plugins."{SELECTOR}"]', internal_config)
+        self.assertNotIn(f'[plugins."{SECOND_SELECTOR}"]', internal_config)
+        self.assertEqual(official_before, tree_snapshot(self.official_home))
+
+    def test_legacy_pending_app_state_converges_to_internal_and_is_cleared(self) -> None:
+        first = self._reconcile()
+        state_path = (
+            self.store.root / "shared-configuration" / "state.json"
+        )
+        state = json.loads(state_path.read_text())
+        state["pending_target"] = "openai-official"
+        shared_configuration_module().write_json(state_path, state)
+        self._write_config(
+            self.internal_home,
+            profile_marker="internal",
+            plugins=((SELECTOR, True), (SECOND_SELECTOR, False)),
+        )
+        official_before = tree_snapshot(self.official_home)
+
+        result = self._reconcile(
+            adapters=self._adapters(app_running=True),
+        )
+
+        self.assertEqual("applied", result.status, repr(result))
+        self._assert_generation(
+            result,
+            status="applied",
+            before=first.generation_after,
+            after=first.generation_after + 1,
+            cli_ready=True,
+        )
+        self.assertIn(
+            "shared_configuration.legacy_pending_repaired",
+            finding_codes(result),
+        )
+        self.assertIsNone(json.loads(state_path.read_text())["pending_target"])
+        self.assertNotIn(
+            f'[plugins."{SECOND_SELECTOR}"]',
+            (self.internal_home / "config.toml").read_text(),
+        )
+        self.assertEqual(official_before, tree_snapshot(self.official_home))
+
+    def test_reverse_recovery_intent_blocks_without_writing_official(self) -> None:
+        self._reconcile()
+        module = shared_configuration_module()
+        official_config = self.official_home / "config.toml"
+        official_before = tree_snapshot(self.official_home)
+        intent = {
+            "schema_version": module.PENDING_MATERIALIZATION_SCHEMA,
+            "source_profile": "internal",
+            "target_profile": "openai-official",
+            "target": {
+                "path": str(official_config),
+                "before": module._snapshot_json(
+                    module._config_snapshot(official_config)
+                ),
+            },
+            "selectors": [SELECTOR],
+            "remove_empty_root": False,
+        }
+        intent["intent_sha256"] = module._materialization_intent_sha256(intent)
+        intent_path = (
+            self.store.root
+            / "shared-configuration"
+            / "pending-materialization.json"
+        )
+        module.write_json(intent_path, intent)
+
+        result = self._reconcile()
+
+        self.assertEqual("blocked", result.status)
+        self.assertFalse(result.cli_ready)
+        self.assertEqual(
+            ("shared_configuration.pending_recovery",),
+            finding_codes(result),
+        )
+        self.assertEqual(official_before, tree_snapshot(self.official_home))
+        self.assertTrue(intent_path.is_file())
+
+    def test_public_reconcile_has_no_manual_source_choice(self) -> None:
+        module = shared_configuration_module()
+
+        parameters = inspect.signature(
+            module.reconcile_shared_configuration
+        ).parameters
+
+        self.assertNotIn("resolution_source", parameters)
+        self.assertNotIn("expected_generation", parameters)
+        self.assertNotIn("expected_conflict_digest", parameters)
+        self.assertFalse(hasattr(module, "cmd_resolve_shared"))
 
     def test_authoritative_disable_is_not_revived_from_internal_baseline(self) -> None:
         self._reconcile()
@@ -669,6 +941,8 @@ class SharedConfigurationTests(unittest.TestCase):
         self.assertEqual(
             ("shared_configuration.secret_field",), finding_codes(result)
         )
+        self.assertEqual("openai-official", result.source_profile)
+        self.assertEqual("internal", result.target_profile)
         self.assertEqual(
             before,
             tree_snapshot(self.store.root, self.official_home, self.internal_home),
@@ -780,38 +1054,30 @@ class SharedConfigurationTests(unittest.TestCase):
         self.assertIn("[foreign_edit]", internal_config.read_text())
         self.assertIn("preserve_me = true", internal_config.read_text())
 
-    def test_commit_time_running_app_preserves_pending_official_apply(self) -> None:
+    def test_running_app_is_not_consulted_when_repairing_internal_target(self) -> None:
         self._reconcile()
         internal_config = self.internal_home / "config.toml"
         internal_config.write_text(
             internal_config.read_text().replace("enabled = true", "enabled = false")
         )
-        pending = self._reconcile(adapters=self._adapters(app_running=True))
-        self.assertEqual("pending", pending.status)
         official_before = tree_snapshot(self.official_home)
-        app_checks: list[int] = []
 
         def app_is_running(store: Store, selection: ProfileSelection) -> bool:
             del store, selection
-            app_checks.append(len(app_checks) + 1)
-            return len(app_checks) >= 3
+            raise AssertionError("Official App state is outside the internal target write set")
 
         result = self._reconcile(
             boundary="explicit-sync",
             adapters=self._adapters(app_is_running=app_is_running),
         )
 
-        self.assertGreaterEqual(len(app_checks), 3)
-        self.assertEqual("pending", result.status)
+        self.assertEqual("applied", result.status)
         self.assertTrue(result.cli_ready)
-        self.assertEqual("openai-official", result.pending_target)
-        self.assertIn(
-            "shared_configuration.pending_app_apply",
-            finding_codes(result),
-        )
+        self.assertIsNone(result.pending_target)
+        self.assertIn("enabled = true", internal_config.read_text())
         self.assertEqual(official_before, tree_snapshot(self.official_home))
 
-    def test_official_app_recheck_blocks_before_target_materialization(self) -> None:
+    def test_running_app_does_not_block_internal_materialization(self) -> None:
         self._reconcile()
         internal_config = self.internal_home / "config.toml"
         internal_config.write_text(
@@ -820,26 +1086,21 @@ class SharedConfigurationTests(unittest.TestCase):
                 'source = "team/plugins-next"',
             )
         )
-        pending = self._reconcile(adapters=self._adapters(app_running=True))
-        self.assertEqual("pending", pending.status)
         self.materialize_calls.clear()
         official_before = tree_snapshot(self.official_home)
-        app_checks: list[int] = []
 
         def app_is_running(store: Store, selection: ProfileSelection) -> bool:
             del store, selection
-            app_checks.append(len(app_checks) + 1)
-            return len(app_checks) >= 3
+            raise AssertionError("Official App state must not gate an internal materialization")
 
         result = self._reconcile(
             boundary="explicit-sync",
             adapters=self._adapters(app_is_running=app_is_running),
         )
 
-        self.assertEqual("pending", result.status)
-        self.assertEqual("openai-official", result.pending_target)
-        self.assertEqual([], self.materialize_calls)
-        self.assertGreaterEqual(len(app_checks), 3)
+        self.assertEqual("applied", result.status)
+        self.assertIsNone(result.pending_target)
+        self.assertGreaterEqual(len(self.materialize_calls), 1)
         self.assertEqual(official_before, tree_snapshot(self.official_home))
         self.assertFalse(
             (
@@ -849,52 +1110,15 @@ class SharedConfigurationTests(unittest.TestCase):
             ).exists()
         )
 
-    def test_default_stopped_app_proof_fails_closed_on_inventory_or_any_app_process(self) -> None:
+    def test_shared_adapters_do_not_require_an_app_process_probe(self) -> None:
         module = shared_configuration_module()
-        runtime = SimpleNamespace(home=self.official_home, binding=None)
-        process_cases = (
-            ((1, ""), (), "unreadable inventory"),
-            (
-                (0, "fixture process inventory"),
-                (SimpleNamespace(kind="desktop"),),
-                "Desktop main process",
-            ),
-            (
-                (0, "fixture process inventory"),
-                (SimpleNamespace(kind="app-server"),),
-                "mismatched app-server",
-            ),
-        )
-        for ps_result, processes, label in process_cases:
-            with self.subTest(label=label):
-                with (
-                    patch(
-                        "codex_switch_plugins.profile_plugin_runtime",
-                        return_value=runtime,
-                    ),
-                    patch(
-                        "codex_switch_plugins.running_target_app_server_pids",
-                        return_value=[],
-                    ),
-                    patch.object(
-                        module,
-                        "run_quiet",
-                        return_value=ps_result,
-                        create=True,
-                    ),
-                    patch.object(
-                        module,
-                        "running_codex_processes",
-                        return_value=list(processes),
-                        create=True,
-                    ),
-                ):
-                    self.assertTrue(
-                        module._default_app_is_running(
-                            self.store,
-                            self.selection,
-                        )
-                    )
+
+        parameters = inspect.signature(
+            module.SharedConfigurationAdapters
+        ).parameters
+
+        self.assertNotIn("app_is_running", parameters)
+        self.assertFalse(hasattr(module, "_default_app_is_running"))
 
     def test_source_change_before_commit_fails_without_mixed_generation(self) -> None:
         internal_before = (self.internal_home / "config.toml").read_bytes()
@@ -2005,6 +2229,39 @@ class SharedConfigurationTests(unittest.TestCase):
             cli_ready=True,
         )
         self.assertEqual(first, second)
+        self.assertEqual(
+            before,
+            tree_snapshot(self.store.root, self.official_home, self.internal_home),
+        )
+
+    def test_missing_shared_state_report_is_not_ready_and_describes_bootstrap(self) -> None:
+        before = tree_snapshot(self.store.root, self.official_home, self.internal_home)
+
+        report = self._report()
+
+        self._assert_generation(
+            report,
+            status="stale",
+            before=0,
+            after=0,
+            cli_ready=False,
+        )
+        self.assertEqual("openai-official", report.source_profile)
+        self.assertEqual("internal", report.target_profile)
+        self.assertIn("bootstrap", report.actions)
+        self.assertIn("materialize:internal", report.actions)
+        self.assertEqual(
+            (
+                "codex-switch sync-shared --dry-run",
+                "codex-switch sync-shared",
+                "codex-switch doctor",
+            ),
+            report.remediation,
+        )
+        self.assertIn(
+            "shared_configuration.bootstrap_required",
+            finding_codes(report),
+        )
         self.assertEqual(
             before,
             tree_snapshot(self.store.root, self.official_home, self.internal_home),

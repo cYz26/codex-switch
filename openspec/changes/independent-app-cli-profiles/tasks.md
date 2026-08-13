@@ -172,7 +172,8 @@
 
 - [x] 11.1 Add public-wrapper RED tests proving `codex-switch split` routes to
   the existing internal-CLI/official-App workflow, preserves ordinary wrapper
-  self-update and internal update checks, supports `--dry-run`, and rejects
+  self-update and internal update checks on real apply, keeps `--dry-run`
+  zero-write/zero-network by bypassing both update layers, and rejects
   split-scoped options outside the shortcut plus App-profile overrides on the
   fixed preset.
 - [x] 11.2 Add RED coverage proving `split --keep-version` suppresses both
@@ -290,6 +291,95 @@
   current grant names only the `v0.1.14` repair and does not authorize the
   additional `v0.1.15` tag or publication target.
 
+## 16. Bounded Release-Recreation Propagation Repair
+
+- [x] 16.1 Add public `reconcile_release_assets` RED coverage for the exact
+  post-delete consistency window: typed `Release.tag_name already exists` or
+  server/transport creation failure with a still-missing readback later
+  succeeds; successful creation with delayed visibility performs readback-only
+  retries. Add terminal guards for permission/rate-limit/unknown validation,
+  published/non-empty state, tag movement, and bounded retry exhaustion.
+- [x] 16.2 Add a typed release-create failure classification at the GitHub
+  adapter seam and implement at most five state-confirming create or readback
+  attempts with deterministic 1/2/4/8 second production backoff. Revalidate the
+  immutable tag and missing Release before every repeated create, accept only
+  one empty draft readback, never recreate after create success, and preserve
+  all starter-ID, checksum, no-`--clobber`, and conflict guards.
+- [x] 16.3 Run the focused recreation matrix, complete Python 3.12
+  update/release and adjacent profile suites, Python/Bash/JSON checks, strict
+  active/all OpenSpec, DevFlow workflow validation, package identity where
+  affected, and `git diff --check`. Record the existing INC-018 migration drift
+  without applying it and complete an independent release-path review.
+- [ ] 16.4 Update the ledger, namespaced state, and verification record with
+  RED/GREEN, exact changed files, validation, residual risks, the resolved
+  `614cc025...` authority, and the remote prestate. Commit and fast-forward push
+  only the verified repair/control-plane write set to `origin/main`.
+- [ ] 16.5 Monitor the push-triggered Auto Release through terminal state.
+  Require `origin/main` plus the atomic `v0.1.15` tag to resolve to the release
+  commit, require published `v0.1.14` and `v0.1.15` Releases with exactly the
+  canonical three assets, and independently verify each asset size/checksum
+  against deterministic manifests before claiming publication complete.
+
+## 17. Official-Authoritative Shared Plugin Readiness
+
+- [x] 17.1 Add public `reconcile_shared_configuration` RED coverage proving
+  Official App Plugin/Skill desired state is authoritative: Official-only,
+  internal-only, disjoint, overlapping, delete-versus-modify, and legacy
+  pending-App drift all converge only toward the internal CLI without writing
+  the Official App. Preserve unrelated internal runtime configuration and
+  report secret-safe changed operations.
+- [x] 17.2 Replace symmetric App/CLI source selection with one deep
+  Official-to-internal readiness implementation. Automatically materialize and
+  render every repairable internal drift, retain target CAS, source recheck,
+  crash recovery, backend-owned cache lifecycle, exact Plugin identity
+  attestation, and zero-write/zero-network current-generation behavior.
+- [x] 17.3 Add public functional-preflight RED/GREEN coverage proving a
+  repairable mismatch synchronizes before backend `execve`, emits bounded
+  progress plus a verified-generation result, and starts the backend exactly
+  once. Unsafe failures preserve last-known-good state, never execute the
+  backend, and print the finding cause plus exact `sync-shared --dry-run`,
+  `sync-shared`, and Doctor remediation instead of a bare error code.
+- [x] 17.4 Make status, Doctor, verify, and `sync-shared` render one structured,
+  secret-safe report with source/target, changed operations, automatic actions,
+  readiness, and remediation. Keep diagnostics read-only, help/version bypassed,
+  and remove the unshipped interactive source-choice/`resolve-shared` surface.
+- [x] 17.5 Update README, SKILL, proposal/design/spec, ledger, namespaced state,
+  and verification evidence with Official authority, internal derived-state
+  semantics, explicit non-shared internal configuration preservation, and the
+  absence of a watcher, reverse automatic sync, direct cache deletion, or broad
+  configuration sharing.
+- [x] 17.6 Run focused and adjacent shared/profile/runtime suites, complete
+  Python 3.12 profile/update-release suites where affected, Python/Bash/JSON
+  checks, package identity, strict active/all OpenSpec, DevFlow workflow,
+  plugin-eval, and `git diff --check`. Complete an independent source review
+  without a live functional backend, install, App mutation, Git/release effect,
+  archive, migration, dependency, cleanup, credential, or destructive effect.
+
+## 18. Split-Triggered Shared Readiness
+
+- [x] 18.1 Add public-wrapper RED coverage proving real `split` and
+  `internal --app-profile official` invoke shared synchronization exactly once
+  after switch commit and before Plugin repair, verify, Doctor, or status.
+  Prove a synchronization failure returns its code, stops every later step,
+  and prints exact preview/apply/Doctor remediation. Prove both dry-run forms
+  name the pending readiness boundary without invoking shared apply, installed
+  self-update, network access, or any write.
+- [x] 18.2 Implement the post-switch readiness step by routing through the
+  existing `sync-shared` command rather than duplicating reconciliation in the
+  wrapper or folding backend effects into the profile transaction. Keep the
+  functional managed-CLI preflight as the fallback for later Official changes
+  and older installed wrappers.
+- [x] 18.3 Update README, SKILL, proposal/design/spec, ledger, namespaced state,
+  and verification evidence with exact ordering, dry-run, failure, recovery,
+  and authority boundaries.
+- [x] 18.4 Run focused wrapper/shared tests, affected full Python 3.12 suites,
+  Bash/Python/static/JSON checks, isolated package identity and behavior,
+  strict active/all OpenSpec, DevFlow workflow, plugin-eval, and
+  `git diff --check`. Complete a fresh review without a live split,
+  functional backend, install, App/config/cache mutation, migration,
+  dependency, Git/release effect, archive, cleanup, credential, or destructive
+  effect.
+
 ## Execution Policy
 
 The user's implementation request authorizes the source, test, documentation,
@@ -336,6 +426,22 @@ changes only. It does not authorize a live GitHub Release deletion/upload,
 workflow rerun, DevFlow migration apply, dependency change, commit, push,
 archive, or cleanup.
 
+The user's 2026-08-12 Official-authoritative repair request supersedes the
+unshipped symmetric shared-conflict draft and authorizes task 17 source, tests,
+README/SKILL, OpenSpec, ledger, namespaced-state, and verification-record
+writes. It does not authorize a live functional backend command, installation,
+App stop/restart/mutation, either live profile/config/cache mutation, project
+migration, dependency change, consumption of task-16 Git/Release authority,
+commit, push, release, archive, cleanup, credential, or destructive work.
+
+The user's 2026-08-12 split-lifecycle refinement additionally authorizes task
+18 source, tests, README/SKILL, OpenSpec, ledger, namespaced-state, and
+verification-record writes. It does not authorize running a live split or
+functional backend, installing source, stopping/restarting/mutating the App,
+changing live config or Plugin caches, project migration, dependency change,
+consuming task-16 Git/Release authority, commit, push, release, archive,
+cleanup, credential, or destructive work.
+
 The first submit authority was consumed by commit `85dc960` and Auto Release
 run `31500533015`. The failed acceptance result keeps task 15 open for the
 bounded source/test/control-plane repair in 15.4-15.6, but a second commit,
@@ -344,3 +450,12 @@ push, workflow rerun, or live Release mutation requires a new Human Gate.
 The second submit authority permits the repair commit/push and `v0.1.14`
 reconciliation. It does not by itself authorize the subsequently discovered
 `v0.1.15` release commit, tag, or publication selected by the same workflow.
+
+The user's 2026-08-12 `授权发布` decision resolves authority gate
+`614cc0253ca0735cf2af34acc60564687b7b081de9fa2e417045ea447a851d38`
+for task 16 source/test/OpenSpec/control-plane writes, one verified repair
+commit and fast-forward push to `origin/main`, the push-triggered Auto Release
+mutation required to restore `v0.1.14`, and the already-planned atomic
+`v0.1.15` tag and Release publication. It does not authorize archive, project
+migration, dependency/credential changes, manual broad Release edits, force
+push, cleanup, or unrelated runtime effects.

@@ -779,7 +779,19 @@ class BoundedVerificationTests(unittest.TestCase):
                 runtime_observation=observation,
             )
 
-            self.assertEqual([], problems)
+            rendered = "\n".join(problems)
+            self.assertIn(
+                "shared_configuration.bootstrap_required",
+                rendered,
+            )
+            self.assertIn(
+                "Shared configuration source: openai-official",
+                rendered,
+            )
+            self.assertIn("Shared configuration target: internal", rendered)
+            self.assertIn("Shared configuration CLI ready: no", rendered)
+            self.assertIn("codex-switch sync-shared --dry-run", rendered)
+            self.assertNotIn("runtime binding", rendered.lower())
 
     def test_malformed_active_selection_blocks_all_runtime_smokes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

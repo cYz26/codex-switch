@@ -310,13 +310,11 @@ class SharedMaterializationTest(unittest.TestCase):
         self,
         materializer: FakeMaterializer,
         *,
-        running: bool = False,
         before_commit=None,
     ):
         SharedConfigurationAdapters, _ = _shared_api()
         return SharedConfigurationAdapters(
             materialize_plugins=materializer,
-            app_is_running=lambda store, selection: running,
             before_commit=(
                 before_commit
                 if before_commit is not None

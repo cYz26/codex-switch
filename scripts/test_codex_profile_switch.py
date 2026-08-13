@@ -2074,7 +2074,40 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn("self-update", result.stderr)
             self.assertEqual("0.1.1\n", (root / "lib" / "current" / "VERSION").read_text())
 
-    def test_local_wrapper_split_preserves_normal_self_update(self) -> None:
+    def test_local_wrapper_split_previews_skip_self_update_and_preserve_install(
+        self,
+    ) -> None:
+        command_forms = (
+            ("split", "--dry-run"),
+            ("internal", "--app-profile", "official", "--dry-run"),
+        )
+
+        for command_form in command_forms:
+            with self.subTest(command_form=command_form):
+                temp_dir, root = self.make_workspace()
+                with temp_dir:
+                    local_wrapper = self.make_installed_wrapper(root)
+                    tarball = self.make_remote_wrapper_tarball(root)
+                    env = self.self_update_env(root, tarball)
+
+                    result = subprocess.run(
+                        [str(local_wrapper), *command_form],
+                        check=True,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                    )
+
+                    self.assertNotIn("synced-wrapper", result.stdout)
+                    self.assertNotIn("self-update", result.stderr)
+                    self.assertIn("old-switcher:switch internal --dry-run", result.stdout)
+                    self.assertEqual(
+                        "0.1.1\n",
+                        (root / "lib" / "current" / "VERSION").read_text(),
+                    )
+
+    def test_local_wrapper_split_apply_preserves_normal_self_update(self) -> None:
         temp_dir, root = self.make_workspace()
         with temp_dir:
             local_wrapper = self.make_installed_wrapper(root)
@@ -2082,7 +2115,7 @@ class CodexProfileSwitchTests(unittest.TestCase):
             env = self.self_update_env(root, tarball)
 
             result = subprocess.run(
-                [str(local_wrapper), "split", "--dry-run"],
+                [str(local_wrapper), "split"],
                 check=True,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -2090,9 +2123,15 @@ class CodexProfileSwitchTests(unittest.TestCase):
                 env=env,
             )
 
-            self.assertIn("synced-wrapper:split --dry-run", result.stdout)
-            self.assertIn("codex-switch self-update: checking latest release", result.stderr)
-            self.assertEqual("9.9.9\n", (root / "lib" / "current" / "VERSION").read_text())
+            self.assertIn("synced-wrapper:split", result.stdout)
+            self.assertIn(
+                "codex-switch self-update: checking latest release",
+                result.stderr,
+            )
+            self.assertEqual(
+                "9.9.9\n",
+                (root / "lib" / "current" / "VERSION").read_text(),
+            )
 
     def test_local_wrapper_split_keep_version_skips_self_update_and_retains_workflow(
         self,
@@ -9848,9 +9887,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertEqual("internal", active["cli_profile"])
             self.assertEqual("openai-official", active["app_profile"])
             forwarded = [json.loads(line) for line in switch_args_log.read_text().splitlines()]
-            self.assertEqual(2, len(forwarded))
-            for args in forwarded:
+            self.assertEqual(3, len(forwarded))
+            for args in forwarded[:2]:
                 self.assertEqual("official", args[args.index("--app-profile") + 1])
+            self.assertIn("sync-shared", forwarded[2])
+            self.assertNotIn("--app-profile", forwarded[2])
+            self.assertIn("== Shared configuration ==", output)
 
     def test_wrapper_apply_progress_is_visible_before_switcher_exits(self) -> None:
         temp_dir, root = self.make_workspace()

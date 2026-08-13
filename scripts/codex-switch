@@ -41,7 +41,7 @@ Usage:
 
 One-key commands:
   internal                 Auto-update internal CLI if needed, then switch.
-  split                    Use internal CLI with the official App.
+  split                    Use internal CLI with the official App and synchronize shared state.
   official                 Switch to the official profile after a dry-run plan.
   check-update [profile]   Read-only Codex CLI update check.
   update-internal          Install or update the internal Codex CLI.
@@ -67,7 +67,7 @@ Global options:
 Switch options for internal/split/official:
   --keep-version              Split only: skip codex-switch and internal updates.
   --app-profile <profile>      Select a distinct App profile. Supported split: internal CLI + official App.
-  --dry-run                    Only print the switch plan.
+  --dry-run                    Only print the switch and shared-readiness plan.
   --snapshot                   Use whole-file config snapshot mode.
   --shared-config-base <name>  Rebuild shared config from a stored profile.
   --skip-launchctl             Write LaunchAgent but do not call launchctl.
@@ -163,6 +163,52 @@ normalize_split_command_args() {
   if [[ "$SPLIT_KEEP_VERSION" == 1 ]]; then
     SPLIT_COMMAND_ARGS+=(--skip-update-check)
   fi
+}
+
+split_preview_requested() {
+  local command="$1"
+  shift
+  local arg app_profile="" dry_run=0 expects_value="" passthrough=0
+  case "$command" in
+    split|internal|i) ;;
+    *) return 1 ;;
+  esac
+  while (($#)); do
+    arg="$1"
+    shift
+    if [[ "$passthrough" == 1 ]]; then
+      continue
+    fi
+    if [[ -n "$expects_value" ]]; then
+      if [[ "$expects_value" == "app-profile" ]]; then
+        app_profile="$arg"
+      fi
+      expects_value=""
+      continue
+    fi
+    case "$arg" in
+      --dry-run)
+        dry_run=1
+        ;;
+      --app-profile)
+        expects_value="app-profile"
+        ;;
+      --app-profile=*)
+        app_profile="${arg#--app-profile=}"
+        ;;
+      --shared-config-base|--config-mode|--exec-smoke)
+        expects_value="ignored"
+        ;;
+      --)
+        passthrough=1
+        ;;
+    esac
+  done
+  [[ "$dry_run" == 1 ]] || return 1
+  if [[ "$command" == "split" ]]; then
+    return 0
+  fi
+  is_official_profile_alias "$app_profile"
 }
 
 python_candidate_path() {
@@ -954,13 +1000,23 @@ run_switcher() {
   fi
 }
 
+is_official_profile_alias() {
+  case "$1" in
+    official|openai|openai-official|o) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 normalize_profile() {
   case "$1" in
     internal|i) printf '%s\n' "internal" ;;
-    official|openai|openai-official|o) printf '%s\n' "openai-official" ;;
     *)
-      echo "Unknown profile alias: $1" >&2
-      exit 2
+      if is_official_profile_alias "$1"; then
+        printf '%s\n' "openai-official"
+      else
+        echo "Unknown profile alias: $1" >&2
+        exit 2
+      fi
       ;;
   esac
 }
@@ -971,6 +1027,13 @@ profile_command_alias() {
     openai-official) printf '%s\n' "official" ;;
     *) printf '%s\n' "$1" ;;
   esac
+}
+
+is_supported_split_request() {
+  local profile="$1"
+  local app_profile_override="$2"
+  [[ "$profile" == "internal" ]] || return 1
+  is_official_profile_alias "$app_profile_override"
 }
 
 print_section() {
@@ -1135,7 +1198,12 @@ print_final_result() {
       echo "- Verify active state: codex-switch status"
       ;;
     "ACTION REQUIRED")
-      if [[ "$failed_step" == "plugin repair" ]]; then
+      if [[ "$failed_step" == "shared synchronization" ]]; then
+        echo "- Review the Shared configuration section above and fix the reported cause."
+        echo "- Preview shared synchronization: codex-switch sync-shared --dry-run"
+        echo "- Re-run shared synchronization: codex-switch sync-shared"
+        echo "- Re-run doctor: codex-switch doctor"
+      elif [[ "$failed_step" == "plugin repair" ]]; then
         echo "- Review the Plugin repair section above and fix the install error."
         echo "- If it reports a running ChatGPT app-server, quit ChatGPT completely before retrying."
         echo "- Re-run plugin repair: codex-switch repair-plugins $profile"
@@ -1235,6 +1303,10 @@ switch_profile() {
       --snapshot)
         switch_args+=(--config-mode snapshot)
         ;;
+      --app-profile=*)
+        app_profile_override="${1#--app-profile=}"
+        switch_args+=("$1")
+        ;;
       --shared-config-base|--config-mode|--app-profile)
         if [[ $# -lt 2 ]]; then
           echo "$1 requires a value" >&2
@@ -1269,6 +1341,11 @@ switch_profile() {
     return "$plan_status"
   fi
   if [[ "$dry_run" == 1 ]]; then
+    if is_supported_split_request "$profile" "$app_profile_override"; then
+      print_section "Shared configuration"
+      echo "Shared configuration: will synchronize openai-official -> internal after a successful switch."
+      echo "Dry-run: shared synchronization was not applied."
+    fi
     print_final_result "$profile" "DRY RUN OK" "skipped" "not-run" "not-run" "not-run" "" "$app_profile_override"
     return
   fi
@@ -1312,6 +1389,18 @@ switch_profile() {
     switch_status=$?
     print_final_result "$profile" "FAILED" "$switch_status" "not-run" "not-run" "not-run" "switch" "$app_profile_override"
     return "$switch_status"
+  fi
+
+  if is_supported_split_request "$profile" "$app_profile_override"; then
+    print_section "Shared configuration"
+    local shared_sync_status=0
+    if run_switcher sync-shared; then
+      shared_sync_status=0
+    else
+      shared_sync_status=$?
+      print_final_result "$profile" "ACTION REQUIRED" "succeeded" "not-run" "not-run" "not-run" "shared synchronization" "$app_profile_override"
+      return "$shared_sync_status"
+    fi
   fi
 
   local repair_status="skipped"
@@ -2750,6 +2839,10 @@ if [[ "$cmd" == "split" ]]; then
   if [[ "$SPLIT_KEEP_VERSION" == 1 ]]; then
     SKIP_SELF_UPDATE=1
   fi
+fi
+
+if split_preview_requested "$cmd" "$@"; then
+  SKIP_SELF_UPDATE=1
 fi
 
 case "$cmd" in

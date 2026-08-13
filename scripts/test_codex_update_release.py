@@ -1559,6 +1559,46 @@ class DisappearingStarterReleaseGitHub(HiddenStarterReleaseGitHub):
             self.assets["unexpected.bin"] = b"unexpected"
 
 
+class RetryingDisappearingStarterReleaseGitHub(
+    DisappearingStarterReleaseGitHub
+):
+    def __init__(
+        self,
+        *,
+        retryable_create_failures: int = 0,
+        post_success_missing_reads: int = 0,
+    ) -> None:
+        super().__init__()
+        self.retryable_create_failures = retryable_create_failures
+        self.post_success_missing_reads = post_success_missing_reads
+        self.create_succeeded = False
+
+    def create_release(self, tag: str) -> None:
+        self.calls.append(("create", tag))
+        if self.retryable_create_failures > 0:
+            self.retryable_create_failures -= 1
+            raise release_auto.ReleaseCreateRetryable(
+                "tag_name_exists",
+                "Release.tag_name already exists",
+            )
+        if self.exists:
+            raise AssertionError("release already exists")
+        self.exists = True
+        self.draft = True
+        self.create_succeeded = True
+
+    def inspect_release(self, tag: str):
+        if self.create_succeeded and self.post_success_missing_reads > 0:
+            self.calls.append(("inspect", tag))
+            self.post_success_missing_reads -= 1
+            return release_auto.ReleaseSnapshot(
+                exists=False,
+                assets=(),
+                draft=False,
+            )
+        return super().inspect_release(tag)
+
+
 class CodexReleasePlannerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1973,6 +2013,221 @@ class CodexReleasePlannerTests(unittest.TestCase):
             any(call[0] in {"upload", "publish"} for call in github.calls)
         )
 
+    def test_reconcile_retries_typed_tag_name_exists_recreation(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = RetryingDisappearingStarterReleaseGitHub(
+            retryable_create_failures=1
+        )
+        checks = 0
+
+        def check_tag_identity() -> None:
+            nonlocal checks
+            checks += 1
+
+        with mock.patch("time.sleep") as sleep:
+            receipt = release_auto.reconcile_release_assets(
+                tag="v1.0.1",
+                release_commit=self.base_commit,
+                tag_commit=self.base_commit,
+                assets=assets,
+                github=github,
+                tag_identity_check=check_tag_identity,
+            )
+
+        self.assertEqual("published", receipt["outcome"])
+        self.assertEqual(
+            [("create", "v1.0.1"), ("create", "v1.0.1")],
+            [call for call in github.calls if call[0] == "create"],
+        )
+        self.assertEqual([mock.call(1.0)], sleep.call_args_list)
+        self.assertGreaterEqual(checks, 4)
+
+    def test_reconcile_accepts_empty_draft_after_retryable_create_error(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+
+        class AcceptedButErroredGitHub(
+            RetryingDisappearingStarterReleaseGitHub
+        ):
+            def create_release(inner_self, tag: str) -> None:
+                inner_self.calls.append(("create", tag))
+                inner_self.exists = True
+                inner_self.draft = True
+                raise release_auto.ReleaseCreateRetryable(
+                    "transport_error",
+                    "connection force closed after server accepted release",
+                )
+
+        github = AcceptedButErroredGitHub()
+
+        with mock.patch("time.sleep") as sleep:
+            receipt = release_auto.reconcile_release_assets(
+                tag="v1.0.1",
+                release_commit=self.base_commit,
+                tag_commit=self.base_commit,
+                assets=assets,
+                github=github,
+            )
+
+        self.assertEqual("published", receipt["outcome"])
+        self.assertEqual(
+            [("create", "v1.0.1")],
+            [call for call in github.calls if call[0] == "create"],
+        )
+        sleep.assert_not_called()
+
+    def test_reconcile_waits_for_successful_create_visibility_without_recreating(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = RetryingDisappearingStarterReleaseGitHub(
+            post_success_missing_reads=2
+        )
+
+        with mock.patch("time.sleep") as sleep:
+            receipt = release_auto.reconcile_release_assets(
+                tag="v1.0.1",
+                release_commit=self.base_commit,
+                tag_commit=self.base_commit,
+                assets=assets,
+                github=github,
+            )
+
+        self.assertEqual("published", receipt["outcome"])
+        self.assertEqual(
+            [("create", "v1.0.1")],
+            [call for call in github.calls if call[0] == "create"],
+        )
+        self.assertEqual(
+            [mock.call(1.0), mock.call(2.0)],
+            sleep.call_args_list,
+        )
+
+    def test_reconcile_rechecks_tag_before_retrying_recreation(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = RetryingDisappearingStarterReleaseGitHub(
+            retryable_create_failures=1
+        )
+        checks = 0
+
+        def check_tag_identity() -> None:
+            nonlocal checks
+            checks += 1
+            if checks == 4:
+                raise release_auto.ReleaseConflict("remote tag moved")
+
+        with mock.patch("time.sleep") as sleep:
+            with self.assertRaises(release_auto.ReleaseConflict) as caught:
+                release_auto.reconcile_release_assets(
+                    tag="v1.0.1",
+                    release_commit=self.base_commit,
+                    tag_commit=self.base_commit,
+                    assets=assets,
+                    github=github,
+                    tag_identity_check=check_tag_identity,
+                )
+
+        self.assertIn("remote tag moved", str(caught.exception))
+        self.assertEqual(
+            [("create", "v1.0.1")],
+            [call for call in github.calls if call[0] == "create"],
+        )
+        self.assertEqual([mock.call(1.0)], sleep.call_args_list)
+        self.assertFalse(
+            any(call[0] in {"upload", "publish"} for call in github.calls)
+        )
+
+    def test_reconcile_rechecks_tag_during_successful_create_readback(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = RetryingDisappearingStarterReleaseGitHub(
+            post_success_missing_reads=2
+        )
+        checks = 0
+
+        def check_tag_identity() -> None:
+            nonlocal checks
+            checks += 1
+            if checks == 4:
+                raise release_auto.ReleaseConflict("remote tag moved")
+
+        with mock.patch("time.sleep") as sleep:
+            with self.assertRaises(release_auto.ReleaseConflict) as caught:
+                release_auto.reconcile_release_assets(
+                    tag="v1.0.1",
+                    release_commit=self.base_commit,
+                    tag_commit=self.base_commit,
+                    assets=assets,
+                    github=github,
+                    tag_identity_check=check_tag_identity,
+                )
+
+        self.assertIn("remote tag moved", str(caught.exception))
+        self.assertEqual(
+            [("create", "v1.0.1")],
+            [call for call in github.calls if call[0] == "create"],
+        )
+        self.assertEqual([mock.call(1.0)], sleep.call_args_list)
+        self.assertFalse(
+            any(call[0] in {"upload", "publish"} for call in github.calls)
+        )
+
+    def test_reconcile_rejects_untyped_recreation_failure_without_retry(
+        self,
+    ) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = DisappearingStarterReleaseGitHub(
+            recreate_result="failure"
+        )
+
+        with mock.patch("time.sleep") as sleep:
+            with self.assertRaises(release_auto.ReleaseError) as caught:
+                release_auto.reconcile_release_assets(
+                    tag="v1.0.1",
+                    release_commit=self.base_commit,
+                    tag_commit=self.base_commit,
+                    assets=assets,
+                    github=github,
+                )
+
+        self.assertIn("injected recreation failure", str(caught.exception))
+        self.assertEqual(
+            [("create", "v1.0.1")],
+            [call for call in github.calls if call[0] == "create"],
+        )
+        sleep.assert_not_called()
+
+    def test_reconcile_stops_after_recreation_retry_exhaustion(self) -> None:
+        assets, _manifest = self._asset_fixture()
+        github = RetryingDisappearingStarterReleaseGitHub(
+            retryable_create_failures=10
+        )
+
+        with mock.patch("time.sleep") as sleep:
+            with self.assertRaises(release_auto.ReleaseError) as caught:
+                release_auto.reconcile_release_assets(
+                    tag="v1.0.1",
+                    release_commit=self.base_commit,
+                    tag_commit=self.base_commit,
+                    assets=assets,
+                    github=github,
+                )
+
+        self.assertIn("after 5 attempts", str(caught.exception))
+        self.assertEqual(
+            5,
+            len([call for call in github.calls if call[0] == "create"]),
+        )
+        self.assertEqual(
+            [mock.call(1.0), mock.call(2.0), mock.call(4.0), mock.call(8.0)],
+            sleep.call_args_list,
+        )
+        self.assertFalse(
+            any(call[0] in {"upload", "publish"} for call in github.calls)
+        )
+
     def test_reconcile_requires_empty_draft_after_starter_recreation(
         self,
     ) -> None:
@@ -1989,14 +2244,15 @@ class CodexReleasePlannerTests(unittest.TestCase):
                     recreate_result=recreate_result
                 )
 
-                with self.assertRaises(error_type) as caught:
-                    release_auto.reconcile_release_assets(
-                        tag="v1.0.1",
-                        release_commit=self.base_commit,
-                        tag_commit=self.base_commit,
-                        assets=assets,
-                        github=github,
-                    )
+                with mock.patch("time.sleep"):
+                    with self.assertRaises(error_type) as caught:
+                        release_auto.reconcile_release_assets(
+                            tag="v1.0.1",
+                            release_commit=self.base_commit,
+                            tag_commit=self.base_commit,
+                            assets=assets,
+                            github=github,
+                        )
 
                 self.assertIn(message, str(caught.exception))
                 self.assertFalse(
@@ -2281,7 +2537,7 @@ class CodexReleasePlannerTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            [("upload", "install.sh")],
+            [],
             [call for call in github.calls if call[0] == "upload"],
         )
         self.assertNotIn(("publish", "v1.0.1"), github.calls)
@@ -2460,6 +2716,149 @@ class CodexReleasePlannerTests(unittest.TestCase):
             ],
             run.call_args.args[0],
         )
+
+    def test_github_release_create_classifies_tag_name_exists_as_retryable(
+        self,
+    ) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "HTTP 422: Validation Failed\n"
+                "Release.tag_name already exists"
+            ),
+        )
+
+        with mock.patch.object(
+            release_auto.subprocess,
+            "run",
+            return_value=completed,
+        ):
+            with self.assertRaises(
+                release_auto.ReleaseCreateRetryable
+            ) as caught:
+                release_auto.GitHubCliAdapter("owner/repo").create_release(
+                    "v0.1.14"
+                )
+
+        self.assertEqual("tag_name_exists", caught.exception.reason)
+
+    def test_github_release_create_classifies_structured_tag_conflict(
+        self,
+    ) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "message": "Validation Failed",
+                    "errors": [
+                        {
+                            "resource": "Release",
+                            "field": "tag_name",
+                            "code": "already_exists",
+                        }
+                    ],
+                    "status": "422",
+                }
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(
+            release_auto.subprocess,
+            "run",
+            return_value=completed,
+        ):
+            with self.assertRaises(
+                release_auto.ReleaseCreateRetryable
+            ) as caught:
+                release_auto.GitHubCliAdapter("owner/repo").create_release(
+                    "v0.1.14"
+                )
+
+        self.assertEqual("tag_name_exists", caught.exception.reason)
+
+    def test_github_release_create_classifies_server_and_transport_failures(
+        self,
+    ) -> None:
+        cases = (
+            ("HTTP 503: Service Unavailable", "server_error"),
+            ("request timed out: Server Error", "server_error"),
+            ("Post request failed: unexpected EOF", "transport_error"),
+            ("connection force closed by remote host", "transport_error"),
+            ("connection was forcibly closed by remote host", "transport_error"),
+            ("context deadline exceeded", "transport_error"),
+        )
+
+        for stderr, reason in cases:
+            with self.subTest(stderr=stderr):
+                completed = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout="",
+                    stderr=stderr,
+                )
+                with mock.patch.object(
+                    release_auto.subprocess,
+                    "run",
+                    return_value=completed,
+                ):
+                    with self.assertRaises(
+                        release_auto.ReleaseCreateRetryable
+                    ) as caught:
+                        release_auto.GitHubCliAdapter(
+                            "owner/repo"
+                        ).create_release("v0.1.14")
+                self.assertEqual(reason, caught.exception.reason)
+
+    def test_github_release_create_keeps_terminal_failures_untyped(self) -> None:
+        cases = (
+            "HTTP 401: Requires authentication",
+            "HTTP 403: API rate limit exceeded",
+            "HTTP 403: Forbidden\nRelease.tag_name already exists",
+            "HTTP 429: Too Many Requests",
+            json.dumps(
+                {
+                    "message": "API rate limit exceeded",
+                    "errors": [
+                        {
+                            "resource": "Release",
+                            "field": "tag_name",
+                            "code": "already_exists",
+                        }
+                    ],
+                    "status": "429",
+                }
+            ),
+            "HTTP 422: Validation Failed\nRelease.name is invalid",
+            "GraphQL: Resource not accessible by integration",
+        )
+
+        for stderr in cases:
+            with self.subTest(stderr=stderr):
+                completed = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout="",
+                    stderr=stderr,
+                )
+                with mock.patch.object(
+                    release_auto.subprocess,
+                    "run",
+                    return_value=completed,
+                ):
+                    with self.assertRaises(
+                        release_auto.ReleaseError
+                    ) as caught:
+                        release_auto.GitHubCliAdapter(
+                            "owner/repo"
+                        ).create_release("v0.1.14")
+                self.assertNotIsInstance(
+                    caught.exception,
+                    release_auto.ReleaseCreateRetryable,
+                )
 
 
 class CodexReleaseWorkflowTests(unittest.TestCase):

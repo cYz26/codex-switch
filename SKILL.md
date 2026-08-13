@@ -59,6 +59,7 @@ scripts/codex-switch split
 scripts/codex-switch split --keep-version --dry-run
 scripts/codex-switch internal --app-profile official
 scripts/codex-switch sync-shared --dry-run
+scripts/codex-switch sync-shared
 scripts/codex-switch official
 scripts/codex-switch check-update
 scripts/codex-switch update-internal --dry-run
@@ -74,13 +75,15 @@ codex-switch split
 codex-switch split --keep-version
 codex-switch internal --app-profile official
 codex-switch sync-shared --dry-run
+codex-switch sync-shared
 codex-switch official
 codex-switch update-internal
 ```
 
 Release-installed local commands self-sync the `codex-switch` implementation
-before every ordinary command execution. The wrapper checks only when it is
-running from the release implementation directory under
+before ordinary command execution, except the two split-preview forms which
+remain zero-write and zero-network. The wrapper checks only when it is running
+from the release implementation directory under
 `~/.local/share/codex-switch/current`, and re-execs the original command after a
 successful sync. When a check runs, it prints self-update status to stderr,
 including "checking latest release", "already up to date <version>", a synced
@@ -148,10 +151,13 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
    and the upstream stable advisory should be omitted.
    For the supported independent mode, run `scripts/codex-switch split`, the
    concise preset for
-   `scripts/codex-switch internal --app-profile official`. Normal `split`
-   retains codex-switch self-update and internal update detection. Use
+   `scripts/codex-switch internal --app-profile official`. A real `split` apply
+   retains codex-switch self-update and internal update detection, while either
+   split preview form bypasses both update layers to remain zero-write and
+   zero-network. Use
    `split --keep-version` when a controlled activation must retain both current
-   versions; it skips no repair, verification, App-effect, or CAS check. The
+   versions; it skips no shared readiness, repair, verification, App-effect, or
+   CAS check. The
    preview reports `App action: preserve` when the active identity,
    LaunchAgent, GUI environment, and running owner already match the canonical
    official binding; apply then leaves the App, official Home, and Desktop
@@ -175,9 +181,16 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
    internal-App parity
    path. Successful `App action: preserve` output has no App restart step;
    `rebind` retains the restart guidance.
-   In split mode, the next functional managed internal CLI invocation also
-   reconciles the official App's Plugin/Skill desired generation and proves an
-   independent internal cache before backend execution. It flushes a
+   After a real split transaction commits, the wrapper invokes the existing
+   `sync-shared` apply exactly once before Plugin repair, verify, Doctor, or
+   status. Later skip options do not bypass this mandatory readiness boundary.
+   A split dry-run reports that readiness will follow a successful switch but
+   never invokes shared apply. If sync fails, stop every later wrapper step,
+   return its exit code, preserve the committed split identity and shared
+   last-known-good state, and print exact preview/apply/Doctor remediation.
+   In split mode, every later functional managed internal CLI invocation also
+   reconciles the official App's Plugin/Skill desired generation as a fallback
+   and proves an independent internal cache before backend execution. It flushes a
    source-attestation line to stderr first and, when target materialization is
    needed, a second line with the target profile and Plugin count before the
    target catalog/backend call. Help/version remain read-only, and an unchanged
@@ -192,17 +205,22 @@ python3 scripts/codex_profile_switch.py switch openai-official --dry-run
    manifest/tree drift as `shared_configuration.materialization.source_mismatch`
    and reserve `unsafe_cache` for unsafe structure. For `backend_managed`,
    attest the desired official source independently from the compatible
-   internal target, reconcile every pending selector through the internal
+   internal target, reconcile every changed selector through the internal
    backend, then use one fresh batch catalog to require a unique installed
    target key and attest that target's manifest/tree/Skill roots. Keep revision
    cache keys distinct from manifest versions. Report valid-catalog target
    proof failures as `shared_configuration.materialization.unverified_target`
    and catalog command/schema failures as `unverified_catalog`. This
    internal-CLI reconciliation may run while the official App remains open and
-   does not mutate it. After a CLI-originated
-   change is captured, quit the official App and use
-   `scripts/codex-switch sync-shared` to apply its pending App projection; use
-   `--dry-run` for a zero-write preview.
+   does not mutate it. Treat the Official App projection as authoritative:
+   direct internal shared-Plugin/Skill edits are target drift, while unrelated
+   internal model/provider/auth, MCP, feature, and runtime settings stay local.
+   Functional preflight repairs safe drift automatically. Use
+   `scripts/codex-switch sync-shared --dry-run` for a zero-write preview and
+   `scripts/codex-switch sync-shared` for an explicit Official-to-internal apply;
+   never prompt for a source, reverse-sync into the App, or require the App to
+   stop for this operation. On unsafe failure, preserve last-known-good state
+   and surface the finding message plus preview/apply/Doctor remediation.
 3. For login, run `scripts/codex-switch login-official` or
    `scripts/codex-switch login-internal`.
 4. For CLI binding, run `scripts/codex-switch set-bin <profile> <absolute-path>`.
@@ -268,6 +286,9 @@ do not collect or repair internal App parity.
   selection. Do not emulate it with `--skip-app-cli` or a later `set-app-bin`,
   do not pass `--app-profile` to the fixed `split` preset, and do not combine
   the explicit `--app-profile` form with `--skip-app-cli`.
+- Treat post-commit `sync-shared` as a mandatory split-readiness step, separate
+  from the profile transaction and earlier than Plugin repair/verify/Doctor/
+  status. Do not reinterpret later skip options as authority to bypass it.
 - In that split, the shared capability layer owns only the generationed,
   secret-screened `marketplaces.*`, `plugins.*`, and `skills.config` desired
   state. Keep both plugin caches as independent real directories; never link

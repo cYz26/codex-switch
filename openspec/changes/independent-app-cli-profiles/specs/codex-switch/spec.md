@@ -215,15 +215,32 @@ selection contract.
 - **AND** it uploads and hashes the canonical asset without `--clobber`
 - **AND** uploaded, non-zero, duplicate-name, or unknown-state assets are not
   deleted or overwritten and instead fail closed when they conflict
-- **AND** failed creation, missing or non-draft recreated state, non-empty
-  recreated state, or tag movement fails closed before later mutation.
+- **AND** creation or readback exhaustion, non-draft or non-empty recreated
+  state, tag movement, or any unclassified failure fails closed before later
+  mutation.
 
-### Requirement: Canonical shared Plugin and Skill desired state
+#### Scenario: Draft recreation retries only typed propagation states
 
-For the supported internal-CLI/official-App split, the system SHALL own one
-secret-safe, generationed desired-state projection for Plugin selectors,
-non-secret marketplace descriptors, and standalone Skill configuration while
-keeping each runtime config and cache independently owned.
+- **WHEN** draft creation reports exact `Release.tag_name already exists`, a
+  GitHub server/transport failure, or success followed by a temporarily missing
+  tag-based readback
+- **THEN** reconciliation uses a finite retry schedule and revalidates the
+  immutable remote tag before every retry or accepted readback
+- **AND** every repeated create first confirms the Release is still missing
+- **AND** after a create returns success, reconciliation retries only readback
+  and never issues a second create for delayed visibility
+- **AND** any observed existing Release must be empty and draft before upload
+- **AND** authentication, authorization, rate-limit, unknown validation,
+  published, non-empty, duplicate, changed-tag, or exhausted states fail closed
+  without upload, publish, clobber, or unbounded polling.
+
+### Requirement: Official-authoritative shared Plugin and Skill desired state
+
+For the supported internal-CLI/official-App split, the system SHALL treat the
+current Official App projection as authority for Plugin selectors, non-secret
+marketplace descriptors, and standalone Skill configuration. The internal CLI
+SHALL be a derived, independently materialized target, while both runtime
+configs and physical caches remain separately owned.
 
 #### Scenario: Official App bootstraps the first desired generation
 
@@ -233,28 +250,90 @@ keeping each runtime config and cache independently owned.
   MCP/App connector, session, history, permission, process, or cache data
 - **AND** bootstrap does not share either physical plugin cache.
 
-#### Scenario: Single-side and identical changes advance safely
+#### Scenario: Official changes advance the derived internal generation
 
-- **WHEN** one side changes from its last-applied baseline, or both sides make
-  the same semantic change
-- **THEN** one new desired generation records that complete projection
-- **AND** authoritative disable and removal are not revived from an older
-  snapshot.
+- **WHEN** the Official App adds, updates, enables, disables, or removes a
+  projected Plugin, marketplace, or configured Skill
+- **THEN** one new generation records the complete current Official projection
+- **AND** the internal rendered config and independently materialized usage
+  converge before functional backend execution
+- **AND** authoritative disable or removal is not revived from an older
+  internal snapshot.
 
-#### Scenario: Divergent changes fail closed
+#### Scenario: Internal-only drift is repaired from Official
 
-- **WHEN** official and internal projections diverge from the same baseline in
-  different ways
-- **THEN** reconcile reports a stable conflict
-- **AND** canonical state, both configs, both caches, and both receipts remain
-  unchanged.
+- **WHEN** only the internal shared projection differs from its committed
+  baseline
+- **THEN** reconcile replaces that shared subset from the current Official
+  projection
+- **AND** preserves unrelated internal model/provider/auth, MCP, feature, and
+  runtime configuration
+- **AND** does not write the Official config or cache, regardless of App state.
 
-#### Scenario: Unstable source observation fails closed
+#### Scenario: Disjoint and overlapping divergence use the same authority
 
-- **WHEN** either source config or source artifact changes during planning
-- **THEN** reconcile retries only within its bounded stable-read contract or
-  reports `source_changed_during_plan`
-- **AND** it does not commit a mixed generation.
+- **WHEN** Official and internal projections changed disjoint or overlapping
+  semantic paths, including delete-versus-modify
+- **THEN** reconcile uses the complete current Official projection without
+  three-way merge, timestamps, last-writer ordering, or an operator source
+  choice
+- **AND** reports secret-safe add/update/enable/disable/remove operations and
+  paths without configuration values
+- **AND** writes only the internal target.
+
+#### Scenario: Legacy pending state converges forward
+
+- **WHEN** an unshipped legacy state contains a pending Official target from the
+  earlier bidirectional design
+- **THEN** the next apply reads that state compatibly and creates an
+  Official-authoritative internal generation
+- **AND** clears the pending target without writing or stopping the App.
+
+#### Scenario: Unstable Official source observation fails closed
+
+- **WHEN** the Official config or source artifact changes during planning or
+  before publication
+- **THEN** reconcile reports source_changed_during_plan
+- **AND** it does not commit a mixed generation or overwrite a concurrent
+  internal target edit.
+
+### Requirement: Shared readiness failures are actionable
+
+The system SHALL automatically repair every safe mismatch and SHALL stop before
+backend execution only when source, cache, materialization, recovery, or
+compare-and-swap evidence cannot prove a safe internal target.
+
+#### Scenario: Functional preflight automatically repairs and continues
+
+- **WHEN** a functional managed internal CLI invocation observes repairable
+  Official/internal drift
+- **THEN** it reconciles once under the store lock, materializes and verifies
+  the internal target, reports the synchronized and ready generation, and then
+  executes the backend exactly once
+- **AND** it never prompts for a source or requires the Official App to stop.
+
+#### Scenario: Unsafe preflight prints cause and exact remediation
+
+- **WHEN** functional preflight cannot safely reconcile
+- **THEN** it preserves last-known-good state and does not execute the backend
+- **AND** prints the stable finding code and message without secret values
+- **AND** prints exact codex-switch sync-shared --dry-run,
+  codex-switch sync-shared, and codex-switch doctor remediation.
+
+#### Scenario: Diagnostics share one read-only report
+
+- **WHEN** status, Doctor, or verify inspect the supported split
+- **THEN** all consume the same report containing source, target, generation,
+  readiness, automatic actions, secret-safe changes, finding codes/messages,
+  and remediation
+- **AND** none invokes reconciliation, a plugin backend, or any write.
+
+#### Scenario: Manual source selection is absent
+
+- **WHEN** a caller inspects public reconciliation or command help
+- **THEN** no resolve-shared, source-choice prompt, conflict digest, or
+  internal-to-Official apply interface is exposed
+- **AND** sync-shared is defined only as Official-to-internal preview/apply.
 
 ### Requirement: App changes are ready before functional internal CLI execution
 
@@ -420,38 +499,73 @@ functional backend command executes.
 - **THEN** it does not reconcile, install, write a receipt, or change a link
 - **AND** preserves existing backend execution semantics.
 
-### Requirement: CLI-originated changes have an explicit safe App apply boundary
+### Requirement: Explicit sync is an Official-to-internal readiness boundary
 
-The system SHALL capture Plugin/Skill changes left by a previous internal CLI
-session at the next preflight and SHALL not overwrite an active official App.
+The system SHALL expose sync-shared as an explicit preview/apply form of the
+same Official-authoritative reconciliation used by functional CLI preflight.
+It SHALL never write the Official App from internal Plugin/Skill drift.
 
-#### Scenario: Running App receives a pending apply
+#### Scenario: Explicit sync applies while the App is running
 
-- **WHEN** the internal projection changed from its baseline and the official
-  App or app-server is running
-- **THEN** canonical state records `pending_app_apply`
-- **AND** the official App config and cache remain unchanged.
+- **WHEN** the Official and internal shared projections differ and the user
+  applies sync-shared while the App or app-server is running
+- **THEN** the complete Official projection is materialized and rendered only
+  into the internal target
+- **AND** the Official config, cache, and processes remain unchanged
+- **AND** no App running-state proof is required.
 
-#### Scenario: Explicit stopped-App sync applies pending state
+#### Scenario: Source and target identities are re-proved at commit
 
-- **WHEN** the App is stopped and the user applies `sync-shared`
-- **THEN** the pending projection is rendered to the official config only
-  after required official materialization verifies
-- **AND** the App receipt advances to the committed generation.
-
-#### Scenario: Stopped-App and target identity are re-proved at commit
-
-- **WHEN** process enumeration is unreadable, a Desktop/app-server appears, or
-  target config changes after planning/materialization
-- **THEN** explicit sync performs no shared target write
-- **AND** preserves the pending generation with a stable stopped/CAS finding.
+- **WHEN** the Official observation or internal target config changes after
+  planning or materialization
+- **THEN** explicit sync performs no mixed publication
+- **AND** reports a stable source- or target-changed compare-and-swap finding
+  with remediation.
 
 #### Scenario: Sync preview is side-effect free
 
-- **WHEN** the user runs `sync-shared --dry-run`
-- **THEN** the plan reports source, target, generation, pending/conflict, and
-  materialization actions
+- **WHEN** the user runs sync-shared --dry-run
+- **THEN** the plan reports Official source, internal target, generation,
+  readiness, secret-safe changes, automatic actions, and remediation
 - **AND** performs no config, cache, state, process, or network mutation.
+
+### Requirement: Split proactively establishes shared readiness
+
+The concise split command and its explicit long form SHALL apply the same
+Official-to-internal readiness boundary immediately after a successful profile
+switch and before any later wrapper repair or diagnostic step.
+
+#### Scenario: Successful split synchronizes before later steps
+
+- **WHEN** the user applies `codex-switch split` or
+  `codex-switch internal --app-profile official`
+- **AND** the profile switch transaction commits successfully
+- **THEN** the wrapper invokes Official-to-internal shared reconciliation
+  exactly once
+- **AND** completes that readiness step before generic Plugin repair, verify,
+  Doctor, or status
+- **AND** later skip options do not skip the mandatory readiness boundary.
+
+#### Scenario: Split synchronization failure stops the workflow
+
+- **WHEN** the post-switch shared reconciliation cannot prove a CLI-ready
+  internal generation
+- **THEN** the wrapper returns the reconciliation failure code and runs no
+  later Plugin repair, verify, Doctor, or status step
+- **AND** reports `shared synchronization` as the failed step plus exact
+  `codex-switch sync-shared --dry-run`, `codex-switch sync-shared`, and
+  `codex-switch doctor` remediation
+- **AND** preserves the committed split selection and the reconciler's
+  last-known-good shared state.
+
+#### Scenario: Split preview names readiness without applying it
+
+- **WHEN** the user runs `codex-switch split --dry-run` or the equivalent
+  explicit long-form preview
+- **THEN** the output states that shared readiness will run after a successful
+  switch
+- **AND** it does not invoke shared apply or mutate config, cache, state,
+  process, or network resources.
 
 ### Requirement: Skill ownership and cache separation are explicit
 
@@ -465,7 +579,6 @@ Skills, and project-local Skills.
   personal Skills root
 - **AND** a real directory, foreign link, dangling link, or self-link fails
   with migration guidance rather than being replaced.
-
 #### Scenario: Plugin-owned Skill paths render for the target home
 
 - **WHEN** desired Skill configuration refers to an artifact under the source
@@ -494,8 +607,8 @@ report.
 
 #### Scenario: Diagnostics agree on generation health
 
-- **WHEN** shared state is current, pending, conflicting, missing, unsafe, or
-  incompletely materialized
+- **WHEN** shared state is current, stale, awaiting bootstrap or recovery,
+  unsafe, or incompletely materialized
 - **THEN** status, Doctor, and verify report the same generation and stable
   finding codes
 - **AND** diagnostic and verify modes never repair or install implicitly.
@@ -535,8 +648,8 @@ publication as the only commit point.
 - **THEN** reconcile first rechecks target CAS and durably records a private
   materialization intent binding exact target bytes/mode and the bounded
   selector set
-- **AND** an official target receives a fail-closed stopped-App proof before
-  the backend call or its first possible target-config write
+- **AND** the target is always internal and the Official App is never probed or
+  written by the backend call
 - **AND** the main prepared-commit journal cannot coexist with that intent.
 
 #### Scenario: Interrupted backend activation is selectively recovered
