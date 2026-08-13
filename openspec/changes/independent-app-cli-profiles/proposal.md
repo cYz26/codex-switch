@@ -150,4 +150,10 @@ None.
   `v0.1.14` recovery, and atomic `v0.1.15` tag/Release publication. It does not
   authorize force push, manual broad Release edits, migration, install,
   cleanup, archive, dependency/credential changes, or unrelated runtime
-  effects.
+  effects. Commit `5da41a8` and Auto Release run `31681550199` consumed that
+  authority but failed in planning on duplicate `v0.1.14` Release records.
+  The user's 2026-08-13
+  `授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision resolves gate
+  `d9a08a71...` for one verified follow-up commit/push and `v0.1.15`
+  publication while explicitly excluding any move, deletion, upload, publish,
+  or other mutation of the `v0.1.14` tag or Release.

@@ -246,6 +246,21 @@ selection contract.
   pagination exhaustion, or any non-404 tag-specific failure fails closed
   without create, delete, upload, publish, or clobber.
 
+#### Scenario: Explicitly abandoned latest tag advances without legacy mutation
+
+- **WHEN** automatic release planning receives an exact semantic abandonment
+  tag that equals the latest Git tag and release-relevant changes exist after
+  that tag
+- **THEN** planning does not inspect or reconcile the abandoned tag's GitHub
+  Release and selects the next patch tag from the current source commit
+- **AND** the plan reports the exact abandoned tag with preparation required
+  and reconciliation disabled
+- **AND** abandonment without a release-relevant replacement fails closed
+- **AND** an abandonment entry older than the latest Git tag does not suppress
+  normal inspection of the latest Release
+- **AND** no abandoned tag or Release is moved, deleted, uploaded, published,
+  or otherwise mutated.
+
 ### Requirement: Official-authoritative shared Plugin and Skill desired state
 
 For the supported internal-CLI/official-App split, the system SHALL treat the

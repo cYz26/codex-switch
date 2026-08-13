@@ -3068,6 +3068,20 @@ write task.
   `git diff --check`. No commit, push, workflow rerun, Release mutation,
   migration, install, cleanup, archive, dependency, credential, or unrelated
   runtime effect has occurred yet.
+- 2026-08-13: tasks 16.9-16.11 replaced historical reconciliation with an
+  explicit `v0.1.14` abandonment policy. Commit `5da41a8` reached `origin/main`,
+  but Auto Release run `31681550199` failed during planning on duplicate
+  `v0.1.14` Release records; no reconciliation or `v0.1.15` effect followed.
+  RED covered latest-tag abandonment, required replacement, older-entry
+  non-interference, no GitHub inspection, output, and workflow wiring. GREEN
+  adds `--abandon-tag v0.1.14`: the real plan is `prepare`, reconciliation is
+  false, and `next_tag=v0.1.15`; `v0.1.14` tag/Release mutation remains
+  excluded. Focused coverage passes 4/4, complete Update/Release 175/175,
+  Profile/Wrapper 227/227, Python 61/61, Bash 5/5, JSON 86/86, strict OpenSpec
+  22/22, DevFlow `ok=true`, package preview, and diff checks. The user's
+  explicit publication decision resolves gate `d9a08a71...` for one verified
+  commit/push and `v0.1.15` publication only. Remote prestate remains
+  `main=5da41a8`, `v0.1.14=19a2433`, and `v0.1.15` absent.
 
 ## Validation Commands
 

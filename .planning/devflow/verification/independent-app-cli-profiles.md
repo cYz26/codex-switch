@@ -1689,3 +1689,84 @@ After the authority and state updates, final quick gates pass Python AST 61/61,
 Bash syntax 5/5, all repository JSON 82/82, active strict OpenSpec, repository
 strict OpenSpec 22/22, DevFlow 0.4.1 with `ok=true` and only the existing
 INC-018 guidance warning, and `git diff --check`.
+
+## Tasks 16.9-16.11 Explicit v0.1.14 Abandonment
+
+Commit `5da41a854f1a7a1b01dd41e481549a6bbb16a94d` reached `origin/main`
+and triggered Auto Release run `31681550199`. The run failed during
+`Plan automatic release` with
+`GitHub returned duplicate releases for tag v0.1.14`; no reconciliation,
+version bump, ref push, or `v0.1.15` publication step ran. The remote Git tag
+remained singular at
+`v0.1.14=19a243342ef9f78776b3fad0b2292198845147d3`.
+
+The accepted replacement policy leaves that tag and every associated Release
+record untouched. `release_auto plan --abandon-tag v0.1.14` now skips GitHub
+Release inspection only when `v0.1.14` is the latest semantic Git tag and
+release-relevant changes exist after it. The plan reports the exact abandoned
+tag, sets `reconcile_required=false`, and prepares the next patch tag. An
+abandonment without a replacement fails closed; after a newer tag exists, the
+older `v0.1.14` entry is inert and normal latest-Release inspection resumes.
+The workflow contains no Release delete or old-Release edit operation.
+
+RED first produced two missing-API errors and one workflow assertion failure.
+Focused GREEN then passed 4/4 in 0.645 seconds. Fresh final verification:
+
+- complete Python 3.12 Update/Release: 175/175 in 313.910 seconds;
+- complete Python 3.12 Profile/Wrapper: 227/227 in 420.529 seconds;
+- Python compile: 61/61 scripts;
+- Bash syntax: 5/5 entrypoints;
+- repository JSON parsing: 86/86 files;
+- active strict OpenSpec: valid;
+- repository-wide strict OpenSpec: 22/22;
+- DevFlow 0.4.1: `ok=true`, zero issues, existing INC-018 guidance warning
+  only;
+- current-source package preview: 71 files, 22 required paths, payload
+  `f1740b55...523`, archive
+  `0fd68c1a40aa82c0b20e0e2173c1eee8ebc43d096b7a00a5703fb3e286c4b260`;
+- `git diff --check`: pass.
+
+The package preview intentionally retains source `VERSION=0.1.14`; the
+workflow's tested `bump --tag v0.1.15` step creates the release candidate
+before its deterministic package and atomic ref push.
+
+The real current-tree plan reports:
+
+```text
+latest_tag=v0.1.14
+abandoned_tag=v0.1.14
+release_action=prepare
+reconcile_required=false
+prepare_required=true
+target_tag=v0.1.15
+next_tag=v0.1.15
+next_version=0.1.15
+```
+
+The user's 2026-08-13
+`授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision is recorded in
+`release-v0.1.14-abandonment-v0.1.15-authority-grant.json`. Authority gate
+`d9a08a71a599cb9b12e3ced6346344a3cf2f4cc1b313178eece33038d71e462b`
+is resolved with authority contract
+`86cbd678edf777b731c4d8e5a746f6c81cd6d5ce57a618779b5fa69e3622a9c4`,
+evidence
+`6ed5516913610a081f4d7df824f961c41ee3b7ddae7837c223f2ac323d2c2410`,
+and request
+`2d5aa43f60d4215031cd062a85f5f0c9523cd03a7e1da099f9c21ea6373eee44`.
+It authorizes one verified commit and fast-forward push to `origin/main`, the
+Auto Release run, atomic `v0.1.15` tag creation, and `v0.1.15` Release
+publication. It excludes all `v0.1.14` tag/Release mutation, Release deletion,
+force push, migration, dependency/credential change, archive, cleanup, and
+unrelated runtime effects.
+
+Read-only pre-submit remote proof remains:
+
+- `refs/heads/main` =
+  `5da41a854f1a7a1b01dd41e481549a6bbb16a94d`;
+- `refs/tags/v0.1.14` =
+  `19a243342ef9f78776b3fad0b2292198845147d3`;
+- `refs/tags/v0.1.15` is absent.
+
+No Git push, workflow run, tag creation, Release mutation, migration, install,
+cleanup, archive, dependency, credential, or unrelated runtime effect followed
+the abandonment repair before this checkpoint.

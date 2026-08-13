@@ -587,6 +587,7 @@ def build_plan(
     head: str,
     *,
     github: Optional[object] = None,
+    abandoned_tags: Sequence[str] = (),
 ) -> Dict[str, Any]:
     latest_tag = latest_release_tag(repo)
     head_commit = resolve_commit(repo, head)
@@ -599,8 +600,20 @@ def build_plan(
 
     files = changed_files(repo, latest_tag, head_commit)
     relevant = [path for path in files if is_release_relevant(path)]
+    requested_abandoned_tags = tuple(abandoned_tags)
+    for candidate in requested_abandoned_tags:
+        parse_tag(candidate)
+    abandoned_tag = (
+        latest_tag if latest_tag in requested_abandoned_tags else ""
+    )
+    if abandoned_tag and not relevant:
+        raise ReleaseConflict(
+            f"Cannot abandon latest semantic tag {latest_tag} without a "
+            "release-relevant replacement"
+        )
+
     snapshot: Optional[ReleaseSnapshot] = None
-    if github is not None:
+    if github is not None and not abandoned_tag:
         raw_snapshot = github.inspect_release(latest_tag)
         if not isinstance(raw_snapshot, ReleaseSnapshot):
             raise ReleaseError("GitHub adapter returned an invalid release snapshot")
@@ -648,6 +661,7 @@ def build_plan(
         "target_commit": target_commit,
         "missing_assets": missing_assets,
         "next_tag": proposed_tag,
+        "abandoned_tag": abandoned_tag,
         "next_version": (
             version_text_from_tag(proposed_tag) if proposed_tag else ""
         ),
@@ -670,6 +684,7 @@ def write_github_output(path: Path, plan: Mapping[str, Any]) -> None:
         handle.write(f"target_commit={plan['target_commit']}\n")
         handle.write(f"missing_assets={missing_assets}\n")
         handle.write(f"next_tag={plan['next_tag']}\n")
+        handle.write(f"abandoned_tag={plan['abandoned_tag']}\n")
         handle.write(f"next_version={plan['next_version']}\n")
         handle.write(f"release_files={release_files}\n")
 
@@ -1572,7 +1587,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
         if args.github_repo
         else None
     )
-    plan = build_plan(repo, args.head, github=github)
+    plan = build_plan(
+        repo,
+        args.head,
+        github=github,
+        abandoned_tags=args.abandon_tag,
+    )
     if args.github_output:
         write_github_output(args.github_output, plan)
     if args.json:
@@ -1581,6 +1601,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print(f"latest_tag: {plan['latest_tag']}")
         print(f"release_action: {plan['release_action']}")
         print(f"release_required: {str(plan['release_required']).lower()}")
+        if plan["abandoned_tag"]:
+            print(f"abandoned_tag: {plan['abandoned_tag']}")
         if plan["target_tag"]:
             print(f"target_tag: {plan['target_tag']}")
         if plan["release_relevant_files"]:
@@ -1757,6 +1779,15 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan", help="Plan or resume an automatic release.")
     plan.add_argument("--head", default="HEAD")
     plan.add_argument("--github-repo")
+    plan.add_argument(
+        "--abandon-tag",
+        action="append",
+        default=[],
+        help=(
+            "Skip reconciliation only when this exact tag is the latest "
+            "semantic tag and a release-relevant replacement is pending."
+        ),
+    )
     plan.add_argument("--json", action="store_true")
     plan.add_argument("--github-output", type=Path)
     plan.set_defaults(func=cmd_plan)

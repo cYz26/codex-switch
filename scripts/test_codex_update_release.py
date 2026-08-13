@@ -1731,6 +1731,90 @@ class CodexReleasePlannerTests(unittest.TestCase):
         self.assertEqual("true", outputs["prepare_required"])
         self.assertEqual(source_commit, outputs["source_commit"])
 
+    def test_abandoned_latest_tag_prepares_replacement_without_inspection(
+        self,
+    ) -> None:
+        source_commit = self._commit_release_change()
+        github = FakeReleaseGitHub(
+            exists=True,
+            assets={},
+            draft=True,
+        )
+
+        plan = release_auto.build_plan(
+            self.repo,
+            "HEAD",
+            github=github,
+            abandoned_tags=("v1.0.0",),
+        )
+        github_output = self.root / "github-output"
+        release_auto.write_github_output(github_output, plan)
+        outputs = dict(
+            line.split("=", 1)
+            for line in github_output.read_text().splitlines()
+        )
+
+        self.assertEqual([], github.calls)
+        self.assertEqual("prepare", plan["release_action"])
+        self.assertFalse(plan["reconcile_required"])
+        self.assertTrue(plan["prepare_required"])
+        self.assertEqual(source_commit, plan["source_commit"])
+        self.assertEqual("v1.0.1", plan["target_tag"])
+        self.assertEqual("v1.0.1", plan["next_tag"])
+        self.assertEqual("v1.0.0", plan["abandoned_tag"])
+        self.assertEqual("v1.0.0", outputs["abandoned_tag"])
+
+    def test_abandoned_latest_tag_requires_release_relevant_replacement(
+        self,
+    ) -> None:
+        github = FakeReleaseGitHub(
+            exists=True,
+            assets={},
+            draft=True,
+        )
+
+        with self.assertRaises(release_auto.ReleaseConflict) as caught:
+            release_auto.build_plan(
+                self.repo,
+                "HEAD",
+                github=github,
+                abandoned_tags=("v1.0.0",),
+            )
+
+        self.assertEqual([], github.calls)
+        self.assertIn(
+            "without a release-relevant replacement",
+            str(caught.exception),
+        )
+
+    def test_older_abandoned_tag_does_not_skip_latest_release_inspection(
+        self,
+    ) -> None:
+        self._commit_release_change()
+        self._git("tag", "v1.0.1")
+        (self.repo / "scripts" / "tool.py").write_text("VALUE = 3\n")
+        self._git("add", "scripts/tool.py")
+        self._git("commit", "-q", "-m", "next release change")
+        github = FakeReleaseGitHub(
+            exists=True,
+            assets={
+                name: name.encode()
+                for name in release_auto.REQUIRED_RELEASE_ASSETS
+            },
+            draft=False,
+        )
+
+        plan = release_auto.build_plan(
+            self.repo,
+            "HEAD",
+            github=github,
+            abandoned_tags=("v1.0.0",),
+        )
+
+        self.assertEqual([("inspect", "v1.0.1")], github.calls)
+        self.assertEqual("", plan["abandoned_tag"])
+        self.assertEqual("v1.0.2", plan["next_tag"])
+
     def test_matching_complete_latest_tag_requires_no_action(self) -> None:
         github = FakeReleaseGitHub(
             exists=True,
@@ -3183,6 +3267,16 @@ class CodexReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("push --atomic origin", push)
         self.assertIn("--force-with-lease=", push)
+
+    def test_auto_release_explicitly_abandons_only_v0_1_14(self) -> None:
+        workflow = self.AUTO_RELEASE.read_text()
+        _plan_index, plan = self._step(
+            workflow,
+            "Plan automatic release",
+        )
+
+        self.assertEqual(1, plan.count("--abandon-tag v0.1.14"))
+        self.assertNotIn("release delete", workflow)
 
     def test_auto_release_critical_path_cannot_ignore_failures(self) -> None:
         workflow = self.AUTO_RELEASE.read_text()

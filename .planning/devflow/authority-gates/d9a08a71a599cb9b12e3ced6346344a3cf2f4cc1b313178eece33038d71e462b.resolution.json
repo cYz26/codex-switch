@@ -1,0 +1,32 @@
+{
+  "authorityDigest": "c306154df1bfd3a67ab19d9eef551a910f46142448674ca223528103f1817df8",
+  "decision": "AWAIT_HUMAN",
+  "evidenceDigest": "36956cb1ff6330a2f55592281c98f927074871e9d80fca6de96438c7f4646b64",
+  "gateKey": "d9a08a71a599cb9b12e3ced6346344a3cf2f4cc1b313178eece33038d71e462b",
+  "invalidations": [
+    "authority_gate:a40cea2a985a0eb898ee82bc975cf4049822325e3e2cf6eb57f0846ca095e8c9:consumed",
+    "workflow_run:31681550199:failed",
+    "release:v0.1.14:abandoned",
+    "release:v0.1.15:absent"
+  ],
+  "materialDelta": true,
+  "missingAuthority": [
+    "action:submit_verified_v0.1.14_abandonment_and_publish_v0.1.15",
+    "effect:git.commit",
+    "effect:git.push",
+    "effect:github.actions.auto_release",
+    "effect:github.release.mutate",
+    "effect:git.atomic_release_ref_push",
+    "target:origin/main",
+    "target:refs/tags/v0.1.15",
+    "target:github-release/v0.1.15"
+  ],
+  "reasonCodes": [
+    "prior_submit_authority_consumed",
+    "release_strategy_changed",
+    "external_effect_requires_fresh_authority"
+  ],
+  "requestDigest": "af07c8793642f9937aa111d9c1734152ff83117bc3962c175569f6b9b0557eb8",
+  "schemaVersion": 1,
+  "standingContractDigest": null
+}

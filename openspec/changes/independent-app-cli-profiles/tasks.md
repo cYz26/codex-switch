@@ -336,12 +336,30 @@
   The user's 2026-08-13 `授权` decision is recorded in
   `draft-release-discovery-submit-authority-grant.json`; gate `a40cea2a...` is
   resolved for the exact task 16.9 submit/release effects.
-- [ ] 16.9 After fresh authorization, commit and fast-forward push only the
-  verified draft-discovery repair/control-plane write set. Require
-  `origin/main` plus the atomic `v0.1.15` tag to resolve to the release commit,
-  published `v0.1.14` and `v0.1.15` Releases with exactly the canonical three
-  assets, and independent size/checksum verification against deterministic
-  manifests before claiming publication complete.
+- [x] 16.9 Commit and fast-forward push the verified draft-discovery repair.
+  Commit `5da41a8` reached `origin/main`, but Auto Release run `31681550199`
+  failed during planning because authenticated release inspection found
+  duplicate Release records for `v0.1.14`. No reconciliation, `v0.1.15` tag,
+  or publication followed; the task-16.9 external-effect authority is consumed.
+- [x] 16.10 Add RED coverage for exact latest-tag abandonment, replacement
+  requirement, older-entry non-interference, GitHub-inspection suppression,
+  GitHub output, and workflow wiring. Implement `--abandon-tag v0.1.14` so the
+  current plan reports `prepare`, `reconcile_required=false`, and
+  `next_tag=v0.1.15` without inspecting or mutating the `v0.1.14` Release.
+- [x] 16.11 Run focused and complete update/release plus adjacent profile,
+  static, strict OpenSpec, DevFlow, package, workflow, JSON, and diff
+  verification. Record the user's explicit abandonment/publication decision
+  through gate `d9a08a71...`, with `v0.1.14` tag/Release mutation and deletion
+  excluded. Focused abandonment coverage passes 4/4, complete Update/Release
+  175/175, Profile/Wrapper 227/227, Python 61/61, Bash 5/5, JSON 86/86,
+  strict OpenSpec 22/22, DevFlow `ok=true`, package preview, real local plan,
+  and `git diff --check`.
+- [ ] 16.12 Commit and fast-forward push only the verified abandonment
+  repair/control-plane write set. Require `origin/main` and `v0.1.15` to resolve
+  to the release commit, require the published `v0.1.15` Release to contain
+  exactly the canonical three assets, and independently verify asset
+  size/checksum before claiming publication complete. Preserve
+  `v0.1.14=19a2433` and do not modify its Release records.
 
 ## 17. Official-Authoritative Shared Plugin Readiness
 
@@ -492,3 +510,12 @@ push to `origin/main`, the push-triggered `v0.1.14` recovery, and atomic
 `v0.1.15` tag/Release publication. It does not authorize manual broad Release
 edits, migration, dependency/credential change, archive, cleanup, force push,
 or unrelated runtime effects.
+
+The `a40cea2a...` authority was consumed by commit `5da41a8`, its fast-forward
+push, and failed Auto Release run `31681550199`. The user's 2026-08-13
+`授权跳过 v0.1.14，修改并推送，发布 v0.1.15` decision resolves gate
+`d9a08a71...` for one verified abandonment-repair commit and fast-forward push
+to `origin/main`, the workflow run, atomic `v0.1.15` tag creation, and
+`v0.1.15` Release publication. It explicitly excludes moving, deleting, or
+mutating the `v0.1.14` tag or Release, along with force push, migration,
+dependency/credential change, archive, cleanup, and unrelated runtime effects.

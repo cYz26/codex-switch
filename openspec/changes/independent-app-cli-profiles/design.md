@@ -702,6 +702,30 @@ reconciliation in the shell wrapper or folding backend effects into the profile
 transaction was rejected because either would duplicate the deep module or
 weaken its independent recovery contract.
 
+### Decision 26: Explicit abandonment advances without touching the old Release
+
+Auto Release run `31681550199` failed before reconciliation because
+authenticated inspection found duplicate GitHub Release records for the latest
+Git tag `v0.1.14`. The Git tag itself remains singular and immutable at
+`19a2433`; the conflict is confined to the old Release records. Repairing or
+deleting those records would widen the effect surface and continue coupling the
+next package to historical release state.
+
+The planner therefore accepts an explicit repeatable `--abandon-tag` input.
+Only an exact semantic value equal to the latest Git tag changes behavior, and
+only when release-relevant changes exist after that tag. In that state the
+planner performs no GitHub Release inspection for the abandoned tag, reports
+the abandonment, disables reconciliation, and selects the next patch tag from
+the current source commit. With `v0.1.14` explicitly configured, the bounded
+result is `prepare -> v0.1.15`.
+
+Abandonment without a replacement fails closed. An older configured
+abandonment becomes inert after a newer tag exists, so normal latest-Release
+inspection resumes for `v0.1.15` and later. The workflow contains no old
+Release deletion or edit step. Moving/deleting `v0.1.14`, selecting an
+arbitrary next version, suppressing all reconciliation globally, and cleaning
+duplicate drafts inside the publication run were rejected.
+
 ## Completion Contract
 
 - The named split command has a failing-then-passing wrapper and transaction
@@ -732,6 +756,11 @@ weaken its independent recovery contract.
   one exact draft tag returns that draft snapshot and continues through the
   existing asset-state guards; absence and duplicate/malformed list records
   remain fail closed.
+- An explicitly abandoned latest tag with pending release-relevant changes is
+  not inspected or reconciled, produces the next patch release, and leaves the
+  old tag and all old Release records untouched. Abandonment without a
+  replacement fails closed, and older entries do not suppress future latest
+  Release inspection.
 - A latest package can promote over the exact immediately prior 20-path
   manifest generation while preserving it as rollback; unknown required-path
   lists remain rejected before reference mutation.
@@ -742,9 +771,9 @@ weaken its independent recovery contract.
   codex-switch cache copy/link/delete occurs; final
   acceptance may run the separately confirmed single functional managed
   internal CLI command, including backend-owned replacement of prior installed
-  Plugin versions. After task-16 source verification, only its separately
-  authorized commit/push and exact `v0.1.14`/`v0.1.15` Auto Release chain may
-  occur.
+  Plugin versions. The latest task-16 authority permits only one verified
+  commit/push and the `v0.1.15` Auto Release chain; `v0.1.14` tag/Release
+  mutation remains excluded.
 - App add/update/enable/disable/remove advances one desired generation and the
   next functional internal CLI invocation either completes independent
   materialization before backend execution or fails with a stable finding and
@@ -870,7 +899,7 @@ remain separate Human Gates.
 | Backend-managed acceptance repair | main, serialized | catalog adapter, shared materializer, focused tests, README/SKILL, OpenSpec/control plane | live-shape source/target divergence RED/GREEN, installed precedence, native cache-lifecycle replacement, one post-add batch catalog, precise findings, full/static/spec/package review, functional managed-shim acceptance | split/install/App stop or mutation/internal binary update/direct codex-switch cache mutation/Git/release/archive | complete 2026-08-11; tasks 13.1-13.4 verified and native cache-lifecycle decision reconciled |
 | Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | complete 2026-08-11; tasks 14.1-14.3 verified |
 | Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter, disappearing Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete in source 2026-08-11; tasks 15.1-15.6 verified, second submit awaits Human Gate |
-| Release-recreation propagation repair | main, serialized | `scripts/release_auto.py`, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | exact tag-name-exists, server/transport, delayed-visibility, draft-list fallback, unknown-error, conflict, retry-exhaustion RED/GREEN; complete update/release/profile/static/spec/workflow/diff proof; remote ref/Release/asset readback | authority gate `614cc025...` was consumed by commit `6a5fa85`, push, and failed run `31666160863`; gate `a40cea2a...` is now resolved for one verified task 16.9 commit/push and the exact `v0.1.14`/`v0.1.15` Auto Release effects | first submission failed acceptance; draft-list fallback passes 6/6 focused, 171/171 update/release, 227/227 profile, strict/static/workflow/diff gates, and task 16.9 is ready for external effects |
+| Release-recreation and abandonment repair | main, serialized | `scripts/release_auto.py`, Auto Release workflow, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | typed recreation and draft-list fallback plus exact latest-tag abandonment, replacement requirement, older-entry non-interference, no old-Release inspection/mutation, complete update/release/profile/static/spec/workflow/package/diff proof, remote `v0.1.15` ref/Release/asset readback | gates `614cc025...` and `a40cea2a...` were consumed by failed recovery submissions; gate `d9a08a71...` is resolved for one verified commit/push and `v0.1.15` publication, with all `v0.1.14` tag/Release mutation excluded | abandonment GREEN passes 4/4, Update/Release 175/175, Profile/Wrapper 227/227, strict/static/workflow/package/diff gates, and task 16.12 is ready for external effects |
 | Official-authoritative shared readiness | main, serialized | shared configuration module, functional preflight/parser/wrapper, focused tests, README/SKILL, this OpenSpec change, ledger/state/verification | public-seam RED/GREEN for Official/internal/overlapping drift, CAS, automatic preflight, non-interactive remediation, read-only diagnostics, package/static/spec/workflow/diff/review | live config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 17.1-17.6 verified, live/install/Git effects remain excluded |
 | Split-triggered shared readiness | main, serialized | wrapper, public wrapper lifecycle tests, README/SKILL, this OpenSpec change, ledger/state/verification | apply ordering, failure-stop/remediation, dry-run zero-write/zero-network, focused/full/static/spec/workflow/package/diff/review | live split/config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 18.1-18.4 verified and both independent review axes pass; install/live/Git effects remain excluded |
 
@@ -1074,12 +1103,12 @@ changes remain unperformed. The already-observed native replacement of prior
 installed Plugin versions is recorded as backend-owned lifecycle behavior.
 Task 15 additionally performed no live GitHub release mutation or workflow
 rerun. Task 16 consumed the resolved `614cc025...` grant through commit
-`6a5fa85`, its push, and failed Auto Release run `31666160863`. The resulting
-draft-discovery repair now passes fresh source verification. The user's
-2026-08-13 `授权` decision resolves gate `a40cea2a...` for one verified
-commit/push that may trigger recovery of `v0.1.14` and atomic publication of
-`v0.1.15`. Completion still requires remote ref, Release metadata, canonical
-asset, and checksum readback.
+`6a5fa85` and failed run `31666160863`, then consumed `a40cea2a...` through
+commit `5da41a8` and failed run `31681550199`. The user's 2026-08-13 explicit
+abandonment decision resolves gate `d9a08a71...` for one verified commit/push
+and atomic publication of `v0.1.15`, while all `v0.1.14` tag/Release mutation
+is excluded. Completion still requires remote `main`/tag identity, `v0.1.15`
+Release metadata, canonical asset, and checksum readback.
 Task 17 is source-only in this execution: no live resolver command, functional
 managed backend command, install, App/profile/config/cache mutation, task-16
 Git/Release effect, archive, migration, cleanup, or dependency change is part

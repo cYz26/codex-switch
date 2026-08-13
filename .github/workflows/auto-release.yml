@@ -45,6 +45,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python3 "$RELEASE_AUTO" plan \
+            --abandon-tag v0.1.14 \
             --github-repo "$GITHUB_REPOSITORY" \
             --json \
             --github-output "$GITHUB_OUTPUT"
@@ -60,6 +61,7 @@ jobs:
           echo "target_commit=${{ steps.plan.outputs.target_commit }}"
           echo "missing_assets=${{ steps.plan.outputs.missing_assets }}"
           echo "next_tag=${{ steps.plan.outputs.next_tag }}"
+          echo "abandoned_tag=${{ steps.plan.outputs.abandoned_tag }}"
           echo "release_files=${{ steps.plan.outputs.release_files }}"
 
       - name: Check out release reconciliation commit
