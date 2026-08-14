@@ -645,6 +645,14 @@ def write_fake_internal_update_promotion_driver(path: Path) -> None:
         "\n"
         "argv = sys.argv[1:]\n"
         "real_switcher = Path(os.environ['CODEX_SWITCH_TEST_REAL_SWITCHER'])\n"
+        "delegate_switcher = real_switcher\n"
+        "desktop_driver = os.environ.get('CODEX_SWITCH_TEST_DESKTOP_DRIVER')\n"
+        "uses_official_app = 'split' in argv\n"
+        "if '--app-profile' in argv:\n"
+        "    app_profile = argv[argv.index('--app-profile') + 1]\n"
+        "    uses_official_app = app_profile in {'official', 'openai-official'}\n"
+        "if desktop_driver and uses_official_app:\n"
+        "    delegate_switcher = Path(desktop_driver)\n"
         "if 'promote-internal-update' not in argv:\n"
         "    if '--store-dir' in argv and 'verify' in argv and 'internal' in argv:\n"
         "        verify_log = os.environ.get('CODEX_SWITCH_TEST_VERIFY_ARGS_LOG')\n"
@@ -673,7 +681,7 @@ def write_fake_internal_update_promotion_driver(path: Path) -> None:
         "        or sys.executable\n"
         "    )\n"
         "    raise SystemExit(subprocess.call([\n"
-        "        delegate_python, '-B', str(real_switcher), *argv\n"
+        "        delegate_python, '-B', str(delegate_switcher), *argv\n"
         "    ]))\n"
         "\n"
         "promotion_log = os.environ.get('CODEX_SWITCH_TEST_PROMOTION_ARGS_LOG')\n"
@@ -10469,6 +10477,8 @@ class CodexProfileSwitchTests(unittest.TestCase):
             self.assertNotIn("--app-server-smoke", verification_argv)
             self.assertIn("Runtime smoke: passed", output)
             self.assertNotIn("App-server smoke: passed", output)
+            active = json.loads((root / "store" / "active.json").read_text())
+            self.assertEqual(str(official_codex), active["app_cli_path"])
             self.assert_staged_update_helper_args(
                 update_args,
                 bound_bin=internal_codex,
