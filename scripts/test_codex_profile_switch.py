@@ -750,6 +750,41 @@ def write_fake_internal_update_promotion_driver(path: Path) -> None:
     )
 
 
+def write_fake_desktop_inventory_driver(path: Path) -> None:
+    write_fake_script(
+        path,
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import runpy\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "\n"
+        "real_switcher = Path(os.environ['CODEX_SWITCH_TEST_REAL_SWITCHER'])\n"
+        "chatgpt_app = Path(os.environ['CODEX_SWITCH_TEST_CHATGPT_APP'])\n"
+        "sys.path.insert(0, str(real_switcher.parent))\n"
+        "import codex_switch_runtime_binding as runtime_binding\n"
+        "\n"
+        "real_discover = runtime_binding.discover_desktop_hosts\n"
+        "applications = chatgpt_app.parent\n"
+        "fixture_inventory = real_discover(runtime_binding.DesktopRoots(\n"
+        "    chatgpt=chatgpt_app,\n"
+        "    legacy_codex=applications / 'Codex.app',\n"
+        "    chatgpt_classic=applications / 'ChatGPT Classic.app',\n"
+        "))\n"
+        "if fixture_inventory.current is None:\n"
+        "    raise SystemExit('invalid test ChatGPT.app fixture')\n"
+        "\n"
+        "def discover_desktop_hosts(roots=None):\n"
+        "    if roots is None:\n"
+        "        return fixture_inventory\n"
+        "    return real_discover(roots)\n"
+        "\n"
+        "runtime_binding.discover_desktop_hosts = discover_desktop_hosts\n"
+        "sys.argv = [str(real_switcher), *sys.argv[1:]]\n"
+        "runpy.run_path(str(real_switcher), run_name='__main__')\n",
+    )
+
+
 def write_fake_capability_codex(path: Path) -> None:
     write_fake_script(
         path,
@@ -1241,9 +1276,17 @@ class CodexProfileSwitchTests(unittest.TestCase):
             and "CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP" not in clean_env
         ):
             clean_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
+        switch_script = SCRIPT
+        desktop_driver = clean_env.pop(
+            "CODEX_SWITCH_TEST_DESKTOP_DRIVER",
+            None,
+        )
+        if desktop_driver:
+            switch_script = Path(desktop_driver)
+            clean_env["CODEX_SWITCH_TEST_REAL_SWITCHER"] = str(SCRIPT)
         command = [
             python_executable or sys.executable,
-            str(SCRIPT),
+            str(switch_script),
             "--store-dir",
             str(root / "store"),
             "--live-codex-home",
@@ -1282,8 +1325,17 @@ class CodexProfileSwitchTests(unittest.TestCase):
         ]
         clean_env = dict(env or os.environ)
         clean_env.pop("CODEX_CLI_PATH", None)
+        clean_env.setdefault("CODEX_SWITCH_SKIP_SELF_UPDATE", "1")
         if not allow_switch_script:
             clean_env.pop("CODEX_SWITCH_SCRIPT", None)
+            clean_env.pop("CODEX_SWITCH_TEST_REAL_SWITCHER", None)
+            desktop_driver = clean_env.pop(
+                "CODEX_SWITCH_TEST_DESKTOP_DRIVER",
+                None,
+            )
+            if desktop_driver:
+                clean_env["CODEX_SWITCH_SCRIPT"] = desktop_driver
+                clean_env["CODEX_SWITCH_TEST_REAL_SWITCHER"] = str(SCRIPT)
         clean_env.pop("CODEX_SWITCH_HOME", None)
         if (
             "CODEX_SWITCH_SHELL_PROFILE" not in clean_env
@@ -1338,14 +1390,32 @@ class CodexProfileSwitchTests(unittest.TestCase):
         path_dir = root / "path"
         path_dir.mkdir()
         internal = root / "internal-bin" / "codex"
-        official = root / "official-codex"
+        chatgpt_app = root / "Applications" / "ChatGPT.app"
+        contents = chatgpt_app / "Contents"
+        official = contents / "Resources" / "codex"
+        official_main = contents / "MacOS" / "ChatGPT"
         internal.parent.mkdir()
+        official.parent.mkdir(parents=True)
+        official_main.parent.mkdir(parents=True)
+        with (contents / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {
+                    "CFBundleIdentifier": CURRENT_CHATGPT_BUNDLE_ID,
+                    "CFBundleShortVersionString": "1.2026.196",
+                },
+                handle,
+            )
         write_fake_codex(internal, "internal-codex")
         write_fake_codex(official, "official-codex")
+        write_fake_script(official_main, "#!/usr/bin/env sh\nexit 0\n")
         (path_dir / "codex").symlink_to(internal)
+        desktop_driver = root / "desktop-inventory-driver.py"
+        write_fake_desktop_inventory_driver(desktop_driver)
         env = os.environ.copy()
         env.pop("CODEX_CLI_PATH", None)
         env["PATH"] = f"{path_dir}{os.pathsep}{env.get('PATH', '')}"
+        env["CODEX_SWITCH_TEST_CHATGPT_APP"] = str(chatgpt_app)
+        env["CODEX_SWITCH_TEST_DESKTOP_DRIVER"] = str(desktop_driver)
         return internal.resolve(), official, env
 
     def run_verified_split_switch(
@@ -9739,6 +9809,12 @@ class CodexProfileSwitchTests(unittest.TestCase):
             packaged_env = dict(env)
             packaged_env.pop("PYTHONPATH", None)
             packaged_env.pop("CODEX_SWITCH_SCRIPT", None)
+            packaged_env["CODEX_SWITCH_SCRIPT"] = packaged_env[
+                "CODEX_SWITCH_TEST_DESKTOP_DRIVER"
+            ]
+            packaged_env["CODEX_SWITCH_TEST_REAL_SWITCHER"] = str(
+                receipt.package_dir / "scripts" / "codex_profile_switch.py"
+            )
             packaged_env["CODEX_SWITCH_SKIP_SHELL_BOOTSTRAP"] = "1"
 
             result = subprocess.run(
