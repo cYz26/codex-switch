@@ -1918,3 +1918,88 @@ creation, and `v0.1.15` Release publication. It excludes every `v0.1.14`
 tag/Release mutation, force push, Release deletion, migration,
 dependency/credential change, archive, cleanup, install, and unrelated runtime
 effect.
+
+## Tasks 16.18-16.21 Public Profile Failure Annotation
+
+Commit `7b797fe6d22ad4c47cdc440c570a1782616aac7d` reached `origin/main`
+and triggered Auto Release run `31695733067`, job `94432969961`. Planning
+again selected preparation for `v0.1.15` while abandoning `v0.1.14`.
+`Verify release source` ran from 2026-08-13 19:29:47 +08:00 through
+19:42:50 +08:00. The first complete Profile/Wrapper attempt failed, the
+verbose retry failed, and every later release commit, package, ref, Release,
+and asset step was skipped. This consumed gate `3fe75b3f...`.
+
+Public Check Run annotations for the failed job contain the first-attempt
+warning and `Process completed with exit code 1.` only. Anonymous raw job-log
+retrieval returns `403 Must have admin rights to Repository`, so the exact
+remote test and assertion remain unknown. Read-only remote proof remains:
+
+- `refs/heads/main` =
+  `7b797fe6d22ad4c47cdc440c570a1782616aac7d`;
+- `refs/tags/v0.1.14` =
+  `19a243342ef9f78776b3fad0b2292198845147d3`;
+- `refs/tags/v0.1.15` is absent.
+
+Task 16.19 adds evidence rather than another speculative root-cause fix. After
+the first attempt fails, the second complete suite writes to one
+runner-temporary log. Success replays that log and continues. Failure captures
+the original status, replays the complete log, percent-encodes `%`, CR, and LF
+in its final 120 lines, emits one titled GitHub `::error` annotation, and exits
+the captured status. This path is present in automatic preparation, historical
+reconciliation, and tag-triggered validation.
+
+Verification completed on 2026-08-14 so far:
+
+- RED public-annotation contract: failed for all three validation paths before
+  the workflow edit;
+- focused retry and annotation contracts: 2/2 pass;
+- complete Release workflow contract class: 11/11 pass;
+- Bash 3.2 annotation probe: synthetic status 37 is preserved and output is
+  `line 1%25%0D%0Aline 2`;
+- both Release workflow YAML files parse;
+- complete Python 3.12 Update/Release: 178/178 in 335.604 seconds.
+
+Task 16.20 final-source verification on 2026-08-14:
+
+- complete Python 3.12 Update/Release: 178/178 in 335.604 seconds;
+- complete Profile/Wrapper in an empty-HOME, no-TTY Actions-shaped clone with
+  an asserted `VERSION=0.1.15`: 227/227 in 402.264 seconds;
+- complete Release workflow contract class: 11/11;
+- Python compile, Bash entrypoint syntax 5/5, and Release YAML 2/2: pass;
+- final tracked and intended gate JSON: 47/47;
+- active strict OpenSpec: valid;
+- repository-wide strict OpenSpec: 22/22;
+- DevFlow 0.4.1 source validator: `ok=true`, zero issues, existing
+  Project-Directed Implementation Readiness guidance warning only;
+- `git diff --check`: pass.
+
+A fresh clone of temporary candidate commit
+`337ec1b5d4043d1c5e4244c0fb6ece24d5dd638e` validated the exact
+`v0.1.15` asset set with bytecode redirected outside the source tree:
+
+- `install.sh`: 13,878 bytes,
+  SHA-256 `8e7bb4c0a342cb4401c9653ea32d4b8dce0437cc74651e26e766323955ed5bd7`;
+- `run.sh`: 13,117 bytes,
+  SHA-256 `35ab16f888b9915326ee7acb0e36f7dbbcba4314468bca10b497151dd5aa3fdb`;
+- `codex-switch.tar.gz`: 651,319 bytes,
+  SHA-256 `ac30ece77acae092ab01889795490782f290ea078356fd6c82e807c58491cb5c`;
+- asset manifest: 867 bytes,
+  SHA-256 `58ef0da453c5e61f4f455b9ae1ce6d7b6dc6c2b72c652fc5b82af201364f325d`.
+
+The user's current
+`授权跳过 v0.1.14，修改并推送，发布 v0.1.15` instruction is recorded in
+`release-public-profile-error-v0.1.15-submit-authority-grant.json` with
+approval time `2026-08-14T12:24:59+08:00`. It resolves gate
+`5cc1e103af3dedb42b09385faab4acb2cfd469b00d88c7d365941e99552e7f06`.
+The clearance binds authority contract
+`d75b2d11f152b7ee868f36de55d8569a9da79450df1ffb837bcb874ff26ac958`,
+evidence
+`983ff8553521674b9c58c19f37821d4d0b0084a138dd15ca8a803b862634d2c9`,
+and request
+`2d21684fe2c56d7188535edb912e7e0ded75611044678b5fe6a0938df6c35f69`.
+It authorizes one verified public-annotation commit, one fast-forward push to
+`origin/main`, the push-triggered Auto Release run, atomic `v0.1.15` ref
+creation, and `v0.1.15` Release publication. It excludes every `v0.1.14`
+tag/Release mutation, force push, Release deletion, migration,
+dependency/credential change, archive, cleanup, install, and unrelated runtime
+effect.

@@ -3116,6 +3116,29 @@ write task.
   22/22, DevFlow `ok=true`, deterministic package/assets, remote ref, and diff
   checks pass. The user's current publication instruction resolves gate
   `3fe75b3f...` for task 16.18 only; every `v0.1.14` mutation remains excluded.
+- 2026-08-13: commit `7b797fe` and Auto Release run `31695733067`, job
+  `94432969961`, consumed gate `3fe75b3f...`. `Verify release source` ran both
+  complete Profile/Wrapper attempts and failed after 13m03s. Every release
+  commit, ref, Release, and asset step was skipped; remote state remained
+  `main=7b797fe`, `v0.1.14=19a2433`, and `v0.1.15` absent. Public Check Run
+  annotations expose only the retry warning and generic exit code.
+- 2026-08-14: task 16.19 adds a second-failure public annotation without making
+  validation fail-open. RED failed for all three Release validation paths.
+  GREEN captures and replays the complete verbose retry log, percent-encodes
+  workflow-command control characters in its final 120 lines, emits one
+  `::error` annotation, and exits the original status. Focused coverage passes
+  2/2, the full Release workflow class passes 11/11, Bash 3.2 preserves a
+  synthetic exit 37 and emits `line 1%25%0D%0Aline 2`, both YAML files parse,
+  and complete Python 3.12 Update/Release passes 178/178 in 335.604s.
+- 2026-08-14: task 16.20 passes a correct asserted `VERSION=0.1.15`
+  Profile/Wrapper candidate 227/227 in 402.264s, Python/Bash/YAML static gates,
+  strict OpenSpec 22/22, DevFlow `ok=true`, JSON, remote, diff, and
+  deterministic three-asset validation. The user's current publication
+  instruction is promoted through
+  `release-public-profile-error-v0.1.15-submit-authority-grant.json` and resolves
+  gate `5cc1e103...` for task 16.21 only. It authorizes one verified
+  public-annotation commit/push and the exact `v0.1.15` Auto Release chain,
+  while every `v0.1.14` mutation remains excluded.
 
 ## Validation Commands
 

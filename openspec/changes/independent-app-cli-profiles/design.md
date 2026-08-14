@@ -781,6 +781,30 @@ current publication instruction resolves gate `3fe75b3f...` for this bounded
 retry commit/push and the exact `v0.1.15` publication while preserving
 `v0.1.14` unchanged.
 
+### Decision 29: Repeated Profile failure must cross the public annotation seam
+
+Commit `7b797fe` reached `origin/main` and Auto Release run `31695733067`, job
+`94432969961`, entered `Verify release source` at 2026-08-13 19:29:47 +08:00.
+The first complete Profile/Wrapper attempt failed, the verbose retry also
+failed, and the step ended 13m03s later. Every later release commit, package,
+ref, Release, and asset operation was skipped. `origin/main` remained
+`7b797fe`, `v0.1.14` remained `19a2433`, and `v0.1.15` remained absent.
+
+The public Check Run annotation endpoint exposes the first-attempt warning and
+the generic `Process completed with exit code 1`, but the anonymous job-log
+endpoint returns `403 Must have admin rights to Repository`. The exact remote
+failing test therefore remains unknown. Another speculative product or test
+change is rejected; the next bounded step adds evidence at the boundary that is
+already publicly readable.
+
+On a repeated failure, each Release validation entrypoint redirects the verbose
+retry to one runner-temporary log. Success replays the log and continues. A
+failure captures the original status, replays the complete log, takes the final
+120 lines, percent-encodes `%`, CR, and LF for the GitHub workflow-command
+protocol, emits one titled `::error` annotation, and exits the captured status.
+The annotation path cannot convert failure to success and changes no planning,
+version, Git, Release, or asset behavior.
+
 ## Completion Contract
 
 - The named split command has a failing-then-passing wrapper and transaction
@@ -959,7 +983,7 @@ remain separate Human Gates.
 | Backend-managed acceptance repair | main, serialized | catalog adapter, shared materializer, focused tests, README/SKILL, OpenSpec/control plane | live-shape source/target divergence RED/GREEN, installed precedence, native cache-lifecycle replacement, one post-add batch catalog, precise findings, full/static/spec/package review, functional managed-shim acceptance | split/install/App stop or mutation/internal binary update/direct codex-switch cache mutation/Git/release/archive | complete 2026-08-11; tasks 13.1-13.4 verified and native cache-lifecycle decision reconciled |
 | Runtime-config render idempotence | main, serialized | managed annotation cleanup and focused config/profile tests plus OpenSpec/control-plane evidence | repeated-render RED/GREEN, focused and adjacent suites, strict/static/diff proof | live config rewrite, switch/install/App action, dependency/Git/release/archive/cleanup | complete 2026-08-11; tasks 14.1-14.3 verified |
 | Failed release-upload recovery | main, serialized | release adapter/reconciler, focused update-release tests, OpenSpec/control plane | hidden starter, disappearing Release, and stale multi-starter ID RED; per-delete readback/recreate/upload GREEN; conflict guards and full proof | live GitHub release mutation, workflow rerun, dependency/migration, commit/push/archive | complete in source 2026-08-11; tasks 15.1-15.6 verified, second submit awaits Human Gate |
-| Release-recreation and abandonment repair | main, serialized | `scripts/release_auto.py`, both Release workflows, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | typed recreation and draft-list fallback plus exact latest-tag abandonment, replacement requirement, older-entry non-interference, no old-Release inspection/mutation, Python 3.12 workflow pin, one bounded verbose Profile retry, complete update/release/profile/static/spec/workflow/package/diff proof, remote `v0.1.15` ref/Release/asset readback | gates `614cc025...`, `a40cea2a...`, `d9a08a71...`, and `ff784b1f...` were consumed by failed submissions; gate `3fe75b3f...` is resolved for one verified bounded-retry commit/push and `v0.1.15` publication, with all `v0.1.14` tag/Release mutation excluded | Update/Release 177/177, clean `v0.1.15` Profile/Wrapper 227/227, strict OpenSpec 22/22, DevFlow/static/JSON/assets pass; task 16.18 is authorized |
+| Release-recreation and abandonment repair | main, serialized | `scripts/release_auto.py`, both Release workflows, focused update-release tests, this OpenSpec change, ledger/state/verification/authority evidence | typed recreation and draft-list fallback plus exact latest-tag abandonment, replacement requirement, older-entry non-interference, no old-Release inspection/mutation, Python 3.12 workflow pin, one bounded verbose Profile retry, repeated-failure public annotation, complete update/release/profile/static/spec/workflow/package/diff proof, remote `v0.1.15` ref/Release/asset readback | gates `614cc025...`, `a40cea2a...`, `d9a08a71...`, `ff784b1f...`, and `3fe75b3f...` were consumed by failed submissions; gate `5cc1e103...` is resolved for one public-annotation commit/push and `v0.1.15` publication, with all `v0.1.14` tag/Release mutation excluded | Release workflow 11/11, Update/Release 178/178, clean `v0.1.15` Profile/Wrapper 227/227, strict OpenSpec 22/22, DevFlow/static/JSON/assets pass; task 16.21 is authorized |
 | Official-authoritative shared readiness | main, serialized | shared configuration module, functional preflight/parser/wrapper, focused tests, README/SKILL, this OpenSpec change, ledger/state/verification | public-seam RED/GREEN for Official/internal/overlapping drift, CAS, automatic preflight, non-interactive remediation, read-only diagnostics, package/static/spec/workflow/diff/review | live config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 17.1-17.6 verified, live/install/Git effects remain excluded |
 | Split-triggered shared readiness | main, serialized | wrapper, public wrapper lifecycle tests, README/SKILL, this OpenSpec change, ledger/state/verification | apply ordering, failure-stop/remediation, dry-run zero-write/zero-network, focused/full/static/spec/workflow/package/diff/review | live split/config/cache apply, install, App mutation, functional backend, migration, dependency, Git, release, archive, cleanup | complete in source 2026-08-12; tasks 18.1-18.4 verified and both independent review axes pass; install/live/Git effects remain excluded |
 

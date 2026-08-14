@@ -18,10 +18,10 @@ standing_milestone:
   review_digest: none
 
 authority_gate:
-  key: sha256:3fe75b3f919d54fa7ba057f9a2a6aea4a442df2e508dbcde868105f8c5c2b061
+  key: sha256:5cc1e103af3dedb42b09385faab4acb2cfd469b00d88c7d365941e99552e7f06
   status: resolved
-  resolution_digest: sha256:5f72bb8bc916eb6892346ea2611e2e1dda56d1608e5ef64f98df79e28bbdbd09
-  evidence_digest: sha256:a92af789bfac32cda8cecd5851f276f66a321e67f2b8cb5202c891a9eabbab13
+  resolution_digest: sha256:2d21684fe2c56d7188535edb912e7e0ded75611044678b5fe6a0938df6c35f69
+  evidence_digest: sha256:983ff8553521674b9c58c19f37821d4d0b0084a138dd15ca8a803b862634d2c9
   next_question: none
   missing_authority: []
 
@@ -41,13 +41,13 @@ implementation_readiness:
 
 context_management:
   compact_policy: checkpoint_boundary
-  last_checkpoint_id: 2026-08-13-bounded-profile-retry-v0.1.15-submit-authorized
+  last_checkpoint_id: 2026-08-14-public-profile-error-v0.1.15-submit-authorized
   last_checkpoint_file: .planning/devflow/verification/independent-app-cli-profiles.md
   compact_recommended: false
   compact_status: not_needed
   last_compact_result_file: none
   compact_source: openspec
-  compact_updated_at: 2026-08-13T19:26:00+08:00
+  compact_updated_at: 2026-08-14T12:24:59+08:00
   compact_skip_reason: bounded_change_context_is_healthy
   compact_error: none
   compact_after:
@@ -79,7 +79,7 @@ context_health:
   last_report: .planning/context-health/reports/20260629130742-context-health.json
   last_risk: medium
   last_confidence: medium
-  last_decision: authorize_bounded_profile_retry_and_publish_v0.1.15
+  last_decision: authorize_public_profile_error_and_publish_v0.1.15
   last_goal_status: aligned
   goal_summary: Separate backend-managed official source identity from internal target identity and prove the managed CLI starts successfully.
 ---
@@ -88,17 +88,20 @@ context_health:
 
 ## Current Status
 
-Tasks 16.16-16.17 are complete. Every Release Profile/Wrapper validation path
-retries one failed complete suite exactly once with verbose diagnostics, while
-a repeated failure remains blocking. Fresh Python 3.12 verification passes
-Update/Release 177/177 and a clean `VERSION=0.1.15` Profile/Wrapper candidate
-227/227; strict OpenSpec, DevFlow, static, JSON, package, and asset gates pass.
-Gate `3fe75b3f...` is resolved for the exact commit/push and `v0.1.15`
-publication, with every `v0.1.14` mutation excluded.
+Tasks 16.18-16.20 are complete. Commit `7b797fe` reached `origin/main`, but
+Auto Release run `31695733067` exhausted the bounded Profile/Wrapper retry
+before every release effect. The three Release validation paths now publish a
+percent-encoded final verbose tail through a fail-closed GitHub error
+annotation. Fresh Python 3.12 verification passes Update/Release 178/178 and a
+clean `VERSION=0.1.15` Profile/Wrapper candidate 227/227; strict OpenSpec,
+DevFlow, static, JSON, package, and asset gates pass. Gate `5cc1e103...` is
+resolved for one exact commit/push and the `v0.1.15` Auto Release chain, with
+every `v0.1.14` mutation excluded.
 
 ## Next Action
 
-Stage only the verified bounded-retry, OpenSpec, ledger, state, verification,
-and authority write set. Fast-forward push once to `origin/main`, then require
-`v0.1.15` tag, published Release, canonical three assets, and independent
-checksum readback while preserving `v0.1.14=19a2433`.
+Stage only the verified public-error-annotation, OpenSpec, ledger, state,
+verification, and authority write set. Fast-forward push once to
+`origin/main`, inspect the new public Check Run annotations, then either repair
+the exposed assertion or verify the published `v0.1.15` tag, Release, and
+canonical three assets while preserving `v0.1.14=19a2433`.

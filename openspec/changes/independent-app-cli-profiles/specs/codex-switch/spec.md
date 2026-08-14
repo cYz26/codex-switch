@@ -281,8 +281,11 @@ selection contract.
   suite exactly once with verbose per-test diagnostics
 - **AND** a successful retry may continue to the unchanged later validation
   gates
+- **AND** a failed retry replays its complete verbose output to the job log and
+  emits its final 120 lines through a titled GitHub error annotation after
+  percent-encoding percent, carriage-return, and newline characters
 - **AND** a second failure remains nonzero and blocks every release commit,
-  tag, Release, and asset effect.
+  tag, Release, and asset effect with the retry's original exit status.
 
 ### Requirement: Official-authoritative shared Plugin and Skill desired state
 

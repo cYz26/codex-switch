@@ -389,12 +389,32 @@
   DevFlow reports `ok=true`, and deterministic assets validate. Correct prior
   root-cause claims and record a fresh Human Gate before another commit, push,
   workflow run, tag, or Release effect.
-- [ ] 16.18 Under resolved gate `3fe75b3f...`, commit and fast-forward push only
-  the verified bounded-retry and control-plane write set. Require `origin/main`
-  and `v0.1.15` to resolve to the release commit, require the published
-  `v0.1.15` Release to contain exactly the canonical three assets, and
-  independently verify asset size/checksum before claiming publication
-  complete. Preserve `v0.1.14=19a2433` and do not modify its Release records.
+- [x] 16.18 Under resolved gate `3fe75b3f...`, commit and fast-forward push only
+  the verified bounded-retry and control-plane write set. Commit `7b797fe`
+  reached `origin/main`; Auto Release run `31695733067`, job `94432969961`,
+  retried Profile/Wrapper once and failed again after 13m03s. Every release
+  commit, ref, Release, and asset step remained skipped, `v0.1.14=19a2433`
+  remained unchanged, and gate `3fe75b3f...` is consumed.
+- [x] 16.19 Add RED workflow coverage requiring the second Profile/Wrapper
+  failure to preserve its original exit status, capture and replay the complete
+  verbose log, percent-encode `%`, CR, and LF, and emit the final 120 lines as a
+  public GitHub `::error` annotation. Implement that exact fail-closed behavior
+  in automatic preparation, historical reconciliation, and tag-triggered
+  release validation without changing release planning or version selection.
+- [x] 16.20 Run focused workflow, complete Python 3.12 Update/Release, clean
+  bumped-candidate Profile/Wrapper, Bash 3.2 annotation, YAML, static, strict
+  OpenSpec, DevFlow, package/asset, remote-readback, and diff verification.
+  Workflow contracts pass 11/11, Update/Release 178/178 in 335.604s, a clean
+  `VERSION=0.1.15` candidate passes Profile/Wrapper 227/227 in 402.264s, Bash
+  preserves synthetic status 37, YAML 2/2, Python/Bash static checks, strict
+  OpenSpec 22/22, DevFlow `ok=true`, JSON, remote, diff, and deterministic
+  three-asset validation pass. Gate `5cc1e103...` is resolved.
+- [ ] 16.21 Under resolved gate `5cc1e103...`, commit and fast-forward push only
+  the verified public-error-annotation and control-plane write set. Read the
+  new Check Run annotations before any root-cause repair. Preserve
+  `v0.1.14=19a2433`; if the run passes, require `origin/main` and `v0.1.15` to
+  resolve to the release commit, the published Release to contain exactly the
+  canonical three assets, and independent asset size/checksum verification.
 
 ## 17. Official-Authoritative Shared Plugin Readiness
 
@@ -570,3 +590,16 @@ fast-forward push to `origin/main`, the push-triggered Auto Release run, atomic
 `v0.1.15` ref creation, and `v0.1.15` Release publication. It does not
 authorize any `v0.1.14` tag/Release mutation, force push, migration,
 dependency/credential change, archive, cleanup, or unrelated runtime effect.
+
+Gate `ff784b1f...` was consumed by commit `700aa57` and failed Auto Release
+run `31691783338`; gate `3fe75b3f...` was consumed by commit `7b797fe` and
+failed run `31695733067`. The user's current
+`授权跳过 v0.1.14，修改并推送，发布 v0.1.15` instruction is recorded on
+2026-08-14 in
+`release-public-profile-error-v0.1.15-submit-authority-grant.json` and resolves
+gate `5cc1e103...` for task 16.21. It authorizes one verified public-annotation
+commit and fast-forward push to `origin/main`, the push-triggered Auto Release
+run, atomic `v0.1.15` ref creation, and `v0.1.15` Release publication. It
+excludes every `v0.1.14` tag/Release mutation, force push, Release deletion,
+migration, dependency/credential change, archive, cleanup, install, and
+unrelated runtime effect.

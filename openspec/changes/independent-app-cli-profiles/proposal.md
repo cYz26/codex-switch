@@ -174,4 +174,16 @@ None.
   Profile/Wrapper candidate passes 227/227. The user's current publication
   instruction resolves gate `3fe75b3f...` for the verified bounded-retry
   commit/push and exact `v0.1.15` Auto Release chain while continuing to
-  exclude every `v0.1.14` tag or Release mutation.
+  exclude every `v0.1.14` tag or Release mutation. Commit `7b797fe` and Auto
+  Release run `31695733067` consumed that gate; both Profile/Wrapper attempts
+  failed, while the publicly readable Check Run annotations exposed only the
+  retry warning and generic exit code. The bounded follow-up captures the
+  second verbose output, replays it to the job log, and emits its final 120
+  lines as a percent-encoded public error annotation while preserving the
+  original nonzero status. It changes no release planning, version, tag, asset,
+  or `v0.1.14` behavior. Fresh 2026-08-14 verification passes Release workflow
+  contracts 11/11, Update/Release 178/178, and a clean `VERSION=0.1.15`
+  Profile/Wrapper candidate 227/227, plus strict OpenSpec, DevFlow, static,
+  JSON, package, asset, remote, and diff gates. The user's current instruction
+  resolves gate `5cc1e103...` for one exact public-annotation commit/push and
+  the `v0.1.15` Auto Release chain, with all `v0.1.14` mutation still excluded.

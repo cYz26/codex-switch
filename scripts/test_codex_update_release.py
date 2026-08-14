@@ -3273,6 +3273,47 @@ class CodexReleaseWorkflowTests(unittest.TestCase):
                     self.assertLess(warning_index, retry_index)
                     self.assertNotIn("|| true", step)
 
+    def test_release_profile_retry_failure_emits_public_error_annotation(
+        self,
+    ) -> None:
+        cases = (
+            (
+                self.AUTO_RELEASE,
+                ("Verify reconciliation source", "Verify release source"),
+            ),
+            (self.MANUAL_RELEASE, ("Verify scripts and specs",)),
+        )
+        command = "python3 scripts/test_codex_profile_switch.py"
+        required_fragments = (
+            'profile_log="$RUNNER_TEMP/codex-switch-profile-wrapper.log"',
+            f'if {command} -v >"$profile_log" 2>&1; then',
+            'profile_status=$?',
+            'cat "$profile_log"',
+            'profile_error="$(tail -n 120 "$profile_log")"',
+            'profile_error="${profile_error//%/%25}"',
+            """profile_error="${profile_error//$'\\r'/%0D}\"""",
+            """profile_error="${profile_error//$'\\n'/%0A}\"""",
+            (
+                "::error title=Profile/Wrapper verification failed after "
+                "retry::$profile_error"
+            ),
+            'exit "$profile_status"',
+        )
+
+        for path, step_names in cases:
+            workflow = path.read_text()
+            for step_name in step_names:
+                with self.subTest(workflow=path.name, step=step_name):
+                    _index, step = self._step(workflow, step_name)
+                    for fragment in required_fragments:
+                        self.assertIn(fragment, step)
+                    self.assertLess(
+                        step.index('profile_status=$?'),
+                        step.index('exit "$profile_status"'),
+                    )
+                    self.assertNotIn("continue-on-error", step)
+                    self.assertNotIn("|| true", step)
+
     def test_auto_release_packages_and_validates_before_ref_push(self) -> None:
         workflow = self.AUTO_RELEASE.read_text()
         package_index, _package = self._step(
